@@ -48,6 +48,21 @@ class OptionChain:
     # rather than "as of": a browser clock printed over a number of unknown age
     # is the same class of lie as a fabricated price.
     as_of: datetime | None = None
+    # Bid/ask mid per strike, NaN where the source published no depth. LTP is
+    # the last thing that TRADED, which on a strike nobody has hit for ten
+    # minutes is not a current price: solving IV off it produced a smile that
+    # zigzagged by two vol points and fitted with the wrong sign of skew.
+    call_mid: np.ndarray | None = None
+    put_mid: np.ndarray | None = None
+
+    def quote_price(self, side: str) -> np.ndarray:
+        """The best available price per strike: mid where the book was quoted,
+        last trade otherwise. Prefer this over *_ltp for anything that solves."""
+        mid = self.call_mid if side == "call" else self.put_mid
+        ltp = self.call_ltp if side == "call" else self.put_ltp
+        if mid is None:
+            return ltp
+        return np.where(np.isfinite(mid) & (mid > 0), mid, ltp)
     # why we ended up on this source — each skipped step with its reason
     source_trail: list[str] = field(default_factory=list)
     # every expiry the source listed for this underlying (empty when unknown)

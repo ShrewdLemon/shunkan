@@ -208,8 +208,8 @@ def kite_option_chain(
 
     strikes = np.sort(opts["strike"].unique())
     n = len(strikes)
-    cols = {k: np.zeros(n) for k in
-            ("c_ltp", "c_oi", "c_vol", "p_ltp", "p_oi", "p_vol")}
+    cols = {k: np.full(n, np.nan) if k.endswith("_mid") else np.zeros(n) for k in
+            ("c_ltp", "c_oi", "c_vol", "c_mid", "p_ltp", "p_oi", "p_vol", "p_mid")}
     # Authoritative per contract; a disagreeing or unusable column yields
     # None rather than int(NaN) or a coin-flip multiplier.
     lot_size = _one_lot_size(opts)
@@ -224,6 +224,12 @@ def kite_option_chain(
         cols[f"{side}_ltp"][i] = float(q.get("last_price") or 0.0)
         cols[f"{side}_oi"][i] = float(q.get("oi") or 0.0)
         cols[f"{side}_vol"][i] = float(q.get("volume") or 0.0)
+        # Top of book. A crossed or one-sided book is left as NaN rather than
+        # half-guessed; quote_price then falls back to the last trade.
+        depth = q.get("depth") or {}
+        bid = float(((depth.get("buy") or [{}])[0]).get("price") or 0.0)
+        ask = float(((depth.get("sell") or [{}])[0]).get("price") or 0.0)
+        cols[f"{side}_mid"][i] = (bid + ask) / 2.0 if bid > 0 and ask >= bid else np.nan
 
     t_years = time_to_expiry_years(chosen)
     nan = np.full(n, np.nan)
@@ -246,6 +252,8 @@ def kite_option_chain(
         source="Zerodha Kite (real-time)",
         is_model=False,
         as_of=as_of,
+        call_mid=cols["c_mid"],
+        put_mid=cols["p_mid"],
         lot_size=lot_size,
         lot_size_source=(f"NFO instruments dump ({chosen} series)"
                          if lot_size else "no single lot in the instruments dump"),
