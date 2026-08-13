@@ -5,10 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "shunkan"
 version = "0.1.0"
-description = "Shunkan (瞬間) — the all-in-one trading terminal: live data, charts, screening, portfolio, and instant backtesting."
+description = "Derivatives terminal for Indian markets: real option chains, a book that can go short, net Greeks, exchange-priced margin."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "MIT" }
+authors = [{ name = "ShrewdLemon" }]
+keywords = ["trading", "derivatives", "options", "nse", "india", "terminal", "quantitative-finance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
 dependencies = [
     "textual>=0.80",
     "textual-plotext>=1.0",
@@ -27,11 +37,21 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
+[project.urls]
+Homepage = "https://github.com/ShrewdLemon/shunkan"
+Repository = "https://github.com/ShrewdLemon/shunkan"
+Issues = "https://github.com/ShrewdLemon/shunkan/issues"
+
 [project.scripts]
 shunkan = "shunkan.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# The web terminal is static files, not Python. Without this a non-editable
+# install lands with no UI at all and `shunkan serve` 404s on everything.
+"shunkan.server" = ["static/*", "static/vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
