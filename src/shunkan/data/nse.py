@@ -16,7 +16,13 @@ import numpy as np
 from shunkan.data.memcache import ttl_cache
 from shunkan.data.provider import DataError
 from shunkan.derivatives.chain import OptionChain
-from shunkan.markets import FNO_INDICES, is_expired, time_to_expiry_years, today_ist
+from shunkan.markets import (
+    IST,
+    FNO_INDICES,
+    is_expired,
+    time_to_expiry_years,
+    today_ist,
+)
 
 _HEADERS = {
     "User-Agent": (
@@ -90,6 +96,17 @@ def _parse_chain(symbol: str, payload: dict, want_expiry: date | None) -> Option
     rows = records.get("data") or []
     expiries = records.get("expiryDates") or []
     spot = float(records.get("underlyingValue") or 0.0)
+    # NSE stamps the snapshot itself, e.g. "13-Aug-2026 15:29:00". It is
+    # typically a minute or so behind, which is exactly why it must be shown
+    # rather than replaced with the browser's clock.
+    as_of = None
+    raw_ts = records.get("timestamp") or ""
+    for fmt_ in ("%d-%b-%Y %H:%M:%S", "%d-%b-%Y %H:%M"):
+        try:
+            as_of = datetime.strptime(raw_ts, fmt_).replace(tzinfo=IST)
+            break
+        except (ValueError, TypeError):
+            continue
     if not rows or not expiries or spot <= 0:
         raise DataError(f"NSE returned an empty chain for {symbol}")
 
@@ -152,6 +169,7 @@ def _parse_chain(symbol: str, payload: dict, want_expiry: date | None) -> Option
         put_iv=arr("p_iv"),
         source="NSE (live, ~1min delayed)",
         is_model=False,
+        as_of=as_of,
         # the listed ladder minus anything already settled, so the UI can
         # offer an expiry selector that only shows tradeable series
         expiries=[datetime.strptime(e, "%d-%b-%Y").date() for e in live],

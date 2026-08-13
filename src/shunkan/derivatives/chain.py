@@ -9,7 +9,7 @@ data refresh.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 import numpy as np
 
@@ -43,6 +43,11 @@ class OptionChain:
     # table to go stale — consumers show a dash and price per unit.
     lot_size: int | None = None
     lot_size_source: str = ""  # where the lot came from, or why we have none
+    # When this data was true AT THE SOURCE, not when we fetched it. None means
+    # the source published no timestamp, and the UI must then say "fetched"
+    # rather than "as of": a browser clock printed over a number of unknown age
+    # is the same class of lie as a fabricated price.
+    as_of: datetime | None = None
     # why we ended up on this source — each skipped step with its reason
     source_trail: list[str] = field(default_factory=list)
     # every expiry the source listed for this underlying (empty when unknown)

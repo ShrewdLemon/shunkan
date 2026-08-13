@@ -441,3 +441,52 @@ def test_portfolio_reports_net_book_greeks(client):
             "side": "buy", "symbol": "NIFTY", "kind": right,
             "expiry": chain["expiry"], "strike": row["strike"],
             "quantity": 65, "price": px})
+
+
+def test_chain_reports_a_source_timestamp_or_null_never_a_guess(client):
+    """A browser clock printed over data of unknown age is the same class of
+    lie as a fabricated price. Offline the chain is modelled and no source
+    published a time, so as_of must be null rather than 'now'."""
+    r = client.get("/api/chain/NIFTY").json()
+    assert "as_of" in r
+    assert r["as_of"] is None
+    assert r["is_model"] is True
+
+
+def test_nse_parser_reads_the_snapshot_timestamp():
+    """NSE stamps its own snapshot and it runs about a minute behind, which is
+    exactly why it has to be shown instead of replaced with the local clock."""
+    from datetime import datetime
+
+    from shunkan.data.nse import _parse_chain
+
+    payload = {"records": {
+        "timestamp": "13-Aug-2026 15:29:00",
+        "underlyingValue": 24500.0,
+        "expiryDates": ["18-Aug-2026"],
+        "data": [{"expiryDate": "18-Aug-2026", "strikePrice": 24500,
+                  "CE": {"lastPrice": 100.0, "openInterest": 1000,
+                         "changeinOpenInterest": 10, "totalTradedVolume": 500,
+                         "impliedVolatility": 12.5},
+                  "PE": {"lastPrice": 90.0, "openInterest": 900,
+                         "changeinOpenInterest": -5, "totalTradedVolume": 400,
+                         "impliedVolatility": 13.0}}],
+    }}
+    c = _parse_chain("NIFTY", payload, None)
+    assert isinstance(c.as_of, datetime)
+    assert c.as_of.hour == 15 and c.as_of.minute == 29
+    assert c.as_of.tzinfo is not None      # IST-aware, not naive
+
+
+def test_an_unparseable_source_timestamp_becomes_none_not_now():
+    from shunkan.data.nse import _parse_chain
+
+    payload = {"records": {
+        "timestamp": "sometime yesterday",
+        "underlyingValue": 24500.0,
+        "expiryDates": ["18-Aug-2026"],
+        "data": [{"expiryDate": "18-Aug-2026", "strikePrice": 24500,
+                  "CE": {"lastPrice": 100.0, "openInterest": 1000},
+                  "PE": {"lastPrice": 90.0, "openInterest": 900}}],
+    }}
+    assert _parse_chain("NIFTY", payload, None).as_of is None

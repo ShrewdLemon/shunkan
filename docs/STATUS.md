@@ -52,9 +52,17 @@ Things with real test coverage that have been verified against a live broker.
 
 ## Known rough edges
 
-- **No source timestamps on payloads.** The UI stamps the browser clock, so a
-  REST number that's minutes stale still looks current. The tick feed is now
-  honest about its own age; the REST panels are not yet.
+- **Live delta P&L is first order only.** Net delta times the spot move since
+  the last full mark. Gamma, theta and vega are all moving too, so it is not
+  the book's P&L and is labelled as what it is. It resets on every mark rather
+  than accumulating drift, and blanks when the feed is not LIVE.
+
+- **Data age is only wired on two panels.** The chain and the book carry a real
+  source timestamp and show AS OF plus an age that goes amber at 30s and red at
+  2 minutes. Every other panel still says FETCHED, which is honest but weaker.
+  Ticks are receipt-timed, not exchange-timed: the ticker subscribes in quote
+  mode (44 bytes), which carries no exchange timestamp. Full mode (184) does,
+  at triple the bandwidth.
 - **No settlement blotter.** The journal marks a settlement as asserted rather
   than executed, but nothing renders `portfolio.history`, so that distinction
   lives only in `~/.shunkan/portfolio.json` and the `/api/portfolio` payload.
