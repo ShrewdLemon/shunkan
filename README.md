@@ -110,6 +110,19 @@ earning theta, short vega, which is what you actually need to see. Exchange
 priced margin via Kite's SPAN calculator, because an iron condor's real margin is
 about a third of a naked short's and no local approximation gets close.
 
+**Vol surface calibration.** SABR fitted to the smile a live chain is actually
+quoting, via Hagan's closed form, about 2.5ms per expiry. Fits alpha, rho and
+nu by weighted least squares on the OTM wing of each strike, weighted by open
+interest, because a vol solved off a contract nobody holds is a number rather
+than a quote. beta is an input, not a fitted output: beta and rho are close to
+degenerate on a single smile, so fitting both finds noise and reports it as
+structure.
+
+Every fit carries its residuals and a quality grade. A smile the model cannot
+represent shows up as "poor" with visible errors rather than as a smooth curve,
+and calibrating a modelled chain is refused outright, since that would recover
+the generator's own parameters and render them as market structure.
+
 **QNT, the quant lab.** WebGL surfaces for IV, Greeks, Monte Carlo, Heston,
 correlation, VaR, the efficient frontier, Kalman, attention, and PSO
 optimisation over real backtests.

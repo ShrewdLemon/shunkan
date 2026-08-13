@@ -1550,6 +1550,65 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                       )}
         return _clean(out)
 
+    @app.get("/api/viz/sabr/{symbol}")
+    def viz_sabr(symbol: str, expiry: str | None = None, beta: float = 0.5):
+        """Fit SABR to the smile this expiry is actually quoting.
+
+        Returns the parameters, the market-versus-model curve, and the
+        residuals. The residuals are the point: a smile the model cannot
+        represent has to look wrong on screen rather than look smooth.
+        """
+        from shunkan.data.chains import get_chain
+        from shunkan.derivatives.sabr import calibrate_chain
+
+        want = None
+        if expiry:
+            try:
+                want = datetime.strptime(expiry, "%Y-%m-%d").date()
+            except ValueError as exc:
+                raise HTTPException(400, f"expiry must be YYYY-MM-DD, got {expiry!r}") from exc
+        try:
+            c = get_chain(symbol, want) if want else get_chain(symbol)
+        except (DataError, ValueError) as exc:
+            raise _chain_error(symbol, exc) from exc
+        try:
+            f = calibrate_chain(c, beta=max(0.0, min(beta, 1.0)))
+        except ValueError as exc:
+            # Too thin to fit, or a modelled chain. Both are refusals, not
+            # errors to paper over with a default surface.
+            raise HTTPException(422, str(exc)) from exc
+
+        grid = np.linspace(f.strikes.min(), f.strikes.max(), 120)
+        return _clean({
+            "symbol": c.symbol, "expiry": str(c.expiry), "forward": f.forward,
+            "t_years": f.t_years, "source": c.source, "is_model": c.is_model,
+            "params": {"alpha": f.alpha, "beta": f.beta, "rho": f.rho, "nu": f.nu},
+            "fit": {"rmse_vol_points": f.rmse_vol_points,
+                    "max_error_vol_points": f.max_error_vol_points,
+                    "quality": f.quality, "good": f.good,
+                    "n_used": f.n_used, "n_available": f.n_available},
+            "warnings": f.warnings,
+            "quotes": [{"strike": float(k), "market_iv": float(m),
+                        "model_iv": float(v), "residual": float(r)}
+                       for k, m, v, r in zip(f.strikes, f.market_iv,
+                                             f.model_iv, f.residuals)],
+            "curve": [{"strike": float(k), "iv": float(v)}
+                      for k, v in zip(grid, f.iv(grid))],
+            "prov": prov(
+                "SABR calibration",
+                {"beta": f.beta, "strikes fitted": f"{f.n_used} of {f.n_available}",
+                 "RMSE": f"{f.rmse_vol_points:.3f} vol points"},
+                c.source,
+                method="Hagan 2002 lognormal expansion; alpha/rho/nu by weighted "
+                       "least squares on OTM quotes, weighted by open interest; "
+                       "beta held fixed",
+                caveat="beta and rho are near-degenerate on a single smile, so "
+                       "beta is an input and not a fitted result. A 'poor' fit "
+                       "means the market smile is not SABR-shaped today, not "
+                       "that the quotes are wrong.",
+            ),
+        })
+
     @app.get("/api/viz/heston/{symbol}")
     def viz_heston(symbol: str, horizon: int = 120, kappa: float = 2.0,
                    xi: float = 0.6, rho: float = -0.7):
