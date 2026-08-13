@@ -23,6 +23,12 @@ Things with real test coverage that have been verified against a live broker.
 
 ## Works but thinly tested
 
+- **SABR calibration.** 13 tests, exact parameter recovery on generated smiles,
+  and the refusal paths are covered. It has NOT yet been fitted to a real
+  chain: the Kite token was expired and NSE was bot-blocked from this network
+  when it was written, so the live path is unproven. First thing to check with
+  a working token.
+
 - **Order ticket.** The API path is verified end to end over HTTP. The actual
   click and keyboard interaction has not been exercised in a browser yet. If
   you hit something odd, that's why.
