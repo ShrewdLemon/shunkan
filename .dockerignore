@@ -1,0 +1,23 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.git/
+.github/
+.claude/
+tests/
+docs/
+.DS_Store
+# never bake credentials or a market-data cache into an image layer
+credentials.json
+.env
+.env.*
+.shunkan/
+store/
+cache/
+*.parquet

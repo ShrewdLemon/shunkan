@@ -18,6 +18,31 @@ shunkan connect zerodha     # one browser login, once per trading day
 shunkan serve
 ```
 
+### Or run it in Docker
+
+If you would rather not start it from a terminal every day:
+
+```
+docker compose up -d
+```
+
+Then open http://127.0.0.1:8720. It restarts on boot and after a crash, and
+`~/.shunkan` lives in a named volume so credentials and the archive survive.
+
+Two things about the compose file worth not changing casually. The ports are
+published to `127.0.0.1` only, because Shunkan has no accounts and a wider
+bind hands a live broker session to your network (and, under Zerodha's terms,
+their market data with it). And port 8722 is published because Kite redirects
+the login to `127.0.0.1:8722/callback` on the host; without it
+`shunkan connect` waits forever for a request that can never arrive.
+
+The daily token still needs you once each morning. In the container the login
+URL is printed rather than opened, so copy it into a browser:
+
+```
+docker compose exec shunkan shunkan connect zerodha
+```
+
 *Shunkan (瞬間) means "the instant". Hot paths are pure numpy vector code with
 latency budget tests enforcing it: full chain Greeks in microseconds, 10 year
 backtests in single digit milliseconds.*
