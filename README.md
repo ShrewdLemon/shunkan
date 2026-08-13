@@ -1,5 +1,9 @@
 # Shunkan 瞬間
 
+[![tests](https://github.com/ShrewdLemon/shunkan/actions/workflows/tests.yml/badge.svg)](https://github.com/ShrewdLemon/shunkan/actions/workflows/tests.yml)
+[![python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
+[![licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
+
 A derivatives terminal for Indian markets. Built for people who already know
 what they're looking at: option chains with real open interest, a position book
 that can actually go short, net Greeks across the whole book, and exchange
