@@ -53,8 +53,11 @@ Things with real test coverage that have been verified against a live broker.
   lives only in `~/.shunkan/portfolio.json` and the `/api/portfolio` payload.
 - **Cold load is slow.** First paint of Pulse can sit on spinners for 15 to 20
   seconds while the initial fetches complete.
-- **No authentication.** By design for a localhost tool, but it means `--host`
-  is a foot gun. See the terms section in the README.
+- **No accounts.** By design for a single user localhost tool. `shunkan serve`
+  now refuses a non-loopback bind unless you pass `--i-understand-the-risk`,
+  and when you do it mints a per-run token that every `/api/` call and the tick
+  socket require. That is a guard rail, not a security model: it is one shared
+  secret and there is still no notion of users.
 
 ## Not started
 

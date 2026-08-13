@@ -19,8 +19,20 @@ DEFAULT_WATCHLIST = [
 
 
 def ensure_dirs() -> None:
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    """Create the app directories, owner-only.
+
+    0700 rather than the 0755 mkdir defaults to: this tree holds broker
+    tokens, the position book, the trade journal and cached market data, and
+    on a shared machine every one of those was world-readable.
+    """
+    APP_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for d in (APP_DIR, CACHE_DIR):
+        try:
+            if d.stat().st_mode & 0o077:
+                d.chmod(0o700)  # repair a directory created before this rule
+        except OSError:
+            pass
 
 
 def load_watchlist() -> list[str]:
