@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0a0c10">
+<title>SHUNKAN — Derivatives Terminal</title>
+<link rel="stylesheet" href="/static/vendor/gridstack.min.css">
+<link rel="stylesheet" href="/static/styles.css?v=12">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">瞬間</span>
+    <span class="brand-name">SHUNKAN</span>
+    <span class="brand-tag">DERIVATIVES TERMINAL</span>
+  </div>
+  <div class="top-status">
+    <span class="status-cell" id="chip-session">—</span>
+    <span class="status-sep"></span>
+    <span class="status-cell" id="chip-broker">—</span>
+    <span class="status-sep"></span>
+    <span class="status-cell"><span class="dot" id="stream-dot"></span><span id="stream-label">CONNECTING</span></span>
+  </div>
+  <div class="top-actions">
+    <button class="tbtn" id="cmd-open" title="Command (Ctrl/Cmd+K)">
+      <span class="key">⌘K</span> COMMAND
+    </button>
+    <button class="tbtn" id="btn-popout" title="Open as standalone window">
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M4.5 1.5H1.5V10.5H10.5V7.5M7 1.5H10.5V5M10.5 1.5L5.5 6.5" stroke="currentColor" stroke-width="1.3"/></svg>
+      POP OUT
+    </button>
+    <button class="tbtn" id="btn-fullscreen" title="Toggle fullscreen (F)">
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M1.5 4V1.5H4M8 1.5H10.5V4M10.5 8V10.5H8M4 10.5H1.5V8" stroke="currentColor" stroke-width="1.3"/></svg>
+      FULL
+    </button>
+    <span class="clock" id="clock">—</span>
+  </div>
+</header>
+
+<nav class="rail" id="rail"></nav>
+
+<main id="main"></main>
+
+<footer class="statusbar" id="statusbar">
+  <span id="sb-ws">WS —</span>
+  <span class="status-sep"></span>
+  <span id="sb-ticks">0 TICKS</span>
+  <span class="status-sep"></span>
+  <span id="sb-api">API —</span>
+  <span class="status-sep"></span>
+  <span id="sb-sources">KITE · NSE · YAHOO · GNEWS-RSS</span>
+  <span class="sb-right" id="sb-version">v—</span>
+</footer>
+
+<div class="palette-backdrop" id="palette-backdrop" hidden>
+  <div class="palette">
+    <input id="palette-input" placeholder="oc NIFTY · pay NIFTY iron_condor · c RELIANCE 1y · news · bt NIFTY sma_cross" autocomplete="off" spellcheck="false">
+    <div class="palette-hints" id="palette-hints"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script type="importmap">
+{ "imports": { "three": "/static/vendor/three.module.min.js" } }
+</script>
+<script src="/static/vendor/lightweight-charts.js"></script>
+<script src="/static/vendor/gridstack-all.js"></script>
+<script type="module" src="/static/viz3d.js?v=7"></script>
+<script src="/static/app.js?v=16"></script>
+</body>
+</html>

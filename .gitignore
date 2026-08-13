@@ -1,0 +1,31 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS
+.DS_Store
+
+# Credentials and local state. Shunkan keeps all of this in ~/.shunkan by
+# default, well outside the repo, but belt and braces: if anyone ever points
+# SHUNKAN_HOME at the working tree these patterns stop a broker token or a
+# market-data cache from being committed. Zerodha's API terms also prohibit
+# redistributing their data, so the store never belongs in git.
+credentials.json
+*.token
+.env
+.env.*
+.shunkan/
+store/
+cache/
+*.parquet
+portfolio.json
+watchlist.json
+alerts.json

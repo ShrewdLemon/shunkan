@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="28" fill="#0a0c10"/>
+  <rect x="1" y="1" width="126" height="126" rx="27" fill="none" stroke="#2a2d36" stroke-width="2"/>
+  <text x="64" y="84" font-family="-apple-system, 'Hiragino Sans', sans-serif"
+        font-size="56" font-weight="700" fill="#f5b342" text-anchor="middle">瞬</text>
+</svg>

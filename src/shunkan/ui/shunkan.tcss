@@ -1,0 +1,123 @@
+/* Shunkan terminal styling — dark, dense, Bloomberg-adjacent. */
+
+Screen {
+    background: #0d1117;
+    color: #c9d1d9;
+}
+
+#command-bar {
+    dock: bottom;
+    height: 3;
+    background: #161b22;
+    border-top: solid #30363d;
+    padding: 0 1;
+}
+
+#command-input {
+    background: #0d1117;
+    color: #ffb000;
+    border: tall #30363d;
+}
+
+#command-input:focus {
+    border: tall #ffb000;
+}
+
+#main-switcher {
+    height: 1fr;
+}
+
+.panel {
+    padding: 0 1;
+    height: 1fr;
+}
+
+.panel-title {
+    height: 1;
+    background: #161b22;
+    color: #ffb000;
+    text-style: bold;
+    padding: 0 1;
+}
+
+.panel-status {
+    height: 1;
+    color: #8b949e;
+    padding: 0 1;
+}
+
+DataTable {
+    height: 1fr;
+    background: #0d1117;
+}
+
+DataTable > .datatable--header {
+    background: #161b22;
+    color: #ffb000;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: #1f2937;
+}
+
+PlotextPlot {
+    height: 1fr;
+}
+
+#bt-layout, #vol-layout, #pay-layout, #iv-layout {
+    layout: horizontal;
+    height: 1fr;
+}
+
+#bt-plot, #vol-plot, #pay-plot, #iv-plot {
+    width: 2fr;
+}
+
+#bt-metrics, #vol-metrics, #pay-metrics, #iv-metrics {
+    width: 36;
+    border-left: solid #30363d;
+    padding: 0 1;
+    overflow-y: auto;
+}
+
+#pay-metrics, #iv-metrics {
+    width: 46;
+}
+
+#vol-metrics {
+    width: 44;
+}
+
+#chain-table {
+    height: 2fr;
+}
+
+#chain-scroll {
+    height: 12;
+    border-top: solid #30363d;
+    padding: 0 1;
+}
+
+#pulse-bias, #news-bias {
+    height: auto;
+    padding: 0 1;
+}
+
+.news-item {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    border-left: thick #30363d;
+}
+
+.news-item:hover {
+    border-left: thick #ffb000;
+}
+
+#help-body {
+    padding: 1 2;
+}
+
+VerticalScroll {
+    height: 1fr;
+}

@@ -1,0 +1,2274 @@
+"""Shunkan engine server — REST + WebSocket over the same engines the TUI uses.
+
+Run with `shunkan serve`. Sync engine calls run in FastAPI's threadpool
+(endpoints are plain `def`), so a slow Yahoo fetch never blocks the tick
+WebSocket. Quotes/chains ride the engines' TTL caches; the browser polls
+cheap endpoints frequently and gets pushed ticks over /ws/ticks.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import math
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from shunkan import __version__
+from shunkan.alerts import AlertBook, desktop_notify, parse_alert
+from shunkan.config import load_watchlist, save_watchlist
+from shunkan.data.provider import DataError, get_provider, is_offline
+from shunkan.markets import GLOBAL_PULSE, INDIA_PULSE, session_phase
+from shunkan.portfolio import Portfolio
+from shunkan.provenance import prov
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _clean(obj):
+    """JSON-safe: numpy scalars -> python, NaN/inf -> None, arrays -> lists."""
+    if isinstance(obj, dict):
+        return {k: _clean(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return [_clean(v) for v in obj.tolist()]
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        obj = float(obj)
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    return obj
+
+
+def _quote_dict(q) -> dict:
+    return _clean(
+        {
+            "symbol": q.symbol, "price": q.price, "change": q.change,
+            "change_pct": q.change_pct, "volume": q.volume,
+            "prev_close": q.prev_close, "day_high": q.day_high,
+            "day_low": q.day_low, "market_cap": q.market_cap, "name": q.name,
+        }
+    )
+
+
+def _chain_error(symbol: str, exc: Exception) -> HTTPException:
+    """502 whose detail carries the source trail, so a failed chain shows
+    which sources were tried and why — instead of a stand-in book."""
+    return HTTPException(502, {
+        "error": str(exc),
+        "symbol": symbol.upper(),
+        "source_trail": list(getattr(exc, "source_trail", [])),
+        "offline": is_offline(),
+    })
+
+
+def _warm_delta_oi_basis(chain) -> None:
+    """Seed this series' ΔOI basis from settled exchange history, off-thread.
+
+    Fire-and-forget by design: the chain must render now with an honest "—"
+    rather than block ~19s on a nicety. backfill_prev_close_oi is itself
+    once-per-series, so repeated calls are cheap no-ops.
+    """
+    import threading
+
+    def run():
+        try:
+            from shunkan.data.brokers import KiteProvider, get_broker
+            from shunkan.data.kite_fno import backfill_prev_close_oi
+
+            broker = get_broker()
+            if isinstance(broker, KiteProvider):
+                backfill_prev_close_oi(broker, chain)
+        except Exception:
+            pass  # a missing buildup column must never break the chain
+
+    threading.Thread(target=run, daemon=True, name="delta-oi-warm").start()
+
+
+class TradeRequest(BaseModel):
+    """A fill. `symbol` alone means cash equity; adding expiry/strike/kind
+    names a derivative contract, which is how the chain books a leg.
+
+    `lots` is the unit F&O is actually quoted in and is preferred over
+    `quantity` — but it is only honoured when the lot size is known, because
+    a guessed lot would silently misstate the whole position.
+    """
+
+    side: str
+    symbol: str
+    quantity: float | None = None
+    lots: int | None = None
+    price: float | None = None
+    kind: str = "EQ"                 # EQ | FUT | CE | PE
+    expiry: str | None = None        # YYYY-MM-DD
+    strike: float | None = None
+    exchange: str | None = None      # defaults to the usual venue for the kind
+    lot_size: int | None = None
+
+
+class BacktestRequest(BaseModel):
+    symbol: str
+    strategy: str = "sma_cross"
+    params: dict[str, float] = {}
+    period: str = "5y"
+    mode: str = "backtest"  # backtest | walkforward | montecarlo
+
+
+class BuilderRequest(BaseModel):
+    symbol: str
+    interval: str = "1d"
+    period: str = "1y"
+    spec: dict  # RuleSpec.from_dict shape
+    initial_cash: float = 10_000.0
+    commission: float = 0.0005
+    slippage: float = 0.0005
+    sl_mode: str = "none"
+    sl_value: float = 0.0
+    tp_mode: str = "none"
+    tp_value: float = 0.0
+    trailing: bool = False
+    atr_period: int = 14
+    session_start: str | None = None
+    session_end: str | None = None
+    cooldown_bars: int = 0
+    atr_min: float | None = None
+    atr_max: float | None = None
+    allow_short: bool = True
+
+
+class AlertRequest(BaseModel):
+    rule: str
+
+
+class SwarmRequest(BaseModel):
+    symbol: str
+    strategy: str = "sma_cross"
+    period: str = "5y"
+    particles: int = 24
+    iters: int = 30
+    start: str | None = None
+    end: str | None = None
+
+
+class ScriptRequest(BaseModel):
+    symbol: str
+    code: str
+    period: str = "2y"
+    interval: str = "1d"
+
+
+class MLTrainRequest(BaseModel):
+    symbol: str
+    features: list[str]
+    model: str = "stumps"
+    period: str = "5y"
+    horizon: int = 5
+    test_split: float = 0.25
+    start: str | None = None
+    end: str | None = None
+
+
+def create_app() -> FastAPI:
+    provider = get_provider()
+    portfolio = Portfolio.load()
+    alert_book = AlertBook()
+    hub = TickHub()
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI):
+        hub.loop = asyncio.get_running_loop()
+
+        async def alert_loop():
+            while True:
+                await asyncio.sleep(60.0)
+                if not alert_book.armed:
+                    continue
+                try:
+                    fired = await asyncio.to_thread(alert_book.check_all, provider)
+                except Exception:
+                    continue
+                for alert, current in fired:
+                    msg = f"ALERT {alert.describe().split(' — ')[0]} — now {current:,.2f}"
+                    desktop_notify("Shunkan alert", msg)
+                    await hub.broadcast({"type": "alert", "message": msg})
+
+        async def bar_flush_loop():
+            """Persist completed 1-minute bars from the live tick stream."""
+            from shunkan.store import TickStore
+
+            tick_store = TickStore()
+            while True:
+                await asyncio.sleep(30.0)
+                bars = hub.bars.drain()
+                if bars:
+                    try:
+                        await asyncio.to_thread(tick_store.write_bars, bars)
+                    except Exception:
+                        pass
+
+        async def chain_capture_loop():
+            """Snapshot index chains every 10 min during market hours so ΔOI,
+            IV history and straddle series accumulate even if nobody opens
+            the chain view. get_chain itself captures via its cache path."""
+            from shunkan.data.chains import get_chain
+
+            while True:
+                await asyncio.sleep(600.0)
+                if is_offline() or not session_phase().is_open:
+                    continue
+                for sym in ("NIFTY", "BANKNIFTY"):
+                    try:
+                        await asyncio.to_thread(get_chain, sym)
+                    except Exception:
+                        continue
+
+        async def history_sync_loop():
+            """Grow the local daily-candle archive while the terminal runs:
+            pulse boards + watchlist, upserted on start and every 6 h. Never
+            runs offline — synthetic data is never written to the store."""
+            from shunkan.store import HistoryArchive
+
+            archive = HistoryArchive()
+            await asyncio.sleep(25.0)  # let startup traffic settle first
+            while True:
+                if not is_offline():
+                    symbols = list(dict.fromkeys(
+                        [ticker for _, ticker in INDIA_PULSE + GLOBAL_PULSE]
+                        + load_watchlist()))
+                    src = (getattr(provider, "broker_name", "") or "yahoo/nse")
+
+                    def _sync_all():
+                        n = 0
+                        for s in symbols:
+                            try:
+                                h = provider.history(s, period="1y", interval="1d")
+                                archive.upsert(s, h, src)
+                                n += 1
+                            except Exception:
+                                continue
+                        return n
+
+                    try:
+                        await asyncio.to_thread(_sync_all)
+                    except Exception:
+                        pass
+                await asyncio.sleep(6 * 3600.0)
+
+        async def instruments_archive_loop():
+            """Keep each day's contract master.
+
+            Exchanges flush F&O instrument_tokens at every expiry and Kite
+            cannot serve expired ones afterwards, so a day not archived is a
+            day of options history nothing can reconstruct later. ~3 MB, no
+            credentials needed — the cheapest irreversible asset here.
+            """
+            from shunkan.data.kite_fno import archive_instruments_dump
+
+            await asyncio.sleep(40.0)
+            while True:
+                if not is_offline():
+                    # Every venue a desk trades: NSE/BSE cash, NFO and BFO index
+                    # and stock derivatives, MCX commodities, CDS currency.
+                    for exchange in ("NFO", "BFO", "MCX", "CDS", "NSE", "BSE"):
+                        try:
+                            await asyncio.to_thread(archive_instruments_dump, exchange)
+                        except Exception:
+                            pass  # never let an archive miss break startup
+                await asyncio.sleep(6 * 3600.0)
+
+        tasks = [asyncio.create_task(t()) for t in
+                 (alert_loop, bar_flush_loop, chain_capture_loop, history_sync_loop,
+                  instruments_archive_loop)]
+        yield
+        for t in tasks:
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
+        hub.stop()
+
+    app = FastAPI(title="Shunkan", version=__version__, lifespan=lifespan)
+    app.add_middleware(GZipMiddleware, minimum_size=1500)
+
+    @app.middleware("http")
+    async def _no_stale_static(request, call_next):
+        """Static assets revalidate on every load (cheap ETag 304s) so a
+        terminal upgrade never leaves a browser running last week's app.js."""
+        resp = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static"):
+            resp.headers.setdefault("Cache-Control", "no-cache")
+        return resp
+
+    # -- status / pulse ----------------------------------------------------
+
+    _health_cache = {"at": 0.0, "healthy": None, "reason": "not probed"}
+
+    def _broker_health(force: bool = False) -> dict:
+        """Probe REST health (60s cache). 'Configured' green is a lie when
+        the daily token is dead — the chip colors from THIS, not from config."""
+        if is_offline():
+            return {"healthy": None, "reason": "offline mode"}
+        if not force and time.time() - _health_cache["at"] < 60:
+            return {"healthy": _health_cache["healthy"],
+                    "reason": _health_cache["reason"]}
+        healthy, reason = None, "no broker configured"
+        try:
+            from shunkan.data.brokers import KiteProvider, get_broker
+
+            b = get_broker()
+            if isinstance(b, KiteProvider):
+                healthy, reason = b.healthy()
+        except Exception as exc:
+            healthy, reason = False, str(exc)[:120]
+        _health_cache.update(at=time.time(), healthy=healthy, reason=reason)
+        return {"healthy": healthy, "reason": reason}
+
+    @app.get("/api/broker/status")
+    def broker_status():
+        return _broker_health()
+
+    @app.post("/api/broker/reconnect")
+    async def broker_reconnect():
+        """Web-native daily re-auth: returns the Zerodha login URL for the
+        browser to open (credentials are typed on Zerodha's page, never
+        here), while a background task catches the redirect on :8722,
+        exchanges the token, and hot-swaps it into the live session."""
+        from shunkan.data.brokers import (
+            KiteProvider, get_broker, kite_catch_and_exchange, kite_login_url,
+            load_credentials,
+        )
+
+        if is_offline():
+            raise HTTPException(400, "offline mode")
+        creds = load_credentials().get("zerodha", {})
+        api_key, api_secret = creds.get("api_key"), creds.get("api_secret")
+        if not (api_key and api_secret):
+            raise HTTPException(400, "No saved Zerodha api_key/api_secret — run "
+                                     "the one-time `shunkan connect zerodha` setup first")
+
+        async def catch():
+            try:
+                token = await asyncio.to_thread(
+                    kite_catch_and_exchange, api_key, api_secret)
+                b = get_broker()
+                if isinstance(b, KiteProvider):
+                    b.set_token(api_key, token)
+                _broker_health(force=True)
+                await hub.broadcast({"type": "alert",
+                                     "message": "Kite reconnected — live REST restored"})
+            except Exception:
+                pass
+
+        asyncio.create_task(catch())
+        return {"login_url": kite_login_url(api_key),
+                "note": "complete the Zerodha login in the opened tab; "
+                        "the terminal captures the token automatically"}
+
+    @app.get("/api/status")
+    def status():
+        phase = session_phase()
+        broker = None
+        if not is_offline():
+            try:
+                from shunkan.data.brokers import get_broker
+
+                b = get_broker()
+                broker = type(b).__name__.removesuffix("Provider") if b else None
+            except Exception:
+                broker = None
+        health = _broker_health()
+        return {
+            "version": __version__,
+            "offline": is_offline(),
+            "broker": broker,
+            "broker_healthy": health["healthy"],
+            "broker_reason": health["reason"],
+            "session": {"phase": phase.phase, "open": phase.is_open,
+                        "description": phase.description},
+            "server_time": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @app.get("/api/pulse")
+    def pulse():
+        boards = {}
+        for key, board in (("india", INDIA_PULSE), ("global", GLOBAL_PULSE)):
+            try:
+                quotes = provider.quotes([t for _, t in board])
+            except DataError:
+                quotes = {}
+            boards[key] = [
+                {**(_quote_dict(quotes[t.upper()]) if t.upper() in quotes else {"symbol": t}),
+                 "name": name}  # board label wins over the quote's ticker name
+                for name, t in board
+            ]
+        return boards
+
+    @app.get("/api/sparks")
+    def sparks(symbols: str, period: str = "1mo"):
+        """Mini close-series for sparklines: {SYM: [closes…]} (rides the
+        provider's on-disk cache, so repeated pulse refreshes are free)."""
+        out: dict[str, list[float]] = {}
+        for sym in symbols.split(",")[:16]:
+            sym = sym.strip()
+            if not sym:
+                continue
+            try:
+                df = provider.history(sym, period=period, interval="1d")
+                out[sym.upper()] = [_clean(float(v)) for v in df["close"].tail(30)]
+            except DataError:
+                continue
+        return out
+
+    @app.get("/api/quotes")
+    def quotes(symbols: str):
+        syms = [s for s in symbols.split(",") if s.strip()]
+        try:
+            out = provider.quotes(syms)
+        except DataError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return {k: _quote_dict(v) for k, v in out.items()}
+
+    @app.get("/api/history/{symbol}")
+    def history(symbol: str, period: str = "6mo", interval: str = "1d"):
+        try:
+            df = provider.history(symbol, period=period, interval=interval)
+        except DataError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        ts = [int(t.timestamp()) for t in df.index]
+        return {
+            "symbol": symbol.upper(),
+            "candles": [
+                {"time": ts[i], "open": _clean(float(df['open'].iloc[i])),
+                 "high": _clean(float(df['high'].iloc[i])),
+                 "low": _clean(float(df['low'].iloc[i])),
+                 "close": _clean(float(df['close'].iloc[i]))}
+                for i in range(len(df))
+            ],
+            "volume": [
+                {"time": ts[i], "value": _clean(float(df['volume'].iloc[i])),
+                 "color": "rgba(63,185,80,0.45)" if df['close'].iloc[i] >= df['open'].iloc[i]
+                 else "rgba(248,81,73,0.45)"}
+                for i in range(len(df))
+            ],
+        }
+
+    # -- charting ------------------------------------------------------------
+
+    @app.get("/api/chart/catalog")
+    def chart_catalog():
+        """Indicator catalog powering the chart's Indicators menu."""
+        from shunkan.server.charts import CHART_INDICATORS
+
+        return {"indicators": CHART_INDICATORS}
+
+    @app.get("/api/chart/indicators/{symbol}")
+    def chart_indicators(symbol: str, period: str = "6mo", interval: str = "1d",
+                         specs: str = ""):
+        """Computed indicator series (overlays + oscillator panes) for a symbol,
+        each carrying a provenance record. `specs` is e.g. 'sma:20,rsi:14,macd'."""
+        from shunkan.server.charts import compute_indicator, parse_specs
+
+        parsed = parse_specs(specs)
+        if not parsed:
+            return {"symbol": symbol.upper(), "indicators": []}
+        try:
+            df = provider.history(symbol, period=period, interval=interval)
+        except DataError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        times = [int(t.timestamp()) for t in df.index]
+        source = "synthetic (offline)" if is_offline() else f"market data ({interval})"
+        out = [compute_indicator(df, kind, p, times, source) for kind, p in parsed]
+        return _clean({"symbol": symbol.upper(), "period": period,
+                       "interval": interval, "indicators": out})
+
+    @app.get("/api/chart/config/{symbol}")
+    def get_chart_config(symbol: str):
+        cfgs = _load_chart_configs()
+        return cfgs.get(symbol.upper(), {})
+
+    @app.post("/api/chart/config/{symbol}")
+    def save_chart_config(symbol: str, body: dict):
+        from shunkan.config import APP_DIR, ensure_dirs
+
+        ensure_dirs()
+        cfgs = _load_chart_configs()
+        cfgs[symbol.upper()] = body
+        (APP_DIR / "chart_configs.json").write_text(json.dumps(cfgs, indent=2))
+        return {"ok": True}
+
+    # -- derivatives ---------------------------------------------------------
+
+    @app.get("/api/chain/{symbol}")
+    def chain(symbol: str, expiry: str | None = None, strikes: int = 20):
+        """`expiry` (YYYY-MM-DD) picks a listed expiry; `strikes` bounds the
+        table to ATM±N rows. Analytics always run on the full chain."""
+        from shunkan.data.chains import get_chain
+        from shunkan.derivatives.chain import analyze_chain
+        from shunkan.store import chain_delta_oi, straddle_series
+
+        want = None
+        if expiry:
+            try:
+                want = datetime.strptime(expiry, "%Y-%m-%d").date()
+            except ValueError as exc:
+                raise HTTPException(
+                    400, f"expiry must be YYYY-MM-DD, got {expiry!r}") from exc
+        try:
+            # get_chain's TTL cache keys on the argument tuple, so the default
+            # path must stay a one-arg call or it misses every other caller's
+            # entry and re-fetches the same chain.
+            c = get_chain(symbol, want) if want else get_chain(symbol)
+            a = analyze_chain(c)
+        except (DataError, ValueError) as exc:
+            # A failed chain must say what it tried — the trail rides the error.
+            raise _chain_error(symbol, exc) from exc
+
+        # ΔOI: prefer locally stored snapshot basis (real, timestamped).
+        # Without a basis the UI shows "—", never a fabricated zero.
+        delta = None if c.is_model else chain_delta_oi(c)
+        if delta is None and not c.is_model:
+            # No basis for this series yet. The exchange's own settled day
+            # candles have one; fetching it costs ~19s of rate-limited calls,
+            # so it runs off the request path and lands on a later refresh.
+            _warm_delta_oi_basis(c)
+        has_native_delta = not c.is_model and bool(
+            np.any(c.call_oi_change) or np.any(c.put_oi_change))
+        rows = []
+        for i in range(len(c.strikes)):
+            d_call = d_put = None
+            if delta is not None:
+                d_call = _clean(float(delta["delta_call"][i]))
+                d_put = _clean(float(delta["delta_put"][i]))
+            elif has_native_delta:
+                d_call = float(c.call_oi_change[i])
+                d_put = float(c.put_oi_change[i])
+            rows.append({
+                "strike": float(c.strikes[i]),
+                "call": {"ltp": float(c.call_ltp[i]), "oi": float(c.call_oi[i]),
+                         "oi_change": d_call, "volume": float(c.call_volume[i]),
+                         "iv": _clean(float(c.call_iv[i]))},
+                "put": {"ltp": float(c.put_ltp[i]), "oi": float(c.put_oi[i]),
+                        "oi_change": d_put, "volume": float(c.put_volume[i]),
+                        "iv": _clean(float(c.put_iv[i]))},
+                "atm": i == c.atm_index,
+            })
+        delta_basis = (
+            "model chain — ΔOI not computed" if c.is_model
+            else delta["basis"] if delta is not None
+            else ("source-provided (NSE prev-day)" if has_native_delta
+                  else "no stored snapshot yet — capturing from today")
+        )
+
+        # Display window: ATM±N strikes. NSE lists 100+ strikes per expiry and
+        # the browser draws every one; the analytics above already ran on the
+        # full chain, so this bounds the table only.
+        rows_total = len(rows)
+        if strikes > 0:
+            atm_i = c.atm_index
+            rows = rows[max(atm_i - strikes, 0):atm_i + strikes + 1]
+
+        expiries = [str(e) for e in c.expiries] or [str(c.expiry)]
+        call_total, put_total = float(c.call_oi.sum()), float(c.put_oi.sum())
+        return _clean({
+            "symbol": c.symbol, "spot": c.spot, "expiry": str(c.expiry),
+            "expiries": expiries, "t_years": c.t_years,
+            # lot_size is null when no source could name the contract lot —
+            # the UI shows a dash and lot_size_source says why.
+            "lot_size": c.lot_size, "lot_size_source": c.lot_size_source,
+            "source": c.source,
+            "is_model": c.is_model,
+            "source_trail": c.source_trail, "rows": rows,
+            "rows_total": rows_total, "strike_window": strikes,
+            "delta_oi_basis": delta_basis,
+            # snapshots are expiry-tagged; mixing expiries would fake the line
+            "straddle_today": straddle_series(c.symbol, str(c.expiry)),
+            "analytics": {
+                "pcr_oi": a.pcr_oi, "pcr_volume": a.pcr_volume,
+                "max_pain": a.max_pain, "support": a.support,
+                "resistance": a.resistance, "atm_strike": a.atm_strike,
+                "atm_iv": a.atm_iv, "straddle_price": a.straddle_price,
+                "expected_move_pct": a.expected_move_pct,
+                "bias": a.bias, "bias_reason": a.bias_reason,
+                # synthetic.py plants the strikes this detector finds
+                # (see its `hot` rows at lines 72-75) — on a model chain it
+                # is pure fiction, so it never leaves the process.
+                "unusual": [] if c.is_model else a.unusual,
+            },
+            "prov": {
+                "pcr_oi": prov(
+                    "PCR = Σ put OI / Σ call OI",
+                    {"Σ put OI": (put_total, c.source), "Σ call OI": (call_total, c.source)},
+                    c.source,
+                    method="all strikes of the displayed expiry",
+                ),
+                "max_pain": prov(
+                    "argmin over strikes K of Σ[call OI·max(K−strike,0)] + Σ[put OI·max(strike−K,0)]",
+                    {"strikes": len(c.strikes), "expiry": str(c.expiry)},
+                    c.source,
+                    method="expiry level minimizing total option-buyer payoff",
+                    caveat="a positioning magnet hypothesis, not a forecast",
+                ),
+                "expected_move_pct": prov(
+                    "expected move = ATM straddle / spot",
+                    {"ATM straddle": (a.straddle_price, c.source),
+                     "spot": (c.spot, c.source),
+                     "ATM strike": a.atm_strike},
+                    c.source,
+                    method="the market's own price for a move in either direction by expiry",
+                ),
+                "atm_iv": prov(
+                    "mean(call IV, put IV) at ATM strike",
+                    {"ATM strike": a.atm_strike,
+                     "call IV": _clean(float(c.call_iv[c.atm_index])),
+                     "put IV": _clean(float(c.put_iv[c.atm_index]))},
+                    c.source,
+                    method="IVs solved from option prices via Black-Scholes (Newton + bisection)"
+                    if "Kite" in c.source else "IVs as provided by source",
+                ),
+                "bias": prov(
+                    "score = PCR vote (>1.2 bullish, <0.8 bearish) + max-pain drift vote (>±0.5%)",
+                    {"PCR": round(a.pcr_oi, 3),
+                     "max pain drift": f"{(a.max_pain - c.spot) / c.spot:+.2%}"},
+                    c.source,
+                    method=a.bias_reason,
+                    caveat="transparent rule-based read, not a trade signal",
+                ),
+                "delta_oi": prov(
+                    "ΔOI[strike] = OI_now − OI_basis",
+                    {"basis": delta_basis,
+                     "basis snapshot": delta["basis_ts"] if delta else "—"},
+                    "local chain store" if delta else c.source,
+                ),
+            },
+        })
+
+    @app.get("/api/payoff/{symbol}")
+    def payoff(symbol: str, strategy: str | None = None, legs: str | None = None,
+               width: int = 2):
+        from shunkan.data.chains import get_chain
+        from shunkan.derivatives import analyze_payoff, build_strategy, parse_custom_legs
+
+        try:
+            c = get_chain(symbol)
+            if legs:
+                a = analyze_payoff(c, parse_custom_legs(c, legs.split(",")), name="custom")
+            else:
+                a = build_strategy(c, strategy or "iron_condor", width=width)
+        except (DataError, ValueError, KeyError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        step = max(len(a.grid) // 240, 1)  # ~240 points is plenty for the chart
+        return _clean({
+            "symbol": a.symbol, "name": a.name, "spot": a.spot,
+            # lot_size is null when no source could name the contract lot —
+            # then every rupee figure below is per unit, and per_lot says so.
+            "lot_size": a.lot_size, "per_lot": a.lot_size is not None,
+            "expiry": str(c.expiry),
+            "source": c.source,
+            "legs": [leg.describe() for leg in a.legs],
+            "curve": [
+                {"x": float(a.grid[i]),
+                 "y": float(a.payoff_per_unit[i] * (a.lot_size or 1))}
+                for i in range(0, len(a.grid), step)
+            ],
+            "breakevens": a.breakevens,
+            "max_profit": None if a.max_profit == float("inf") else a.max_profit,
+            "max_loss": None if a.max_loss == float("-inf") else a.max_loss,
+            "unlimited_profit": a.max_profit == float("inf"),
+            "unlimited_loss": a.max_loss == float("-inf"),
+            "net_premium_lot": a.net_premium * (a.lot_size or 1),
+            "pop": a.pop, "greeks": a.greeks,
+            "prov": {
+                "pop": prov(
+                    "POP = P(payoff > 0) under lognormal terminal price",
+                    {"spot": (a.spot, c.source),
+                     "σ (ATM IV)": f"{_atm_iv_for_prov(c):.4f}",
+                     "T": f"{c.t_years * 365:.1f} days",
+                     "grid": f"{len(a.grid)} price points"},
+                    c.source,
+                    method="bin probabilities from the lognormal CDF summed over profitable price regions",
+                    caveat="MODEL probability, not market-implied; ignores smile/skew and early management",
+                ),
+                "greeks": prov(
+                    "Black-Scholes greeks per leg, summed (side-weighted), "
+                    + ("× lot size" if a.lot_size else "per unit (lot unknown)"),
+                    {"r": "6.5% (10y G-sec ballpark)",
+                     "IV per leg": "solved from that leg's market premium",
+                     "lot": c.lot_size or "unknown — figures are per unit"},
+                    c.source,
+                    caveat="European-exercise model; theta in ₹/calendar-day, vega per 1 vol point",
+                ),
+            },
+        })
+
+    @app.get("/api/iv/{symbol}")
+    def iv(symbol: str):
+        from shunkan.data.chains import get_chain
+        from shunkan.derivatives import analyze_vol
+        from shunkan.store import iv_rank_local
+
+        try:
+            c = get_chain(symbol)
+            hist = provider.history(symbol, period="1y", interval="1d")
+            r = analyze_vol(c, hist)
+        except (DataError, ValueError) as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+        rank = iv_rank_local(c.symbol, r.atm_iv) if not math.isnan(r.atm_iv) else {
+            "available": False, "days_captured": 0,
+            "days_required": 20, "note": "no ATM IV available",
+        }
+        hist_src = "Yahoo daily closes" if not is_offline() else "synthetic (offline)"
+        return _clean({
+            "symbol": r.symbol, "spot": r.spot, "expiry": str(c.expiry),
+            "atm_iv": r.atm_iv, "rv_cc_21": r.rv_cc_21, "rv_park_21": r.rv_park_21,
+            "iv_premium": r.iv_premium, "rv_percentile": r.rv_percentile,
+            "iv_rank_local": rank,
+            "cone": {str(d): list(v) for d, v in r.cone.items()},
+            "smile": [
+                {"strike": float(r.smile_strikes[i]),
+                 "call_iv": _clean(float(r.smile_call_iv[i])),
+                 "put_iv": _clean(float(r.smile_put_iv[i]))}
+                for i in range(len(r.smile_strikes))
+            ],
+            "notes": r.notes,
+            "prov": {
+                "rv_cc_21": prov(
+                    "σ_realized = std(ln(Pt/Pt−1), 21 bars) × √252",
+                    {"window": "21 trading days", "bars in history": len(hist)},
+                    hist_src,
+                    method="close-to-close estimator, sample std (ddof=1)",
+                ),
+                "rv_park_21": prov(
+                    "σ_park = √( mean(ln(H/L)², 21 bars) / (4·ln2) × 252 )",
+                    {"window": "21 trading days"},
+                    hist_src,
+                    method="Parkinson range estimator — uses intrabar high/low, ~5x more sample-efficient",
+                ),
+                "iv_premium": prov(
+                    "IV premium = ATM IV − realized σ (close-close, 21d)",
+                    {"ATM IV": f"{r.atm_iv:.4f}" if not math.isnan(r.atm_iv) else "—",
+                     "realized 21d": f"{r.rv_cc_21:.4f}" if not math.isnan(r.rv_cc_21) else "—"},
+                    f"{c.source} + {hist_src}",
+                    caveat="positive = options rich vs recent movement; says nothing about future realized",
+                ),
+                "rv_percentile": prov(
+                    "percentile of today's 21d realized vol within its own 1y distribution",
+                    {"observations": int(len(hist)) },
+                    hist_src,
+                    caveat="REALIZED-vol percentile — a stand-in until local IV history accumulates (see IV rank)",
+                ),
+                "iv_rank_local": prov(
+                    "rank = share of locally captured daily ATM-IV observations ≤ today's",
+                    {"days captured": rank.get("days_captured", 0),
+                     "days required": rank.get("days_required", 20),
+                     **({"window": f"{rank.get('first_day')} → {rank.get('last_day')}"}
+                        if rank.get("available") else {})},
+                    "local chain store (real captured snapshots only)",
+                    caveat="refuses to report below minimum history rather than fabricate a rank",
+                ),
+                "cone": prov(
+                    "band(d) = spot × exp(±n·σ·√(d/252)), n ∈ {1,2}",
+                    {"σ (ATM IV)": f"{r.atm_iv:.4f}" if not math.isnan(r.atm_iv) else "—",
+                     "spot": (r.spot, c.source)},
+                    c.source,
+                    caveat="lognormal model at a flat ATM vol — ignores smile/skew by construction",
+                ),
+            },
+        })
+
+    @app.get("/api/volume/{symbol}")
+    def volume(symbol: str, period: str = "6mo"):
+        from shunkan.analytics.volume import analyze_volume
+
+        try:
+            hist = provider.history(symbol, period=period, interval="1d")
+            r = analyze_volume(hist)
+        except (DataError, ValueError) as exc:
+            raise HTTPException(502, str(exc)) from exc
+        prof = r.profile
+        mids = 0.5 * (prof.bin_edges[:-1] + prof.bin_edges[1:])
+        return _clean({
+            "symbol": symbol.upper(),
+            "last_close": float(hist["close"].iloc[-1]),
+            "day_type": r.day_type, "surge_z": r.surge_z,
+            "surge_ratio": r.surge_ratio, "obv_divergence": r.obv_divergence,
+            "poc": prof.poc, "value_area": [prof.value_area_low, prof.value_area_high],
+            "profile": [
+                {"price": float(mids[i]), "volume": float(prof.volume_at_price[i])}
+                for i in range(len(mids))
+            ],
+            "notes": r.notes,
+            "prov": {
+                "surge_z": prov(
+                    "z = (V_today − mean(V, prior 20 bars)) / std(V, prior 20 bars)",
+                    {"today volume": float(hist["volume"].iloc[-1]),
+                     "window": "20 bars (excl. today)"},
+                    "Yahoo daily bars" if not is_offline() else "synthetic (offline)",
+                    caveat="zero when trailing variance is degenerate",
+                ),
+                "poc": prov(
+                    "price bin with max volume; each bar's volume spread across the bins its H–L range covers",
+                    {"bins": len(mids), "lookback": "120 bars",
+                     "value area": "smallest POC-centered region holding 70% of volume"},
+                    "Yahoo daily bars" if not is_offline() else "synthetic (offline)",
+                ),
+            },
+        })
+
+    # -- news -----------------------------------------------------------------
+
+    @app.get("/api/news")
+    def news(symbol: str | None = None, limit: int = 20):
+        from shunkan.intel import aggregate_bias, assess_impact, summarize
+        from shunkan.intel.feeds import fetch_news, symbol_news
+        from shunkan.intel.sentiment import score_sentiment_detailed, sentiment_label
+
+        try:
+            items = symbol_news(symbol, limit) if symbol else fetch_news(limit=limit)
+        except Exception as exc:
+            raise HTTPException(502, f"News fetch failed: {exc}") from exc
+        out = []
+        for item in items:
+            call = assess_impact(item)
+            summary = summarize(item.description or "", max_sentences=1)
+            detail = score_sentiment_detailed(f"{item.title}. {item.description}")
+            comp = call.components
+            out.append(_clean({
+                "title": item.title, "source": item.source, "link": item.link,
+                "published": item.published.isoformat() if item.published else None,
+                "age_minutes": round(item.age_hours * 60.0, 1),
+                "sentiment": item.sentiment,
+                "sentiment_label": sentiment_label(item.sentiment),
+                "summary": summary,
+                "impact": {
+                    "category": call.category, "direction": call.direction,
+                    "confidence": call.confidence, "horizon": call.horizon,
+                    "segment": call.segment, "magnitude": call.magnitude,
+                },
+                "prov": {
+                    "sentiment": prov(
+                        "lexicon hits with negation (×−0.8) and intensifiers (×1.5); score = Σw / hits^0.7 × 0.6, clamped [−1,1]",
+                        {"bullish terms": ", ".join(detail["pos_terms"][:6]) or "none",
+                         "bearish terms": ", ".join(detail["neg_terms"][:6]) or "none",
+                         "scored terms": detail["hits"]},
+                        f"{item.source} via Google News RSS",
+                        method="finance lexicon (Loughran-McDonald-style + India vocab); 'cut' is bullish only in rate context",
+                    ),
+                    "confidence": prov(
+                        comp.get("formula", ""),
+                        {"sentiment": comp.get("sentiment"),
+                         "category weight": (comp.get("category_weight"), f"taxonomy: {call.category}"),
+                         "equity-direction flip": comp.get("sentiment_flip"),
+                         "timing multiplier": (comp.get("timing_multiplier"), f"landed {call.phase} IST"),
+                         "strength": comp.get("strength")},
+                        "rule-based impact model",
+                        caveat="heuristic decision support, capped at 85% — markets routinely defy the obvious read",
+                    ),
+                },
+            }))
+        bias = aggregate_bias(items)
+        return {
+            "items": out,
+            "bias": _clean({
+                "score": bias.score, "label": bias.label,
+                "gap_call": bias.gap_call, "n_items": bias.n_items,
+                "prov": prov(
+                    "bias = Σ(direction·confidence·0.5^(age_h/6)) / Σ(confidence·0.5^(age_h/6))",
+                    {"headlines scored": bias.n_items,
+                     "recency decay": "6h half-life",
+                     "top drivers": "; ".join(bias.drivers[:2]) or "none"},
+                    "per-headline impact calls (each has its own ⓘ)",
+                    caveat="aggregate of heuristics; calibration tracking not yet implemented",
+                ),
+            }),
+            "feed_note": (
+                "Headlines via Google News RSS (India). Aggregator latency is "
+                "typically 5–15 min behind the original wire; ages shown use "
+                "publish time. Treat very fresh items as possibly already priced in."
+            ),
+        }
+
+    # -- backtesting ------------------------------------------------------------
+
+    @app.get("/api/strategies")
+    def strategies():
+        from shunkan.backtest import STRATEGIES
+
+        return {
+            name: {"description": s.description, "defaults": s.defaults,
+                   "param_grid": s.param_grid}
+            for name, s in sorted(STRATEGIES.items())
+        }
+
+    @app.post("/api/backtest")
+    def backtest(req: BacktestRequest):
+        from shunkan.backtest import (
+            BacktestConfig, get_strategy, monte_carlo, run_backtest, walk_forward,
+        )
+
+        try:
+            strat = get_strategy(req.strategy)
+            hist = provider.history(req.symbol, period=req.period, interval="1d")
+        except (DataError, KeyError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        params = {k: (int(v) if float(v) == int(v) else float(v)) for k, v in req.params.items()}
+
+        if req.mode == "walkforward":
+            wf = walk_forward(hist, strat, symbol=req.symbol)
+            return _clean({
+                "mode": "walkforward",
+                "windows": [
+                    {"test_start": str(w.test_start)[:10], "is_sharpe": w.is_sharpe,
+                     "oos_sharpe": w.oos_sharpe, "oos_return": w.oos_return,
+                     "params": w.best_params}
+                    for w in wf.windows
+                ],
+                "oos_return": wf.oos_return, "oos_sharpe": wf.oos_sharpe,
+                "oos_max_dd": wf.oos_max_dd, "efficiency": wf.efficiency,
+                "param_stability": wf.param_stability, "verdict": wf.verdict,
+                "equity": _series(wf.oos_equity / wf.oos_equity.iloc[0])
+                if wf.oos_equity is not None else [],
+            })
+
+        bt = run_backtest(hist, strat.signal(hist, **params), BacktestConfig(),
+                          symbol=req.symbol, strategy_name=strat.name,
+                          params={**strat.defaults, **params})
+        if req.mode == "montecarlo":
+            mc = monte_carlo(bt.returns)
+            n = mc.n_bars
+            idx = bt.equity.index
+            return _clean({
+                "mode": "montecarlo", "n_paths": mc.n_paths,
+                "terminal": {"p5": mc.terminal_p5, "p50": mc.terminal_p50,
+                             "p95": mc.terminal_p95},
+                "prob_loss": mc.prob_loss, "max_dd_median": mc.max_dd_median,
+                "max_dd_p95": mc.max_dd_p95, "verdict": mc.verdict(),
+                "bands": {
+                    "p5": _band(idx, mc.envelope_p5),
+                    "p50": _band(idx, mc.envelope_p50),
+                    "p95": _band(idx, mc.envelope_p95),
+                    "actual": _series(bt.equity / bt.initial_cash),
+                },
+            })
+
+        bench = run_backtest(hist, get_strategy("buy_hold").signal(hist),
+                             BacktestConfig(), symbol=req.symbol)
+        return _clean({
+            "mode": "backtest",
+            "metrics": bt.metrics(),
+            "summary": bt.summary_rows(),
+            "bench_return": bench.total_return,
+            "equity": _series(bt.equity / bt.initial_cash),
+            "bench_equity": _series(bench.equity / bench.initial_cash),
+        })
+
+    @app.get("/api/builder/indicators")
+    def builder_indicators():
+        """Catalog powering the visual builder UI — indicators, operators, and
+        the SL/TP and timeframe choices. Shared source of truth with the engine."""
+        from shunkan.backtest import INDICATORS, OPERATORS
+        from shunkan.data.provider import VALID_INTERVALS
+
+        return {
+            "indicators": INDICATORS,
+            "operators": OPERATORS,
+            "sl_tp_modes": ["none", "percent", "pips", "atr"],
+            "intervals": VALID_INTERVALS,
+        }
+
+    @app.post("/api/backtest/build")
+    def backtest_build(req: BuilderRequest):
+        from shunkan.backtest import ExecConfig, RuleSpec, compile_spec, simulate
+        from shunkan.data.provider import VALID_INTERVALS
+
+        if req.interval not in VALID_INTERVALS:
+            raise HTTPException(400, f"interval must be one of {VALID_INTERVALS}")
+        try:
+            spec = RuleSpec.from_dict(req.spec)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(400, f"invalid strategy: {exc}") from exc
+        try:
+            hist = provider.history(req.symbol, period=req.period, interval=req.interval)
+        except DataError as exc:
+            # No-fake-numbers: refuse rather than synthesize unavailable intraday data.
+            raise HTTPException(502, str(exc)) from exc
+        if len(hist) < 30:
+            raise HTTPException(
+                400,
+                f"only {len(hist)} bars for {req.symbol} at {req.interval} — too few to "
+                "backtest; widen the period or use a coarser timeframe",
+            )
+
+        cfg = ExecConfig(
+            initial_cash=req.initial_cash, commission=req.commission, slippage=req.slippage,
+            sl_mode=req.sl_mode, sl_value=req.sl_value, tp_mode=req.tp_mode,
+            tp_value=req.tp_value, trailing=req.trailing, atr_period=req.atr_period,
+            pip_size=_pip_size(req.symbol), session_start=req.session_start,
+            session_end=req.session_end, cooldown_bars=req.cooldown_bars,
+            atr_min=req.atr_min, atr_max=req.atr_max, allow_short=req.allow_short,
+            params={"interval": req.interval, "rule": spec.describe()},
+        )
+        sig = compile_spec(hist, spec)
+        bt = simulate(hist, sig, cfg, symbol=req.symbol.upper())
+
+        close = hist[[c for c in hist.columns if c.lower() == "close"][0]].astype(float)
+        bench_curve = close / float(close.iloc[0])
+        risk = _exec_summary(cfg)
+        return _clean({
+            "mode": "builder",
+            "symbol": req.symbol.upper(),
+            "interval": req.interval,
+            "bars": len(hist),
+            "offline": is_offline(),
+            "rule": spec.describe(),
+            "metrics": bt.metrics(),
+            "summary": bt.summary_rows(),
+            "bench_return": float(bench_curve.iloc[-1] - 1.0),
+            "equity": _series(bt.equity / bt.initial_cash),
+            "bench_equity": _series(bench_curve),
+            "trades": [
+                {"entry_time": t.entry_time.isoformat(), "exit_time": t.exit_time.isoformat(),
+                 "direction": t.direction, "entry_price": t.entry_price,
+                 "exit_price": t.exit_price, "return_pct": t.return_pct,
+                 "bars_held": t.bars_held, "exit_reason": t.exit_reason}
+                for t in bt.trades
+            ],
+            "exit_breakdown": _exit_breakdown(bt.trades),
+            "data_note": (
+                "Synthetic offline data — set SHUNKAN_OFFLINE=0 for real history."
+                if is_offline() else
+                f"{len(hist)} {req.interval} bars of real history."
+            ),
+            "prov": {
+                "execution": prov(
+                    "next-bar-open fills; intrabar stop/target from bar high/low; "
+                    "stop assumed before target when a bar spans both",
+                    {"stop": risk["stop"], "target": risk["target"],
+                     "trailing": cfg.trailing, "cost/side": f"{(cfg.commission + cfg.slippage):.4%}",
+                     "filters": risk["filters"]},
+                    "Shunkan event-driven simulator",
+                    method="one-bar signal delay avoids look-ahead; equity marks to close each bar",
+                    caveat="fully-invested per position (no leverage/lot sizing); fills assume "
+                    "your size doesn't move the market",
+                ),
+                "metrics": prov(
+                    "Sharpe/Sortino annualised from per-bar returns; profit factor & win rate "
+                    "from realised round trips",
+                    {"trades": len(bt.trades), "bars": len(hist),
+                     "periods/yr": "252 (bar-count based)"},
+                    "Shunkan stats on the simulated equity curve",
+                    caveat="intraday Sharpe annualised on a 252 bar-per-year basis is approximate",
+                ),
+            },
+        })
+
+    # -- quant lab 3d ------------------------------------------------------------
+
+    @app.get("/api/viz/surface/{symbol}")
+    def viz_surface(symbol: str):
+        from shunkan.analytics.viz import iv_surface
+        from shunkan.data.chains import get_chain
+
+        try:
+            c = get_chain(symbol)
+            s = iv_surface(c)
+        except (DataError, ValueError) as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return _clean({
+            "symbol": s.symbol, "spot": s.spot, "source": s.source,
+            "strikes": s.strikes.tolist(), "days": s.days.tolist(),
+            "iv": s.iv.tolist(), "atm_iv": s.atm_iv,
+            "chain_days": s.chain_days, "market_row": s.market_row,
+            "elapsed_ms": s.elapsed_ms,
+            "prov": {
+                "surface": prov(
+                    "IV(K,T) = ATM_IV + (smile(K) − ATM_IV) · √(T_chain / T)",
+                    {"ATM IV": (f"{s.atm_iv:.1%}", s.source),
+                     "smile strikes": len(s.strikes),
+                     "market expiry (days)": round(s.chain_days, 1)},
+                    s.source,
+                    method="the smile at the chain's own expiry is market data (IVs "
+                    "solved from traded premiums); other maturities damp the smile's "
+                    "deviation from ATM by √(T_chain/T) — sticky-moneyness flattening",
+                    caveat="only the highlighted T_chain slice is market data; other "
+                    "rows are a documented model extension, not quotes",
+                ),
+            },
+        })
+
+    @app.get("/api/viz/greeks/{symbol}")
+    def viz_greeks(symbol: str, greek: str = "gamma", side: str = "call"):
+        from shunkan.analytics.viz import greeks_surface
+        from shunkan.data.chains import get_chain
+        from shunkan.derivatives.chain import analyze_chain
+
+        try:
+            c = get_chain(symbol)
+            a = analyze_chain(c)
+            g = greeks_surface(c.spot, a.atm_iv, greek=greek,
+                               is_call=(side != "put"))
+        except (DataError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _clean({
+            "symbol": c.symbol, "greek": g.greek, "side": side,
+            "spot": g.spot, "sigma": g.sigma, "source": c.source,
+            "strikes": g.strikes.tolist(), "days": g.days.tolist(),
+            "values": g.values.tolist(), "elapsed_ms": g.elapsed_ms,
+            "prov": {
+                "surface": prov(
+                    f"Black-Scholes {g.greek}(K, T) at live spot and ATM IV",
+                    {"spot": (g.spot, c.source),
+                     "ATM IV": (f"{g.sigma:.1%}", c.source),
+                     "r": "6.5% (Indian risk-free ballpark)"},
+                    c.source,
+                    method="one broadcast bs_greeks call over the strike × maturity "
+                    "meshgrid; theta per calendar day, vega per vol point",
+                    caveat="model surface at a single flat IV — real gamma/vega "
+                    "concentrations shift with the smile",
+                ),
+            },
+        })
+
+    @app.get("/api/viz/montecarlo/{symbol}")
+    def viz_montecarlo(symbol: str, horizon: int = 60, paths: int = 2000):
+        from shunkan.analytics.viz import price_fan
+
+        horizon = max(10, min(horizon, 250))
+        paths = max(200, min(paths, 5000))
+        try:
+            hist = provider.history(symbol, period="2y", interval="1d")
+            spot = float(hist["Close"].iloc[-1]) if "Close" in hist.columns \
+                else float(hist["close"].iloc[-1])
+            f = price_fan(hist, spot, symbol=symbol,
+                          horizon_days=horizon, n_paths=paths)
+        except (DataError, ValueError, KeyError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _clean({
+            "symbol": f.symbol, "spot": f.spot, "horizon_days": f.horizon_days,
+            "n_paths": f.n_paths, "hist_bars": f.hist_bars,
+            "days": f.days.tolist(),
+            "paths": f.display_paths.tolist(),
+            "envelope": {k: v.tolist() for k, v in f.envelope.items()},
+            "terminal_bins": f.terminal_bins.tolist(),
+            "terminal_freq": f.terminal_freq.tolist(),
+            "prob_up": f.prob_up, "elapsed_ms": f.elapsed_ms,
+            "prov": {
+                "fan": prov(
+                    "block bootstrap of the instrument's own daily returns",
+                    {"paths": f.n_paths, "block size": f.block_size,
+                     "history bars": (f.hist_bars, "2y daily closes"),
+                     "anchor spot": f.spot},
+                    "resampled real return history",
+                    method="contiguous return blocks preserve fat tails and "
+                    "short-range autocorrelation; no normality assumed",
+                    caveat="resampling the past is not a forecast — regime "
+                    "changes are exactly what it cannot see",
+                ),
+            },
+        })
+
+    @app.get("/api/sessions")
+    def sessions():
+        from shunkan.markets import world_sessions
+
+        return {"exchanges": world_sessions(),
+                "caveat": "regular cash hours with lunch breaks; exchange "
+                          "holidays are not modeled"}
+
+    def _hist(symbol: str, period: str = "1y", interval: str = "1d",
+              start: str | None = None, end: str | None = None):
+        """History with optional exact date window — the researcher's knob.
+        start/end slice a period=max fetch, so any provider supports it."""
+        if not (start or end):
+            return provider.history(symbol, period=period, interval=interval)
+        h = provider.history(symbol, period="max", interval=interval)
+        idx = h.index.tz_localize(None) if getattr(h.index, "tz", None) is not None \
+            else h.index
+        mask = np.ones(len(h), dtype=bool)
+        if start:
+            mask &= np.asarray(idx >= pd.Timestamp(start))
+        if end:
+            mask &= np.asarray(idx <= pd.Timestamp(end))
+        h = h.loc[mask]
+        if len(h) < 30:
+            raise DataError(f"Only {len(h)} bars for {symbol} in "
+                            f"[{start or 'begin'} … {end or 'now'}] — widen the window")
+        return h
+
+    def _universe_closes(universe: str, period: str, cap: int = 12,
+                         start: str | None = None, end: str | None = None):
+        from shunkan.screener import UNIVERSES
+
+        base = {
+            "indices": ["NIFTY", "BANKNIFTY", "SENSEX", "INDIAVIX", "USDINR",
+                        "^GSPC", "^IXIC", "^N225", "^HSI", "GC=F", "BZ=F"],
+        }
+        symbols = base.get(universe) or UNIVERSES.get(universe)
+        if not symbols:
+            raise HTTPException(400, f"Unknown universe '{universe}'. "
+                                f"Available: indices, {', '.join(UNIVERSES)}")
+        closes, failed = {}, []
+        for s in symbols[:cap]:  # keep the fetch fan-out bounded
+            try:
+                h = _hist(s, period=period, start=start, end=end)
+                col = "Close" if "Close" in h.columns else "close"
+                closes[s] = h[col].astype(float)
+            except (DataError, KeyError, ValueError):
+                failed.append(s)
+        return closes, failed
+
+    @app.get("/api/viz/correlation")
+    def viz_correlation(universe: str = "indices", period: str = "6mo",
+                        start: str | None = None, end: str | None = None):
+        from shunkan.analytics.viz import correlation_matrix
+
+        closes, failed = _universe_closes(universe, period, start=start, end=end)
+        try:
+            r = correlation_matrix(closes)
+        except ValueError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return _clean({
+            "universe": universe, "period": period,
+            "symbols": r.symbols, "matrix": r.matrix.tolist(),
+            "n_obs": r.n_obs, "avg_corr": r.avg_corr,
+            "top_pairs": [{"a": a, "b": b, "corr": c} for a, b, c in r.top_pairs],
+            "hedge_pairs": [{"a": a, "b": b, "corr": c} for a, b, c in r.hedge_pairs],
+            "dropped": r.dropped + failed, "elapsed_ms": r.elapsed_ms,
+            "prov": {
+                "matrix": prov(
+                    "Pearson correlation of overlapping daily close-to-close returns",
+                    {"symbols": len(r.symbols), "overlapping days": r.n_obs,
+                     "period": period,
+                     "dropped (thin data)": ", ".join(r.dropped + failed) or "none"},
+                    "daily closes via the active data provider",
+                    method="rows with any missing return are excluded pairwise-"
+                    "consistently (common date range)",
+                    caveat="correlation is regime-dependent — a 6-month number "
+                    "says nothing about the next crisis day",
+                ),
+            },
+        })
+
+    @app.get("/api/viz/var")
+    def viz_var(universe: str = "indices", period: str = "1y",
+                start: str | None = None, end: str | None = None):
+        from shunkan.analytics.viz import var_analysis
+
+        closes, failed = _universe_closes(universe, period, start=start, end=end)
+        try:
+            r = var_analysis(closes)
+        except ValueError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return _clean({
+            "universe": universe, "period": period, "symbols": r.symbols,
+            "horizons": r.horizons.tolist(),
+            "var_curve": r.var_curve.tolist(), "es_curve": r.es_curve.tolist(),
+            "p95_curve": r.p95_curve.tolist(),
+            "surface_bins": r.surface_bins.tolist(),
+            "surface": r.surface.tolist(),
+            "alpha": r.alpha, "n_obs": r.n_obs, "n_paths": r.n_paths,
+            "failed": failed, "elapsed_ms": r.elapsed_ms,
+            "prov": {
+                "var": prov(
+                    f"VaR({r.alpha:.0%}) = −P{r.alpha * 100:.0f} of bootstrapped "
+                    "basket P&L; ES = mean loss beyond VaR",
+                    {"basket": f"equal-weight {len(r.symbols)} symbols",
+                     "paths": r.n_paths, "block size": r.block_size,
+                     "overlapping days": r.n_obs},
+                    "block bootstrap of the basket's own joint return history",
+                    method="the basket series is formed before resampling, so "
+                    "cross-correlation between names is embedded in every draw",
+                    caveat="history-bounded: a loss larger than anything in the "
+                    "sample window cannot appear in the distribution",
+                ),
+            },
+        })
+
+    @app.get("/api/viz/frontier")
+    def viz_frontier(universe: str = "nifty50", period: str = "1y",
+                     start: str | None = None, end: str | None = None):
+        from shunkan.analytics.viz import efficient_frontier
+
+        closes, failed = _universe_closes(universe, period, start=start, end=end)
+        try:
+            r = efficient_frontier(closes)
+        except ValueError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return _clean({
+            "universe": universe, "period": period, "symbols": r.symbols,
+            "points": r.points.tolist(),
+            "max_sharpe": r.max_sharpe, "min_vol": r.min_vol,
+            "rf": r.rf, "n_portfolios": r.n_portfolios, "n_obs": r.n_obs,
+            "failed": failed, "elapsed_ms": r.elapsed_ms,
+            "prov": {
+                "frontier": prov(
+                    "Sharpe = (w·μ − rf) / √(wᵀΣw), μ and Σ annualized ×252",
+                    {"portfolios": r.n_portfolios,
+                     "symbols": len(r.symbols), "rf": f"{r.rf:.1%}",
+                     "overlapping days": r.n_obs},
+                    "random long-only Dirichlet portfolios on shared-calendar returns",
+                    method="one matrix pass over all portfolios; no optimizer, "
+                    "the hull of the cloud IS the attainable frontier",
+                    caveat="μ estimated from one year of history is the noisiest "
+                    "input in finance — weights are illustrative, not advice",
+                ),
+            },
+        })
+
+    @app.get("/api/brief/{symbol}")
+    def brief(symbol: str):
+        """Morning brief — one call composing the whole research loop:
+        cues → chain positioning → vol setup → quant reads → news, plus a
+        transparent vote table. Every section names its source; degraded
+        sources degrade the vote's weight visibly, never silently."""
+        from shunkan.analytics.models import attention_analogs, kalman_trend
+        from shunkan.analytics.viz import price_fan
+        from shunkan.data.chains import get_chain
+        from shunkan.derivatives.chain import analyze_chain
+        from shunkan.derivatives.ivx import analyze_vol
+        from shunkan.intel import aggregate_bias
+        from shunkan.intel.feeds import fetch_news
+
+        sym = symbol.upper()
+        votes: list[dict] = []
+
+        def vote(name, direction, why, flag=""):
+            votes.append({"name": name, "dir": direction, "why": why, "flag": flag})
+
+        out: dict = {"symbol": sym,
+                     "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+        # -- global cues -----------------------------------------------------
+        cue_syms = ["^GSPC", "^IXIC", "INDIAVIX", "USDINR", "GC=F", "BZ=F", "^TNX"]
+        cues = {}
+        try:
+            for s, q in provider.quotes([sym] + cue_syms).items():
+                cues[s] = {"price": q.price, "change_pct": q.change_pct}
+        except DataError:
+            pass
+        out["cues"] = cues
+        us = [cues[s]["change_pct"] for s in ("^GSPC", "^IXIC")
+              if cues.get(s, {}).get("change_pct") is not None]
+        if us:
+            avg = sum(us) / len(us)
+            d = "bullish" if avg > 0.003 else "bearish" if avg < -0.003 else "neutral"
+            vote("global cues", d,
+                 f"S&P/NASDAQ averaged {avg * 100:+.2f}% after our close — "
+                 "overnight gap pressure" if abs(avg) > 0.003 else
+                 f"US flat ({avg * 100:+.2f}%) — no overnight gap pressure")
+
+        # -- chain positioning + vol setup ----------------------------------
+        hist = None
+        try:
+            hist = provider.history(sym, period="1y", interval="1d")
+        except DataError:
+            pass
+        try:
+            c = get_chain(sym)
+            a = analyze_chain(c)
+            model_oi = c.is_model
+            out["positioning"] = {
+                "source": c.source, "trail": c.source_trail, "model_oi": model_oi,
+                "expiry": str(c.expiry), "spot": c.spot,
+                "pcr": a.pcr_oi, "max_pain": a.max_pain,
+                "support": a.support, "resistance": a.resistance,
+                "bias": a.bias, "bias_reason": a.bias_reason,
+                "straddle": a.straddle_price,
+                "expected_move_pct": a.expected_move_pct,
+            }
+            vote("positioning", a.bias, a.bias_reason,
+                 flag="MODEL OI — verify on the 09:20 live chain" if model_oi else "")
+            if hist is not None:
+                v = analyze_vol(c, hist)
+                s1 = a.atm_iv / math.sqrt(252.0) if a.atm_iv else float("nan")
+                out["vol"] = {
+                    "atm_iv": v.atm_iv, "rv_cc_21": v.rv_cc_21,
+                    "rv_park_21": v.rv_park_21,
+                    "iv_premium": v.atm_iv - v.rv_cc_21
+                    if not (math.isnan(v.atm_iv) or math.isnan(v.rv_cc_21)) else None,
+                    "band_1d": [c.spot * (1 - s1), c.spot * (1 + s1)]
+                    if not math.isnan(s1) else None,
+                    "iv_source": c.source,
+                }
+        except (DataError, ValueError) as exc:
+            out["positioning"] = {"error": str(exc)}
+
+        # -- quant reads (all real price history) ---------------------------
+        if hist is not None:
+            col = "Close" if "Close" in hist.columns else "close"
+            closes = hist[col].to_numpy()
+            try:
+                k = kalman_trend(closes)
+                ann = k.slope[-1] * 252.0
+                d = "bullish" if ann > 0.03 else "bearish" if ann < -0.03 else "neutral"
+                vote("kalman trend", d,
+                     f"filtered drift {ann * 100:+.1f}%/yr, last surprise z {k.last_z:+.2f}")
+                out["kalman"] = {"trend_ann": ann, "last_z": k.last_z}
+            except ValueError:
+                pass
+            try:
+                f = price_fan(hist, float(closes[-1]), symbol=sym,
+                              horizon_days=5, n_paths=2000)
+                d = "bullish" if f.prob_up > 0.55 else "bearish" if f.prob_up < 0.45 else "neutral"
+                vote("5d bootstrap fan", d,
+                     f"P(up) {f.prob_up * 100:.0f}% over 2000 resampled histories; "
+                     f"P5 {f.envelope['p5'][-1]:.0f} / P95 {f.envelope['p95'][-1]:.0f}")
+                out["fan"] = {"prob_up": f.prob_up,
+                              "p5": float(f.envelope["p5"][-1]),
+                              "p50": float(f.envelope["p50"][-1]),
+                              "p95": float(f.envelope["p95"][-1])}
+            except ValueError:
+                pass
+            try:
+                at = attention_analogs(hist, window=90)
+                m = at.analog_fwd_mean
+                d = "bullish" if m > 0.005 else "bearish" if m < -0.005 else "neutral"
+                vote("analog days", d,
+                     f"top-{len(at.top_analogs)} similar days averaged {m * 100:+.2f}% "
+                     f"over the next {at.fwd_days} sessions",
+                     flag="untrained similarity — setups rhyme, outcomes may not")
+                out["analogs"] = {"fwd_mean": m,
+                                  "top": at.top_analogs[:3]}
+            except ValueError:
+                pass
+
+        # -- news ------------------------------------------------------------
+        try:
+            items = fetch_news(limit=12)
+            b = aggregate_bias(items)
+            lbl = str(b.label).lower()
+            news_dir = ("bullish" if "bull" in lbl
+                        else "bearish" if "bear" in lbl else "neutral")
+            vote("news bias", news_dir,
+                 f"'{b.label}' across {getattr(b, 'n_items', len(items))} headlines, "
+                 "6h half-life decay",
+                 flag="RSS lags 5–15 min and predates late US moves")
+            out["news"] = {"score": b.score, "label": b.label,
+                           "gap_call": getattr(b, "gap_call", None),
+                           "top_titles": [i.title[:90] for i in items[:4]]}
+        except Exception:
+            out["news"] = None
+
+        # -- net read: count the votes, say when they disagree ---------------
+        score = sum(1 if v["dir"] == "bullish" else -1 if v["dir"] == "bearish" else 0
+                    for v in votes)
+        n_dir = sum(1 for v in votes if v["dir"] != "neutral")
+        disagree = (any(v["dir"] == "bullish" for v in votes)
+                    and any(v["dir"] == "bearish" for v in votes))
+        if n_dir == 0:
+            label = "no signal — everything reads neutral"
+        elif disagree and abs(score) <= 1:
+            label = "no directional edge — signals conflict; trade the range/levels, not a view"
+        elif score >= 2:
+            label = "signals lean bullish — but size for the bear case anyway"
+        elif score <= -2:
+            label = "signals lean bearish — but size for the bull case anyway"
+        else:
+            label = "weak lean only — one contrary print flips it"
+        out["votes"] = votes
+        out["net"] = {"score": score, "label": label,
+                      "prov": prov(
+                          "net = Σ votes (bullish +1, bearish −1, neutral 0)",
+                          {"votes cast": len(votes), "directional": n_dir,
+                           "disagreement": str(disagree)},
+                          "the sections above — each vote names its own source",
+                          caveat="a vote count is a summary, not a signal; flagged "
+                          "votes (model OI, stale RSS) deserve less weight than "
+                          "the count implies. Decision support, not advice.",
+                      )}
+        return _clean(out)
+
+    @app.get("/api/viz/heston/{symbol}")
+    def viz_heston(symbol: str, horizon: int = 120, kappa: float = 2.0,
+                   xi: float = 0.6, rho: float = -0.7):
+        from shunkan.analytics.models import heston_fan
+        from shunkan.data.chains import get_chain
+        from shunkan.derivatives.chain import analyze_chain
+
+        try:
+            c = get_chain(symbol)
+            a = analyze_chain(c)
+            h = heston_fan(c.spot, a.atm_iv, horizon=max(20, min(horizon, 250)),
+                           kappa=max(0.1, min(kappa, 10.0)),
+                           xi=max(0.01, min(xi, 3.0)),
+                           rho=max(-0.99, min(rho, 0.99)))
+        except (DataError, ValueError) as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return _clean({
+            "symbol": c.symbol, "spot": h.spot, "source": c.source,
+            "v0": h.v0, "kappa": h.kappa, "theta": h.theta, "xi": h.xi,
+            "rho": h.rho, "feller_ok": h.feller_ok,
+            "horizon_days": h.horizon, "n_paths": h.n_paths,
+            "days": h.days.tolist(), "paths": h.display_paths.tolist(),
+            "vols": h.display_vols.tolist(),
+            "envelope": {k: v.tolist() for k, v in h.envelope.items()},
+            "terminal_bins": h.terminal_bins.tolist(),
+            "terminal_freq": h.terminal_freq.tolist(),
+            "prob_up": h.prob_up, "elapsed_ms": h.elapsed_ms,
+            "prov": {
+                "fan": prov(
+                    "dS = μS dt + √V S dW₁ ; dV = κ(θ−V)dt + ξ√V dW₂ ; corr(dW₁,dW₂)=ρ",
+                    {"v0 = ATM_IV²": (f"{h.v0:.4f}", f"live ATM IV {a.atm_iv:.1%} · {c.source}"),
+                     "κ / θ / ξ / ρ": f"{h.kappa} / {h.theta:.3f} / {h.xi} / {h.rho}",
+                     "Feller 2κθ ≥ ξ²": "satisfied" if h.feller_ok else "VIOLATED"},
+                    c.source,
+                    method="full-truncation Euler, 1/252 steps; v0 anchored to the "
+                    "live chain, other parameters are user-set model inputs",
+                    caveat="an uncalibrated Heston is a scenario machine, not a "
+                    "forecast — fit κ/θ/ξ/ρ to the smile before quoting it",
+                ),
+            },
+        })
+
+    @app.get("/api/viz/kalman/{symbol}")
+    def viz_kalman(symbol: str, period: str = "2y", q: float = 1e-5,
+                   r: float = 1e-2, start: str | None = None, end: str | None = None):
+        from shunkan.analytics.models import kalman_trend
+
+        try:
+            hist = _hist(symbol, period=period, start=start, end=end)
+            col = "Close" if "Close" in hist.columns else "close"
+            k = kalman_trend(hist[col].to_numpy(),
+                             q=max(1e-9, min(q, 1.0)), r=max(1e-6, min(r, 1.0)))
+        except (DataError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        times = [str(t)[:10] for t in hist.index]
+        return _clean({
+            "symbol": symbol.upper(), "q": k.q, "r": k.r,
+            "times": times,
+            "close": hist[col].astype(float).tolist(),
+            "level": k.level.tolist(), "slope": k.slope.tolist(),
+            "band": k.band.tolist(), "innovation_z": k.innovation_z.tolist(),
+            "last_z": k.last_z, "bars": len(times), "elapsed_ms": k.elapsed_ms,
+            "prov": {
+                "filter": prov(
+                    "state [level, slope] on log price; F=[[1,1],[0,1]], observe level",
+                    {"process noise q": k.q, "measurement noise r": k.r,
+                     "bars": len(times)},
+                    f"{period} daily closes via the active provider",
+                    method="innovation z = (close − predicted)/√S flags genuine "
+                    "surprises; band = ±2σ of level uncertainty",
+                    caveat="a filter smooths the past — it does not know the future",
+                ),
+            },
+        })
+
+    @app.get("/api/viz/attention/{symbol}")
+    def viz_attention(symbol: str, period: str = "2y", window: int = 90,
+                      start: str | None = None, end: str | None = None):
+        from shunkan.analytics.models import attention_analogs
+
+        try:
+            hist = _hist(symbol, period=period, start=start, end=end)
+            a = attention_analogs(hist, window=max(30, min(window, 150)))
+        except (DataError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _clean({
+            "symbol": symbol.upper(), "window": a.window,
+            "dates": a.dates, "matrix": a.matrix.tolist(),
+            "top_analogs": a.top_analogs, "analog_fwd_mean": a.analog_fwd_mean,
+            "fwd_days": a.fwd_days, "elapsed_ms": a.elapsed_ms,
+            "prov": {
+                "attention": prov(
+                    "A = softmax(X·Xᵀ/√d) over daily state embeddings "
+                    "[ret1, ret5, vol10, RSI, volume-z]",
+                    {"window": a.window, "embedding dim": 5,
+                     "analog forward window": f"{a.fwd_days} sessions"},
+                    "daily closes via the active provider",
+                    method="UNTRAINED kernel attention — state similarity, no "
+                    "learned weights; the last row = which past days look like today",
+                    caveat="analog-days research, not prediction: similar setups "
+                    "can resolve in opposite directions",
+                ),
+            },
+        })
+
+    # -- bulk export + local archive --------------------------------------------
+
+    @app.get("/api/export/history")
+    def export_history(symbols: str, period: str = "1y", interval: str = "1d",
+                       fmt: str = "csv"):
+        """Long-format OHLCV export for up to 20 symbols. The source column
+        names the provider per row — synthetic offline data is labeled as
+        such, never disguised as market data."""
+        import io
+
+        from fastapi.responses import Response
+
+        syms = [s.strip().upper() for s in symbols.split(",") if s.strip()][:20]
+        if not syms:
+            raise HTTPException(400, "symbols required, comma-separated")
+        if fmt not in ("csv", "parquet"):
+            raise HTTPException(400, "fmt must be csv or parquet")
+        src_name = "synthetic-demo" if is_offline() else (
+            getattr(provider, "broker_name", "") or "yahoo/nse")
+
+        frames, failed = [], []
+        for s in syms:
+            try:
+                h = provider.history(s, period=period, interval=interval)
+                h = h.rename(columns={c: c.lower() for c in h.columns})
+                keep = [c for c in ("open", "high", "low", "close", "volume")
+                        if c in h.columns]
+                df = h[keep].copy()
+                df.insert(0, "timestamp", h.index)
+                df.insert(0, "symbol", s)
+                df["source"] = src_name
+                frames.append(df)
+            except (DataError, KeyError, ValueError):
+                failed.append(s)
+        if not frames:
+            raise HTTPException(502, f"No data for any of: {', '.join(syms)}")
+        out = __import__("pandas").concat(frames, ignore_index=True)
+
+        stamp_str = datetime.now().strftime("%Y%m%d-%H%M")
+        name = f"shunkan-{period}-{interval}-{stamp_str}"
+        if fmt == "parquet":
+            buf = io.BytesIO()
+            out.to_parquet(buf, index=False)
+            return Response(buf.getvalue(), media_type="application/octet-stream",
+                            headers={"Content-Disposition":
+                                     f'attachment; filename="{name}.parquet"',
+                                     "X-Failed-Symbols": ",".join(failed)})
+        csv = out.to_csv(index=False)
+        return Response(csv, media_type="text/csv",
+                        headers={"Content-Disposition":
+                                 f'attachment; filename="{name}.csv"',
+                                 "X-Failed-Symbols": ",".join(failed)})
+
+    @app.get("/api/store/archive")
+    def archive_stats():
+        from shunkan.store import HistoryArchive
+
+        return _clean(HistoryArchive().stats())
+
+    backfill_status = {"running": False, "done": 0, "total": 0, "current": "",
+                       "ok": 0, "failed": [], "started_at": None, "finished_at": None}
+
+    def _backfill_symbols() -> list[str]:
+        """Everything Shunkan knows about: index aliases, pulse boards, the
+        Indian universes, the watchlist — plus every F&O underlying from the
+        broker instruments dump when a broker is connected."""
+        from shunkan.markets import INDEX_ALIASES
+        from shunkan.screener import UNIVERSES
+
+        syms = set(INDEX_ALIASES) | {t for _, t in INDIA_PULSE + GLOBAL_PULSE}
+        syms |= set(load_watchlist())
+        for u in ("nifty50", "banks", "it", "fno"):
+            syms |= set(UNIVERSES[u])
+        broker = getattr(provider, "broker", None)
+        if broker is not None:
+            try:
+                from shunkan.data.kite_fno import load_instruments
+
+                inst = load_instruments(broker)
+                und = inst.loc[inst["instrument_type"] == "FUT", "name"].dropna()
+                syms |= {str(n).upper() for n in und.unique() if str(n).strip()}
+            except Exception:
+                pass
+        return sorted(syms)
+
+    @app.post("/api/archive/backfill")
+    async def archive_backfill():
+        """Max-history backfill of every known symbol into the local archive.
+        Runs in the background; poll GET /api/archive/backfill for progress.
+        Never runs offline — synthetic data is never written to the store."""
+        from shunkan.store import HistoryArchive
+
+        if is_offline():
+            raise HTTPException(400, "offline mode — backfill needs live sources "
+                                     "(synthetic data is never written to the store)")
+        if backfill_status["running"]:
+            raise HTTPException(409, "backfill already running")
+
+        symbols = _backfill_symbols()
+        backfill_status.update(running=True, done=0, total=len(symbols), ok=0,
+                               failed=[], current="",
+                               started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                               finished_at=None)
+        src = (getattr(provider, "broker_name", "") or "yahoo/nse")
+        archive = HistoryArchive()
+
+        def _pull(sym: str):
+            h = provider.history(sym, period="max", interval="1d")
+            archive.upsert(sym, h, src)
+
+        async def job():
+            for sym in symbols:
+                backfill_status["current"] = sym
+                try:
+                    await asyncio.to_thread(_pull, sym)
+                    backfill_status["ok"] += 1
+                except Exception:
+                    if len(backfill_status["failed"]) < 40:
+                        backfill_status["failed"].append(sym)
+                backfill_status["done"] += 1
+                await asyncio.sleep(0.35)  # stay polite with the sources
+            backfill_status.update(running=False, current="",
+                                   finished_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+        asyncio.create_task(job())
+        return {"started": True, "total": len(symbols)}
+
+    @app.get("/api/archive/backfill")
+    def archive_backfill_status():
+        return _clean(backfill_status)
+
+    # -- shun script + ml studio -------------------------------------------------
+
+    @app.post("/api/script/run")
+    def script_run(req: ScriptRequest):
+        from shunkan.backtest import BacktestConfig, run_backtest
+        from shunkan.script import ScriptError, run_script
+
+        try:
+            hist = provider.history(req.symbol, period=req.period, interval=req.interval)
+        except DataError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        try:
+            r = run_script(req.code, hist)
+        except ScriptError as exc:
+            return _clean({"ok": False, "error": str(exc), "line": exc.line})
+
+        out = {
+            "ok": True, "symbol": req.symbol.upper(),
+            "plots": [{"title": p["title"], "color": p["color"], "panel": p["panel"],
+                       "points": _series(p["values"].dropna())} for p in r.plots],
+            "hlines": r.hlines, "variables": r.variables,
+            "elapsed_ms": r.elapsed_ms, "bars": len(hist),
+        }
+        if r.signal is not None:
+            bt = run_backtest(hist, r.signal, BacktestConfig(),
+                              symbol=req.symbol, strategy_name="shun-script")
+            pos = r.signal
+            flips = pos[pos.diff().fillna(0) != 0]
+            out["markers"] = [
+                {"time": str(t)[:10], "dir": int(v)} for t, v in flips.items()
+            ][-120:]
+            out["backtest"] = {
+                "metrics": bt.metrics(),
+                "equity": _series(bt.equity / bt.initial_cash),
+                "prov": prov(
+                    "same engine as BTL: next-bar fills, 5bps+5bps costs per side",
+                    {"bars": len(hist), "signal changes": int((pos.diff() != 0).sum())},
+                    "Shunkan backtest engine on the script's target-position series",
+                    caveat="a script tuned until the curve looks good is curve-fit — "
+                    "validate out-of-sample before believing it",
+                ),
+            }
+        return _clean(out)
+
+    @app.get("/api/ml/features")
+    def ml_features():
+        from shunkan.ml import FEATURES
+
+        return {name: desc for name, (_, desc) in FEATURES.items()}
+
+    @app.post("/api/ml/train")
+    def ml_train(req: MLTrainRequest):
+        from shunkan.ml import train_model
+
+        try:
+            hist = _hist(req.symbol, period=req.period, start=req.start, end=req.end)
+            r = train_model(hist, req.features, model=req.model,
+                            horizon=req.horizon, test_split=req.test_split)
+        except (DataError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        edge = r.acc_test - r.baseline_test
+        return _clean({
+            "model": r.model, "symbol": req.symbol.upper(), "features": r.features,
+            "horizon": r.horizon, "n_train": r.n_train, "n_test": r.n_test,
+            "acc_train": r.acc_train, "acc_test": r.acc_test,
+            "baseline_test": r.baseline_test, "edge": edge,
+            "up_ret_test": r.up_ret_test, "down_ret_test": r.down_ret_test,
+            "importances": r.importances,
+            "equity_model": r.equity_model.tolist(),
+            "equity_bh": r.equity_bh.tolist(),
+            "test_index": r.test_index,
+            "elapsed_ms": r.elapsed_ms,
+            "prov": {
+                "accuracy": prov(
+                    "direction accuracy on a strictly chronological test split",
+                    {"train rows": r.n_train, "test rows": r.n_test,
+                     "majority baseline": f"{r.baseline_test:.1%}",
+                     "horizon": f"{r.horizon} sessions"},
+                    f"{req.period} daily history via the active provider",
+                    method="ridge: closed-form on standardized features; stumps: "
+                    "gradient-boosted depth-1 trees on the logistic loss (pure numpy)",
+                    caveat="an edge this small on one split is fragile — markets are "
+                    "non-stationary and test-set luck is real; treat as exploration, "
+                    "not a trading system",
+                ),
+            },
+        })
+
+    @app.post("/api/swarm")
+    def swarm(req: SwarmRequest):
+        from shunkan.backtest import get_strategy, swarm_optimize
+
+        try:
+            strat = get_strategy(req.strategy)
+            hist = _hist(req.symbol, period=req.period, start=req.start, end=req.end)
+            res = swarm_optimize(
+                hist, strat, symbol=req.symbol,
+                n_particles=max(8, min(req.particles, 40)),
+                n_iters=max(5, min(req.iters, 60)),
+            )
+        except (DataError, KeyError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _clean({
+            "symbol": res.symbol, "strategy": res.strategy,
+            "param_names": list(res.param_names),
+            "bounds": [list(res.bounds[0]), list(res.bounds[1])],
+            "landscape": {"x": res.landscape_x.tolist(),
+                          "y": res.landscape_y.tolist(),
+                          "z": res.landscape_z.tolist()},
+            "iterations": [
+                {"p": it.positions.tolist(), "f": it.fitness.tolist(),
+                 "g": it.gbest.tolist(), "gf": it.gbest_fitness}
+                for it in res.iterations
+            ],
+            "best_params": res.best_params, "best_fitness": res.best_fitness,
+            "best_metrics": res.best_metrics, "verdict": res.verdict(),
+            "n_evals": res.n_evals, "bars": len(hist),
+            "elapsed_ms": res.elapsed_ms,
+            "prov": {
+                "fitness": prov(
+                    "fitness(params) = annualised Sharpe of a full vectorized "
+                    "backtest (next-bar fills, costs included)",
+                    {"unique backtests": res.n_evals,
+                     "bars per backtest": (len(hist), f"{req.period} daily history"),
+                     "particles × iterations":
+                         f"{len(res.iterations[0].fitness)} × {len(res.iterations)}"},
+                    "Shunkan backtest engine",
+                    method="canonical PSO — inertia 0.72, cognitive/social 1.49, "
+                    "reflecting bounds; integer parameters memoized so the swarm "
+                    "and the landscape share one evaluation cache",
+                    caveat="an optimized Sharpe is an in-sample number — validate "
+                    "with walk-forward before believing it",
+                ),
+            },
+        })
+
+    # -- screener / watchlist / portfolio / alerts -------------------------------
+
+    @app.get("/api/screen")
+    def screen(universe: str, rules: str = ""):
+        from shunkan.screener import UNIVERSES, run_screen
+
+        uni = UNIVERSES.get(universe.lower())
+        if uni is None:
+            raise HTTPException(400, f"Unknown universe. Choices: {', '.join(UNIVERSES)}")
+        rule_list = [r for r in rules.split(",") if r.strip()]
+        try:
+            result = run_screen(provider, uni, rule_list)
+        except (ValueError, DataError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return _clean({
+            "rows": [{"symbol": str(s), **{k: _clean(v) for k, v in row.items()}}
+                     for s, row in result.table.iterrows()],
+            "universe_size": len(result.universe),
+            "errors": len(result.errors),
+        })
+
+    @app.get("/api/watchlist")
+    def get_watchlist():
+        return {"symbols": load_watchlist()}
+
+    @app.post("/api/watchlist")
+    def set_watchlist(body: dict):
+        symbols = [str(s).upper() for s in body.get("symbols", []) if s]
+        if not symbols:
+            raise HTTPException(400, "symbols required")
+        save_watchlist(symbols)
+        return {"symbols": load_watchlist()}
+
+    @app.get("/api/portfolio")
+    def get_portfolio():
+        # Position keys are venue-qualified ("NSE:RELIANCE"), which is not what
+        # a price source is asked for. Quote by the instrument's own quotable
+        # name, then re-key by position so valuation lines up.
+        wanted = {key: p.instrument.quote_symbol
+                  for key, p in portfolio.positions.items()
+                  if p.instrument.quote_symbol}
+        prices = {}
+        if wanted:
+            try:
+                quoted = {s.upper(): q.price
+                          for s, q in provider.quotes(list(set(wanted.values()))).items()}
+                prices = {key: quoted[sym.upper()]
+                          for key, sym in wanted.items() if sym.upper() in quoted}
+            except DataError:
+                prices = {}
+
+        # Options mark off their own chain, which is also what the Greeks are
+        # computed from — one fetch per (underlying, expiry) the book holds.
+        from shunkan.data.chains import get_chain
+        from shunkan.portfolio.risk import book_greeks, describe
+
+        chains: dict[tuple[str, str], object] = {}
+        for p in portfolio.positions.values():
+            inst = p.instrument
+            if not inst.is_option:
+                continue
+            ckey = (inst.symbol, str(inst.expiry))
+            if ckey in chains:
+                continue
+            try:
+                chains[ckey] = get_chain(inst.symbol, inst.expiry)
+            except (DataError, ValueError):
+                continue  # unmarkable: named by book_greeks, never zero-filled
+        for key, p in portfolio.positions.items():
+            inst = p.instrument
+            c = chains.get((inst.symbol, str(inst.expiry))) if inst.is_option else None
+            if c is None:
+                continue
+            i = int(np.argmin(np.abs(c.strikes - inst.strike)))
+            if abs(float(c.strikes[i]) - inst.strike) < 1e-6:
+                prices[key] = float(c.call_ltp[i] if inst.kind == "CE" else c.put_ltp[i])
+
+        risk = book_greeks(portfolio.positions.values(), chains)
+        risk["summary"] = describe(risk["net"])
+        return _clean({
+            "cash": portfolio.cash,
+            "realized_pnl": portfolio.realized_pnl,
+            "market_value": portfolio.market_value(prices),
+            "equity": portfolio.total_equity(prices),
+            "unrealized_pnl": portfolio.unrealized_pnl(prices),
+            # null when unpriced or priced against a different book — margin
+            # nets across legs, so there is no honest per-position figure
+            "margin_used": portfolio.margin_used(),
+            "margin": portfolio.margin,
+            # net delta/gamma/theta/vega across the book. `complete` is false
+            # when a leg could not be marked — those legs are named, and the
+            # net below excludes them rather than counting them as zero.
+            "risk": risk,
+            "positions": [
+                {"symbol": s, "label": p.instrument.label,
+                 "kind": p.instrument.kind,
+                 "expiry": str(p.instrument.expiry) if p.instrument.expiry else None,
+                 "strike": p.instrument.strike,
+                 "lot_size": p.instrument.lot_size,
+                 "quantity": p.quantity, "is_short": p.is_short,
+                 "avg_cost": p.avg_cost,
+                 "last": prices.get(s, p.avg_cost),
+                 "market_value": p.market_value(prices.get(s, p.avg_cost)),
+                 "unrealized": p.unrealized_pnl(prices.get(s, p.avg_cost)),
+                 "expired": p.instrument.expired()}
+                for s, p in sorted(portfolio.positions.items())
+            ],
+            "history": portfolio.history[-50:],
+        })
+
+    @app.post("/api/portfolio/trade")
+    def trade(req: TradeRequest):
+        from shunkan.portfolio import Instrument
+
+        side = req.side.strip().upper()
+        if side not in ("BUY", "SELL"):
+            # Anything-but-buy used to mean sell, which silently opened a short
+            # on a typo now that shorts are representable.
+            raise HTTPException(400, f"side must be BUY or SELL, got {req.side!r}")
+
+        try:
+            expiry = (datetime.strptime(req.expiry, "%Y-%m-%d").date()
+                      if req.expiry else None)
+        except ValueError as exc:
+            raise HTTPException(400, f"expiry must be YYYY-MM-DD, got {req.expiry!r}") from exc
+        try:
+            inst = Instrument(symbol=req.symbol, kind=req.kind, expiry=expiry,
+                              strike=req.strike, lot_size=req.lot_size,
+                              exchange=req.exchange or "")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        # Size: lots when the contract's lot is known, else explicit units.
+        if req.lots is not None:
+            if not inst.lot_size:
+                raise HTTPException(400, (
+                    f"No lot size for {inst.label} — cannot size in lots. "
+                    "Send an explicit quantity, or reconnect a source that names the lot."))
+            quantity = req.lots * inst.lot_size
+        elif req.quantity is not None:
+            quantity = req.quantity
+        else:
+            raise HTTPException(400, "send either lots or quantity")
+
+        price = req.price
+        if price is None:
+            if inst.quote_symbol is None:
+                raise HTTPException(400, (
+                    f"{inst.label} has no generic quote — send the traded price "
+                    "(the chain row carries it)."))
+            try:
+                price = provider.quote(inst.quote_symbol).price
+            except DataError as exc:
+                raise HTTPException(502, str(exc)) from exc
+
+        try:
+            if side == "BUY" and not inst.derivative:
+                portfolio.buy(inst.symbol, quantity, price)   # cash check on equity
+                realized = 0.0
+            else:
+                realized = portfolio.trade(inst, side, quantity, price)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        portfolio.save()
+        return {"ok": True, "price": price, "quantity": quantity,
+                "instrument": inst.key, "label": inst.label, "realized": realized}
+
+    @app.get("/api/alerts")
+    def get_alerts():
+        return {"alerts": [
+            {"index": i + 1, "symbol": a.symbol, "metric": a.metric, "op": a.op,
+             "value": a.value, "armed": a.armed, "fired_at": a.fired_at,
+             "fired_value": a.fired_value, "text": a.describe()}
+            for i, a in enumerate(alert_book.alerts)
+        ]}
+
+    @app.post("/api/alerts")
+    def add_alert(req: AlertRequest):
+        try:
+            alert = parse_alert(req.rule)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        alert_book.add(alert)
+        return {"ok": True, "text": alert.describe()}
+
+    @app.delete("/api/alerts/{index}")
+    def delete_alert(index: int):
+        try:
+            gone = alert_book.remove(index - 1)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {"ok": True, "text": gone.describe()}
+
+    @app.get("/api/layout")
+    def get_layout():
+        from shunkan.config import APP_DIR
+
+        path = APP_DIR / "layout.json"
+        if path.exists():
+            try:
+                return json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {"widgets": None}  # frontend falls back to its default layout
+
+    @app.post("/api/layout")
+    def save_layout(body: dict):
+        from shunkan.config import APP_DIR, ensure_dirs
+
+        ensure_dirs()
+        (APP_DIR / "layout.json").write_text(json.dumps(body, indent=2))
+        return {"ok": True}
+
+    @app.get("/api/store/stats")
+    def get_store_stats():
+        from shunkan.store import store_stats
+
+        return _clean(store_stats())
+
+    @app.get("/api/store/bars/{symbol}")
+    def get_store_bars(symbol: str):
+        """Today's locally captured 1-minute bars (from the live tick feed)."""
+        from shunkan.store import TickStore
+
+        df = TickStore().read_bars(symbol.upper())
+        if df is None or df.empty:
+            return {"symbol": symbol.upper(), "bars": [],
+                    "note": "no locally captured bars for today"}
+        return {
+            "symbol": symbol.upper(),
+            "bars": [
+                {"time": int(row.minute * 60), "open": row.open, "high": row.high,
+                 "low": row.low, "close": row.close, "volume": row.volume}
+                for row in df.itertuples()
+            ],
+            "note": "built from the live Kite tick stream, stored locally",
+        }
+
+    # -- websocket tick feed -------------------------------------------------
+
+    @app.websocket("/ws/ticks")
+    async def ws_ticks(ws: WebSocket):
+        await ws.accept()
+        await hub.attach(ws)
+        try:
+            while True:
+                # Keep the socket open; client never needs to send anything.
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            hub.detach(ws)
+
+    # -- static frontend --------------------------------------------------------
+
+    if STATIC_DIR.exists():
+        app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+        @app.get("/")
+        def index():
+            return FileResponse(STATIC_DIR / "index.html")
+
+    return app
+
+
+def _atm_iv_for_prov(chain) -> float:
+    import numpy as _np
+
+    i = chain.atm_index
+    ivs = [v for v in (chain.call_iv[i], chain.put_iv[i]) if not _np.isnan(v)]
+    return float(_np.mean(ivs)) if ivs else 0.15
+
+
+def _load_chart_configs() -> dict:
+    from shunkan.config import APP_DIR
+
+    path = APP_DIR / "chart_configs.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _pip_size(symbol: str) -> float:
+    """Best-effort pip size for 'pips'-mode stops. NSE points default to 1.0."""
+    s = symbol.upper()
+    if "JPY" in s:
+        return 0.01
+    if "=X" in s or (len(s) == 6 and s.isalpha()):  # forex pairs like EURUSD
+        return 0.0001
+    return 1.0  # NSE equities/indices and everything else: one point
+
+
+def _exec_summary(cfg) -> dict:
+    def leg(mode, value):
+        if mode == "none" or value <= 0:
+            return "off"
+        unit = {"percent": "%", "pips": " pips", "atr": "× ATR"}.get(mode, "")
+        return f"{value:g}{unit}" + (" (trailing)" if cfg.trailing and mode != "none" else "")
+    filters = []
+    if cfg.session_start and cfg.session_end:
+        filters.append(f"session {cfg.session_start}-{cfg.session_end}")
+    if cfg.atr_min is not None or cfg.atr_max is not None:
+        filters.append(f"ATR {cfg.atr_min or 0}-{cfg.atr_max if cfg.atr_max is not None else '∞'}")
+    if cfg.cooldown_bars:
+        filters.append(f"{cfg.cooldown_bars}-bar cooldown")
+    return {"stop": leg(cfg.sl_mode, cfg.sl_value),
+            "target": leg(cfg.tp_mode, cfg.tp_value),
+            "filters": ", ".join(filters) or "none"}
+
+
+def _exit_breakdown(trades) -> dict:
+    out: dict[str, int] = {}
+    for t in trades:
+        out[t.exit_reason] = out.get(t.exit_reason, 0) + 1
+    return out
+
+
+def _series(series) -> list[dict]:
+    ts = [int(t.timestamp()) for t in series.index]
+    vals = series.tolist()
+    return [{"time": ts[i], "value": _clean(float(vals[i]))} for i in range(len(ts))]
+
+
+def _band(index, values) -> list[dict]:
+    ts = [int(t.timestamp()) for t in index]
+    return [{"time": ts[i], "value": _clean(float(values[i]))} for i in range(len(values))]
+
+
+class TickHub:
+    """Bridges the threaded tick feed into asyncio websockets.
+
+    The feed starts lazily on the first client and stops when the last one
+    leaves. Tick callbacks land on the ticker thread; they're marshalled to
+    the event loop with call_soon_threadsafe — no locks, no polling."""
+
+    def __init__(self) -> None:
+        from shunkan.store import BarBuilder
+
+        self.clients: set[WebSocket] = set()
+        self.feed = None
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self._tick_count = 0
+        self._started = 0.0
+        self.bars = BarBuilder()  # live ticks -> 1-min bars -> parquet
+
+    async def attach(self, ws: WebSocket) -> None:
+        self.clients.add(ws)
+        if self.feed is None:
+            from shunkan.stream.factory import build_feed
+
+            feed = await asyncio.to_thread(build_feed, load_watchlist())
+            self.feed = feed
+            self._started = time.monotonic()
+            feed.ticker.start(feed.tokens, self._on_ticks, mode="quote")
+        await ws.send_text(json.dumps({
+            "type": "hello",
+            "live": self.feed.live,
+            "symbols": list(self.feed.names.values()),
+        }))
+
+    def detach(self, ws: WebSocket) -> None:
+        self.clients.discard(ws)
+        if not self.clients:
+            self.stop()
+
+    def stop(self) -> None:
+        if self.feed is not None:
+            self.feed.ticker.stop()
+            self.feed = None
+
+    def _on_ticks(self, ticks) -> None:
+        if self.loop is None or self.feed is None:
+            return
+        names = self.feed.names
+        # Bars are built from every tick (only persisted for the live feed —
+        # demo random-walk data must never enter the store).
+        if self.feed.live:
+            for t in ticks:
+                self.bars.on_tick(names.get(t.token, str(t.token)), t.ltp, float(t.volume))
+        if not self.clients:
+            return
+        payload = json.dumps({
+            "type": "ticks",
+            "live": self.feed.live,
+            "data": [
+                {"symbol": names.get(t.token, str(t.token)), "ltp": t.ltp,
+                 "change_pct": round(t.change_pct, 6), "volume": t.volume,
+                 "oi": t.oi, "high": t.high, "low": t.low}
+                for t in ticks
+            ],
+        })
+        self._tick_count += len(ticks)
+        self.loop.call_soon_threadsafe(
+            lambda: asyncio.ensure_future(self.broadcast_raw(payload))
+        )
+
+    async def broadcast_raw(self, payload: str) -> None:
+        dead = []
+        for ws in self.clients:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.clients.discard(ws)
+
+    async def broadcast(self, message: dict) -> None:
+        await self.broadcast_raw(json.dumps(message))
