@@ -20,6 +20,11 @@ Things with real test coverage that have been verified against a live broker.
 - **Net book Greeks.** Delta, gamma, theta, vega, rho netted across positions,
   unmarkable legs named and excluded. Verified live on a 2 lot short straddle.
 - **Instruments archive.** Daily contract master per venue, idempotent.
+- **Backtest validators.** A permutation test on block-shuffled positions and a
+  deflated Sharpe (Bailey & Lopez de Prado). The gate requires BOTH, because
+  each has a blind spot the other covers: permutation cannot see selection
+  bias, deflation cannot see whether the timing does anything. A best-of-800
+  search over pure noise now fails.
 - **Feed state.** Liveness is observed rather than asserted: LIVE requires a
   tick inside the last two minutes, and the badge degrades to STALE on its own
   when they stop. Verified across all five states in a browser.

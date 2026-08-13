@@ -157,6 +157,39 @@ volume profile, a news feed with sentiment scoring, a screener, alerts, a
 backtest lab with walk-forward and Monte Carlo, an ML studio, and a local data
 store browser.
 
+## Validators that can say no
+
+A backtest is a hypothesis, and most tooling only knows how to agree with it.
+Shunkan runs two tests that can reject, and the gate needs both:
+
+**Permutation.** Keep the market's own bar returns and shuffle *when* the
+strategy was in the market, in blocks so holding periods survive. If the true
+ordering does not beat random placements of the same exposure, the strategy was
+harvesting drift, not timing anything.
+
+**Deflated Sharpe.** The best of N trials scores well even when every trial is
+noise, because the maximum of N draws grows with N. This corrects the observed
+Sharpe for how many things were tried, plus skew and fat tails.
+
+They are required together because each is blind where the other sees. Measured
+on synthetic cases:
+
+```
+long-only drift          permutation p=1.000   rejected
+unselected random        permutation p=0.771   rejected
+genuine 60% hit rate     permutation p=0.002   accepted
+best-of-800 on noise     permutation p=0.002   ACCEPTED  <- blind spot
+                         deflated    DSR=0.000 rejected  <- caught here
+```
+
+The Monte Carlo is still there and still useful, but it now says what it
+actually measures. It resamples the strategy's own realised returns, so it
+describes how variable the path could have been. It cannot speak to whether
+the edge is real, and it used to claim it could.
+
+None of this substitutes for out-of-sample data. It is what you run before you
+have any.
+
 ## Architecture
 
 ```
