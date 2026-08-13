@@ -26,15 +26,18 @@ Things with real test coverage that have been verified against a live broker.
 
 ## Works but thinly tested
 
-- **SABR calibration.** 13 tests, exact parameter recovery on generated smiles,
-  and the refusal paths are covered. It has NOT yet been fitted to a real
-  chain: the Kite token was expired and NSE was bot-blocked from this network
-  when it was written, so the live path is unproven. First thing to check with
-  a working token.
+- **SABR calibration.** Now fitted to live chains. BANKNIFTY at 12 DTE fits
+  TIGHT (RMSE 0.205 vol points, rho -0.098). NIFTY at 5 DTE fits POOR at every
+  beta from 0.0 to 1.0, which looks like a real property of a short-dated smile
+  rather than a defect; the tool says POOR rather than pretending. Solving from
+  bid/ask mid instead of last price was what made the difference.
 
-- **Order ticket.** The API path is verified end to end over HTTP. The actual
-  click and keyboard interaction has not been exercised in a browser yet. If
-  you hit something odd, that's why.
+- **Order ticket.** Verified in a browser against live Kite quotes on
+  2026-08-13: click a premium, defaults to SELL, digits set lots, S/B flip
+  side, Enter books, Esc and click-away both dismiss. Booked a real 1-lot
+  short and closed it back to flat.
+- **Margin.** Verified live: a 1-lot NIFTY short priced at SPAN 1,48,416 +
+  exposure 31,851 against a premium credit, from Zerodha's own calculator.
 - **Margin trigger.** `POST /api/portfolio/margin`, fired unprompted by PRT once
   per book state and forceable with REPRICE. `price_margin()` is idempotent on
   the book fingerprint, so a desk pays one exchange call per adjustment. Unit
