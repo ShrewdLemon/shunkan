@@ -1,0 +1,48 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    # The suite runs entirely against the synthetic demo chain, so it needs no
+    # broker credentials and never touches a live exchange.
+    env:
+      SHUNKAN_OFFLINE: "1"
+      SHUNKAN_HOME: ${{ github.workspace }}/.shunkan-ci
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest tests -q
+
+  frontend-syntax:
+    runs-on: ubuntu-latest
+    # app.js has no build step and no test runner, so a syntax check is the
+    # cheapest guard against shipping a file the browser silently refuses.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Check app.js and viz3d.js parse
+        run: |
+          node --check src/shunkan/server/static/app.js
+          node --check src/shunkan/server/static/viz3d.js
