@@ -70,7 +70,9 @@ const fmt = {
     if (mins < 60 * 24) return `${(mins / 60).toFixed(1)}h`;
     return `${Math.round(mins / 1440)}d`;
   },
-  ist: (date = new Date()) =>
+  // Accepts a Date or an epoch millis. lastTickAt is a number so that
+  // staleness is a plain subtraction; every other caller passes a Date.
+  ist: (date = new Date()) => (date = typeof date === "number" ? new Date(date) : date) &&
     date.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false }),
 };
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g,
@@ -298,8 +300,13 @@ function sparkline(canvas, closes, w = 88, h = 24) {
 const state = {
   view: "pulse", symbol: "NIFTY", chartPeriod: "6mo",
   chartType: "candles", chartInterval: "1d", chartIndicators: [],
-  timers: new Map(), tickStore: new Map(), streamLive: null,
-  tickCount: 0, lastTickAt: null,
+  timers: new Map(), tickStore: new Map(),
+  // `feedClaim` is what the server said the feed IS (kite | demo | null).
+  // `lastTickAt` is what we have actually SEEN. The badge is derived from both,
+  // because the server stamps live=true when the ticker constructs, not when a
+  // tick arrives: a dead token used to show a pulsing green LIVE all session
+  // next to a tick counter stuck on zero.
+  feedClaim: null, tickCount: 0, lastTickAt: null,
 };
 // Keyed and idempotent: re-registering the same key is a no-op, so a render
 // function that reschedules itself can no longer double the interval count
@@ -2030,8 +2037,8 @@ function drawTape() {
   if (!tb) return;
   const meta = $("#tape-panel .panel-meta");
   if (meta) meta.innerHTML =
-    (state.streamLive === null ? "CONNECTING" :
-     state.streamLive ? `<span class="ok">KITE WS LIVE</span>` : `<span class="warn">DEMO FEED — CONNECT ZERODHA</span>`)
+    (() => { const f = state.wsDown ? "DOWN" : feedState(); const u = FEED_UI[f];
+             return u.cls ? `<span class="${u.cls}">${u.label}</span>` : u.label; })()
     + ` · ${state.tickCount.toLocaleString()} TICKS`
     + (state.lastTickAt ? ` · LAST ${fmt.ist(state.lastTickAt)}` : "");
   const rows = [...state.tickStore.entries()].sort((a, b) => a[0].localeCompare(b[0]));
@@ -3527,15 +3534,16 @@ function connectWS() {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "hello") {
-      state.streamLive = msg.live;
-      $("#stream-dot").className = `dot ${msg.live ? "live" : "demo"}`;
-      $("#stream-label").textContent = msg.live ? "LIVE TICKS" : "DEMO FEED";
+      state.feedClaim = msg.live ? "kite" : "demo";
+      state.wsDown = false;
+      paintFeed();
       updateStatusbar();
     } else if (msg.type === "ticks") {
       state.tickCount += msg.data.length;
-      state.lastTickAt = new Date();
+      state.lastTickAt = Date.now();
+      paintFeed();
       msg.data.forEach((t) => {
-        t._at = state.lastTickAt;
+        t._at = new Date(state.lastTickAt);
         state.tickStore.set(t.symbol, t);
         liveUpdatePulse(t);
       });
@@ -3545,17 +3553,57 @@ function connectWS() {
     }
   };
   ws.onclose = () => {
-    state.streamLive = null;
-    $("#stream-dot").className = "dot";
+    state.wsDown = true;
+    paintFeed();
+    $("#stream-dot").className = "dot down";
     $("#stream-label").textContent = "RECONNECTING";
     setTimeout(connectWS, 2500);
   };
 }
 
+// A feed with no tick for this long is not live, whatever it claimed on
+// connect. Two minutes is comfortably longer than any real gap in NSE hours
+// and far shorter than a session, so a dead token degrades within a screen
+// refresh rather than at the closing bell.
+const STALE_AFTER_MS = 120_000;
+
+function feedState() {
+  if (state.feedClaim === null) return "CONNECTING";
+  if (state.feedClaim !== "kite") return "DEMO";
+  if (!state.lastTickAt) return "WAITING";
+  return (Date.now() - state.lastTickAt) > STALE_AFTER_MS ? "STALE" : "LIVE";
+}
+
+const FEED_UI = {
+  CONNECTING: { dot: "",      label: "CONNECTING",  cls: "" },
+  WAITING:    { dot: "wait",  label: "NO TICKS YET", cls: "warn" },
+  LIVE:       { dot: "live",  label: "LIVE TICKS",  cls: "ok" },
+  STALE:      { dot: "stale", label: "STALE",       cls: "warn" },
+  DEMO:       { dot: "demo",  label: "DEMO FEED",   cls: "warn" },
+  DOWN:       { dot: "down",  label: "RECONNECTING", cls: "warn" },
+};
+
+function paintFeed() {
+  const ui = FEED_UI[state.wsDown ? "DOWN" : feedState()];
+  const dot = $("#stream-dot"), lab = $("#stream-label");
+  if (dot) dot.className = `dot ${ui.dot}`;
+  if (lab) {
+    lab.textContent = ui.label;
+    lab.className = ui.cls;
+    lab.title = state.lastTickAt
+      ? `last tick ${fmt.ist(new Date(state.lastTickAt))}`
+      : "no tick has arrived on this connection";
+  }
+  updateStatusbar();
+}
+
 const TICK_TO_PULSE = { NIFTY: "^NSEI", BANKNIFTY: "^NSEBANK" };
 function liveUpdatePulse(t) {
   if (state.view !== "pulse") return;
-  if (state.streamLive !== true) return;  // demo feed must never paint a real cell
+  // Stricter than the old streamLive check: a feed that claimed kite but has
+  // gone quiet must not keep painting either, because the last print it sent
+  // stops being a price the moment it stops being current.
+  if (feedState() !== "LIVE") return;
   const target = TICK_TO_PULSE[t.symbol] || `${t.symbol}.NS`;
   const row = document.querySelector(`tr[data-symbol="${target}"], tr[data-symbol="${t.symbol}"]`);
   if (!row) return;
@@ -3575,8 +3623,10 @@ function liveUpdatePulse(t) {
 
 function updateStatusbar() {
   const wsEl = $("#sb-ws");
-  if (wsEl) wsEl.innerHTML = state.streamLive === null ? "WS OFFLINE" :
-    state.streamLive ? `WS <span class="ok">LIVE</span>` : `WS <span class="warn">DEMO</span>`;
+  if (wsEl) {
+    const u = FEED_UI[state.wsDown ? "DOWN" : feedState()];
+    wsEl.innerHTML = `WS ${u.cls ? `<span class="${u.cls}">${u.label}</span>` : u.label}`;
+  }
   const ticksEl = $("#sb-ticks");
   if (ticksEl) ticksEl.textContent =
     `${state.tickCount.toLocaleString()} TICKS${state.lastTickAt ? ` · LAST ${fmt.ist(state.lastTickAt)}` : ""}`;
