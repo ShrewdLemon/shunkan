@@ -37,11 +37,20 @@ class MonteCarloResult:
     elapsed_ms: float = 0.0
 
     def verdict(self) -> str:
+        """What the path could have looked like. NOT whether the edge is real.
+
+        This resamples the strategy's OWN realised returns, so whatever mean
+        they had is baked into every path. A best-of-800 search over pure noise
+        scored prob_loss 0.014 here and used to be told its "edge survives
+        resampling", which was this method's wording and this method's fault.
+        For the edge question see backtest.validate.
+        """
+        tail = f"path risk only — run backtest.validate for whether the edge is real"
         if self.prob_loss < 0.2 and self.max_dd_p95 > -0.35:
-            return "favorable distribution — edge survives resampling"
+            return f"paths are mostly favourable, worst-case DD {self.max_dd_p95:.0%} — {tail}"
         if self.prob_loss < 0.45:
-            return "coin-flip territory — edge is weak relative to variance"
-        return "unfavorable — most resampled histories lose money"
+            return f"path outcome is close to a coin flip — {tail}"
+        return f"most resampled paths lose money — {tail}"
 
 
 def monte_carlo(

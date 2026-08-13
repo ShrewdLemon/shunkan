@@ -74,7 +74,15 @@ def test_monte_carlo_positive_drift_low_loss_prob():
     rets = pd.Series(rng.normal(0.002, 0.005, 1000))  # strong steady edge
     mc = monte_carlo(rets, n_paths=500)
     assert mc.prob_loss < 0.05
-    assert "favorable" in mc.verdict()
+
+    # The verdict describes the PATH, not the edge. It used to say "edge
+    # survives resampling", which was false by construction: the bootstrap
+    # resamples the strategy's own returns, so it inherits whatever mean they
+    # had. See backtest.validate for the tests that can actually reject.
+    verdict = mc.verdict()
+    assert "favourable" in verdict
+    assert "edge survives" not in verdict
+    assert "backtest.validate" in verdict
 
 
 def test_monte_carlo_too_short_raises():

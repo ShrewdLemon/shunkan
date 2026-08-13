@@ -117,8 +117,22 @@ def walk_forward(
             train, strategy.signal(train, **params), cfg,
             symbol=symbol, strategy_name=strategy.name, params=params,
         )
+        # Warm the indicators on the TRAINING data, then evaluate only on the
+        # test window. Computing the signal on `test` alone left a 200-period
+        # SMA undefined for the first 200 bars of every window, which is how a
+        # 250-bar window became 50 tradeable bars and four windows became seven
+        # out-of-sample trades in total.
+        #
+        # This adds no look-ahead: the warmup is strictly before test_start,
+        # which is exactly the history a live trader would have had on that
+        # morning. What it removes is a bias AGAINST the strategy, and a
+        # validator that fails good strategies for the wrong reason is as
+        # useless as one that passes bad ones.
+        warm = prices.iloc[train_start_i:test_end_i]
+        warm_signal = strategy.signal(warm, **params)
+        test_signal = warm_signal.loc[test.index]
         oos_bt = run_backtest(
-            test, strategy.signal(test, **params), cfg,
+            test, test_signal, cfg,
             symbol=symbol, strategy_name=strategy.name, params=params,
         )
         oos_curves.append(oos_bt.returns)
