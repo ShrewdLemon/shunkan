@@ -1,42 +1,66 @@
-/* SHUNKAN — terminal-grade dark UI.
-   Bloomberg discipline: hairline rules, dense tabular data, uppercase
-   micro-labels, amber accent. Glass kept to a whisper. */
+/* SHUNKAN — Bloomberg-grade terminal skin.
+
+   The reference is the thing traders already have muscle memory for: black
+   ground, amber data, blue labels, monospace everywhere, square corners, and
+   1px rules that are actually 1px. Density over comfort.
+
+   Rules this file follows, deliberately:
+   - Monospace is the BODY face, not just the numbers. Every column lines up
+     without asking, and a terminal that mixes proportional labels with
+     tabular data reads as a dashboard.
+   - No radius, no blur, no gradient, no shadow. Those cost pixels and legibility
+     and buy nothing on a screen someone stares at for six hours.
+   - Colour means exactly one thing. Amber is data. Blue is a label or a header.
+     Green and red are direction and nothing else. White is emphasis.
+*/
 
 :root {
-  --bg: #0a0c10;
-  --bg-panel: rgba(255, 255, 255, 0.022);
-  --bg-panel-2: rgba(255, 255, 255, 0.04);
-  --stroke: rgba(255, 255, 255, 0.08);
-  --stroke-soft: rgba(255, 255, 255, 0.05);
-  --text: #dde1e8;
-  --text-dim: #9aa1b0;
-  --text-faint: #5d6470;
-  --amber: #f0a826;
-  --amber-dim: rgba(240, 168, 38, 0.12);
-  --up: #2ebd85;
-  --up-soft: rgba(46, 189, 133, 0.10);
-  --down: #f1564b;
-  --down-soft: rgba(241, 86, 75, 0.10);
-  --blue: #58a6ff;
-  --r: 10px;
+  /* Ground. True black: this gets looked at all day and every extra lumen of
+     background is contrast stolen from the numbers. */
+  --bg: #000000;
+  --bg-panel: #080808;
+  --bg-panel-2: #101010;
+  --bg-header: #12161c;
+
+  /* Rules are solid, not translucent. An alpha rule over two different panel
+     fills renders as two different greys, which reads as a rendering bug. */
+  --stroke: #23262b;
+  --stroke-soft: #16181c;
+
+  /* Warm off-white, not blue-grey: it sits with amber instead of fighting it. */
+  --text: #e6e1d6;
+  --text-dim: #9b968c;
+  --text-faint: #63605a;
+
+  --amber: #ffa62b;
+  --amber-dim: rgba(255, 166, 43, 0.14);
+  --blue: #5fa8dc;                    /* column headers and field labels */
+  --blue-dim: rgba(95, 168, 220, 0.12);
+
+  --up: #23d18b;
+  --up-soft: rgba(35, 209, 139, 0.12);
+  --down: #ff5c5c;
+  --down-soft: rgba(255, 92, 92, 0.12);
+
+  --r: 0px;                            /* square. see the header note. */
   --ease: cubic-bezier(0.25, 0.8, 0.25, 1);
-  --rail-w: 64px;
-  --top-h: 44px;
-  --foot-h: 26px;
-  --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --rail-w: 58px;
+  --top-h: 40px;
+  --foot-h: 24px;
+  --row-h: 19px;                       /* one data row, tuned for 11px mono */
+  --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; }
 
 body {
-  background:
-    radial-gradient(1100px 500px at 85% -10%, rgba(240,168,38,0.045), transparent 60%),
-    radial-gradient(900px 500px at -10% 110%, rgba(88,166,255,0.035), transparent 60%),
-    var(--bg);
+  background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, sans-serif;
-  font-size: 12.5px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
@@ -785,3 +809,150 @@ button.btn.danger { background: transparent; color: var(--down); border: 1px sol
   font-family: var(--mono); font-size: 9px; line-height: 1.5;
   color: var(--text-faint); letter-spacing: 0;
 }
+
+/* ===========================================================================
+   TERMINAL PASS
+   Appended last so it wins on equal specificity. Everything above was written
+   for a softer dark UI; this is the layer that makes it read as an instrument.
+   Kept as one block rather than edited in place so it can be reverted whole.
+   =========================================================================== */
+
+/* --- kill the chrome ----------------------------------------------------- */
+/* Radius, blur and shadow cost legibility and buy nothing here. Blur in
+   particular forces a repaint of everything behind a panel on every tick. */
+*, *::before, *::after {
+  border-radius: 0 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+}
+.topbar, .rail, .panel, .palette, .ticket { background-image: none; }
+
+/* --- one type scale ------------------------------------------------------ */
+/* Was 14 sizes across 87 declarations. A terminal needs about four: label,
+   body, number, headline. */
+.panel-title, .panel-meta, .rail-btn .lbl, thead th, .k, .kv .k,
+.risk-cell .k, .stat .k, .status-cell, .tk-keys {
+  font-size: 9.5px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+}
+.tbl td, .tbl th, td, th { font-size: 11px; }
+
+/* --- panels: a titled bar, not a floating card --------------------------- */
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--stroke);
+}
+.panel-head {
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--stroke);
+  min-height: 22px;
+  padding: 3px 8px;
+}
+.panel-title { color: var(--amber); font-weight: 700; }
+.panel-meta  { color: var(--text-faint); }
+
+/* --- tables: the reason this app exists ---------------------------------- */
+.tbl { border-collapse: collapse; width: 100%; }
+.tbl thead th {
+  background: var(--bg-header);
+  color: var(--blue);                 /* labels are blue, data is not */
+  font-weight: 700;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--stroke);
+  position: sticky; top: 0; z-index: 2;
+  white-space: nowrap;
+}
+.tbl td {
+  height: var(--row-h);
+  padding: 0 8px;
+  line-height: var(--row-h);
+  border-bottom: 1px solid var(--stroke-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Numbers right, names left. Never the other way round: a right-aligned
+   column is scanned by magnitude, which is the whole point of a column. */
+.tbl td { text-align: right; }
+.tbl td.txt, .tbl td.sym, .tbl th.txt { text-align: left; }
+.tbl tbody tr:hover td { background: var(--bg-panel-2); }
+.tbl tbody tr.atm-row td { background: var(--amber-dim); }
+.tbl tbody tr.atm-row td.k-strike { color: var(--amber); font-weight: 700; }
+
+/* Direction is the only thing green and red are allowed to mean. */
+.up   { color: var(--up); }
+.down { color: var(--down); }
+.faint { color: var(--text-faint); }
+
+/* --- rail: mnemonics, tighter -------------------------------------------- */
+.rail { width: var(--rail-w); padding: 2px; gap: 0; }
+.rail-btn {
+  border: 0;
+  border-bottom: 1px solid var(--stroke-soft);
+  padding: 5px 1px 4px;
+  color: var(--text-faint);
+}
+.rail-btn .code { font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; }
+.rail-btn .lbl  { font-size: 7px; margin-top: 1px; }
+.rail-btn:hover { background: var(--bg-panel-2); color: var(--text); }
+.rail-btn.active {
+  background: var(--amber); color: #000;
+  border-bottom-color: var(--amber);
+}
+.rail-btn.active .lbl { color: #000; }
+
+/* --- top and bottom bars ------------------------------------------------- */
+.topbar {
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--stroke);
+  height: var(--top-h);
+  gap: 14px;
+}
+.brand-mark { color: var(--amber); }
+.brand-name { letter-spacing: 0.22em; }
+.statusbar {
+  background: var(--bg-header);
+  border-top: 1px solid var(--stroke);
+  height: var(--foot-h);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+}
+.tbtn {
+  background: transparent;
+  border: 1px solid var(--stroke);
+  color: var(--text-dim);
+  padding: 3px 8px;
+  font-size: 9.5px;
+}
+.tbtn:hover { background: var(--amber); border-color: var(--amber); color: #000; }
+
+/* --- main: no wasted gutter ---------------------------------------------- */
+main { padding: 6px; }
+.row { gap: 6px; }
+
+/* --- stat tiles ---------------------------------------------------------- */
+.kv, .stat, .risk-cell { border-right: 1px solid var(--stroke-soft); }
+.kv .k, .stat .k, .risk-cell .k { color: var(--blue); }
+.kv .v, .stat .v { font-size: 15px; font-weight: 700; color: var(--text); }
+
+/* --- reduced motion ------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* --- let grid and flex children actually shrink --------------------------- */
+/* Grid and flex items default to min-width:auto, which means "never shrink
+   below my content". A lightweight-charts instance with autoSize:true is
+   content that grows to fill whatever it is given, so the two together form a
+   feedback loop: the chart widens the column, the wider column lets the chart
+   widen again. It ran a 360px column out to 666px and pushed the whole page
+   into horizontal scroll. min-width:0 breaks the loop. */
+.row > *, main > *, .panel, .panel-body { min-width: 0; }
+.chart-host, .w-chart-host { max-width: 100%; overflow: hidden; }
+
+/* A table wider than its panel scrolls inside the panel. It must never widen
+   the page: the rail and the side column are fixed anchors and a trader
+   scrolling sideways to find a price has already lost. */
+.panel-body { overflow-x: auto; }
+main { overflow-x: hidden; }
