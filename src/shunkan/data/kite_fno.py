@@ -192,6 +192,20 @@ def kite_option_chain(
         data = kite.get_json("/quote", params=[("i", k) for k in batch]).get("data", {})
         quotes.update(data)
 
+    # Kite stamps every quote with an exchange time. The newest across the
+    # batch is how fresh this chain actually is; without it the UI would be
+    # printing the browser clock over data of unknown age.
+    as_of = None
+    for q in quotes.values():
+        raw = q.get("timestamp")
+        if not raw:
+            continue
+        try:
+            ts = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST)
+        except (ValueError, TypeError):
+            continue
+        as_of = ts if as_of is None or ts > as_of else as_of
+
     strikes = np.sort(opts["strike"].unique())
     n = len(strikes)
     cols = {k: np.zeros(n) for k in
@@ -231,6 +245,7 @@ def kite_option_chain(
         put_iv=nan.copy(),
         source="Zerodha Kite (real-time)",
         is_model=False,
+        as_of=as_of,
         lot_size=lot_size,
         lot_size_source=(f"NFO instruments dump ({chosen} series)"
                          if lot_size else "no single lot in the instruments dump"),

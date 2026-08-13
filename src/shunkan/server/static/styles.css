@@ -966,3 +966,10 @@ main { overflow-x: hidden; }
 .dot.stale { background: var(--amber); animation: pulse 1.1s infinite; }
 .dot.demo  { background: var(--blue); }
 .dot.down  { background: var(--down);  animation: pulse 0.8s infinite; }
+
+/* --- data age ------------------------------------------------------------- */
+/* Ages go amber past 30s and red past 2 minutes. A number whose age you cannot
+   see is a number you cannot size off. */
+.age { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.06em; color: var(--text-dim); }
+.age.warn { color: var(--amber); }
+.age.down { color: var(--down); }

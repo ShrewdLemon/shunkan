@@ -307,6 +307,13 @@ const state = {
   // tick arrives: a dead token used to show a pulsing green LIVE all session
   // next to a tick counter stuck on zero.
   feedClaim: null, tickCount: 0, lastTickAt: null,
+  // Rolling print log for the tape, newest first. Bounded: a full session at
+  // index tick rates is hundreds of thousands of prints, and an unbounded
+  // array is a memory leak with a tidy name.
+  tape: [], tapeMax: 500,
+  // Spot at the moment the book was last fully marked, so the delta P&L
+  // between polls is measured from a known point rather than from nothing.
+  markSpot: new Map(),
 };
 // Keyed and idempotent: re-registering the same key is a no-op, so a render
 // function that reschedules itself can no longer double the interval count
@@ -1135,7 +1142,7 @@ function renderChain(view) {
       expSel.innerHTML = exps.map((e) => `<option value="${e}">${e} · ${dteOf(e)}D</option>`).join("");
     }
     expSel.value = c.expiry;
-    $("#chain-upd").innerHTML = stamp("AUTO 60s");
+    $("#chain-upd").innerHTML = ageStamp(c.as_of) + ' <span class="faint">· AUTO 60s</span>';
 
     $("#cv-spot").textContent = fmt.n(c.spot);
     $("#cv-pcr").textContent = a.pcr_oi.toFixed(2);
@@ -2022,14 +2029,90 @@ function tradesTable(trades) {
 /* ---------- TAPE ---------- */
 
 function renderTape(view) {
-  view.innerHTML = panel({
-    title: "LIVE TAPE", id: "tape-panel", flush: true, meta: "—",
-    body: `<table class="tbl"><thead><tr>
-      <th>SYMBOL</th><th>LTP</th><th>CHG%</th><th>DAY RANGE</th><th>VOLUME</th><th>OI</th><th>LAST TICK</th>
-      </tr></thead><tbody id="tape-body"></tbody></table>`,
-  });
+  // Two halves. The running print log is what a desk means by "the tape": a
+  // snapshot table cannot show you that a level was hit six times in two
+  // seconds, which is the thing you are watching the tape for.
+  view.innerHTML = `<div class="row cols-main-side">
+    ${panel({ title: "TAPE", id: "tape-panel", flush: true, meta: "—",
+      body: `<div class="tbl-scroll" style="max-height:calc(100vh - 120px)">
+        <table class="tbl"><thead><tr>
+          <th class="txt">TIME</th><th class="txt">SYMBOL</th><th>LTP</th>
+          <th>CHG%</th><th>VOLUME</th></tr></thead>
+        <tbody id="tape-log"></tbody></table></div>` })}
+    ${panel({ title: "LAST PRINT", id: "tape-snap", flush: true, meta: "—",
+      body: `<table class="tbl"><thead><tr>
+        <th class="txt">SYMBOL</th><th>LTP</th><th>CHG%</th><th>DAY RANGE</th>
+        <th>VOLUME</th><th>OI</th><th>LAST TICK</th>
+        </tr></thead><tbody id="tape-body"></tbody></table>` })}
+  </div>`;
   drawTape();
   addTimer("tape:draw", drawTape, 300);
+}
+
+/* ---------- live book exposure ------------------------------------------- */
+/* PRT marks the whole book off the chain every 30s, which is the honest number
+   but a slow one: between marks a desk is blind to a move it can see happening
+   on the tape.
+   Delta is the first-order answer. Net delta times the spot move since the
+   last mark is what the book has made or lost from direction, and it is exact
+   to first order. It is NOT the P&L: gamma, theta and vega are all moving too.
+   So it is labelled as what it is, and it resets to zero on every full mark
+   rather than accumulating drift. */
+
+function paintLiveDelta() {
+  const cell = $("#pf-livedelta");
+  if (!cell || !state.lastRisk) return;
+  const v = cell.querySelector(".v");
+  const live = liveDeltaPnl(state.lastRisk, Object.fromEntries(state.markSpot));
+  if (!live || feedState() !== "LIVE") {
+    // No tick, or a feed that has gone quiet. Either way there is no move to
+    // measure, and a stale spot would report a move that already happened as
+    // if it were happening now.
+    v.textContent = "—";
+    v.className = "v faint";
+    cell.title = feedState() === "LIVE"
+      ? "no ticking underlying in this book"
+      : `feed is ${feedState()}; no live spot to measure against`;
+    return;
+  }
+  v.textContent = (live.pnl >= 0 ? "+" : "") + fmt.n(live.pnl, 0);
+  v.className = `v ${cls(live.pnl)}`;
+  cell.title = `net delta x spot move since the last full mark `
+    + `(${live.legs} underlying${live.legs > 1 ? "s" : ""}). `
+    + `First-order only: gamma, theta and vega are moving too.`;
+}
+
+function liveDeltaPnl(risk, marks) {
+  if (!risk || !risk.by_underlying) return null;
+  let pnl = 0, seen = 0;
+  for (const [sym, g] of Object.entries(risk.by_underlying)) {
+    const mark = marks[sym];
+    const now = state.tickStore.get(sym);
+    if (!mark || !now || !g.delta) continue;
+    pnl += g.delta * (now.ltp - mark);
+    seen++;
+  }
+  return seen ? { pnl, legs: seen } : null;
+}
+
+function drawTapeLog() {
+  const tb = $("#tape-log");
+  if (!tb) return;
+  if (!state.tape.length) {
+    tb.innerHTML = `<tr><td colspan="5" class="empty">No prints yet on this
+      connection. The tape fills from the tick feed as it arrives; nothing is
+      replayed or backfilled into it.</td></tr>`;
+    return;
+  }
+  // Direction is against this symbol's own previous print, not against the
+  // previous close. An uptick into a down day is still an uptick.
+  tb.innerHTML = state.tape.map((t) => `<tr>
+    <td class="txt faint">${fmt.ist(new Date(t.at))}</td>
+    <td class="txt sym">${esc(t.symbol)}</td>
+    <td class="${t.dir > 0 ? "up" : t.dir < 0 ? "down" : ""}">${fmt.n(t.ltp)}${
+      t.dir > 0 ? " ▲" : t.dir < 0 ? " ▼" : ""}</td>
+    <td class="${cls(t.change_pct)}">${fmt.pct(t.change_pct)}</td>
+    <td class="faint">${t.volume ? fmt.compact(t.volume) : "—"}</td></tr>`).join("");
 }
 
 function drawTape() {
@@ -2041,6 +2124,7 @@ function drawTape() {
              return u.cls ? `<span class="${u.cls}">${u.label}</span>` : u.label; })()
     + ` · ${state.tickCount.toLocaleString()} TICKS`
     + (state.lastTickAt ? ` · LAST ${fmt.ist(state.lastTickAt)}` : "");
+  drawTapeLog();
   const rows = [...state.tickStore.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   tb.innerHTML = rows.map(([sym, t]) => `
     <tr><td class="txt sym" onclick="show('chart',{symbol:'${sym}'})">${sym}</td>
@@ -2232,8 +2316,19 @@ async function renderPortfolio(view) {
       if (!host) return;
       const r = p.risk || { net: {}, by_underlying: {}, unmarked: [], complete: true };
       const net = r.net || {};
+      state.lastRisk = r;
 
-      $("#pf-panel .panel-meta").innerHTML = stamp("AUTO 30s")
+      // Snapshot the spot each underlying was marked at, so the live delta
+      // number below measures from a known point and resets on every mark.
+      state.markSpot = new Map();
+      for (const sym of Object.keys(r.by_underlying || {})) {
+        const t = state.tickStore.get(sym);
+        if (t) state.markSpot.set(sym, t.ltp);
+      }
+      state.lastMarkAt = Date.now();
+
+      $("#pf-panel .panel-meta").innerHTML = ageStamp(p.as_of)
+        + ' <span class="faint">· AUTO 30s</span>'
         + (r.summary ? ` · <span class="badge">${esc(r.summary)}</span>` : "");
 
       host.innerHTML = `
@@ -2254,6 +2349,8 @@ async function renderPortfolio(view) {
           <div class="risk-cell"><span class="k">THETA / DAY</span><span class="v ${cls(net.theta)}">${gk(net.theta, 0)}</span></div>
           <div class="risk-cell"><span class="k">VEGA / PT</span><span class="v ${cls(net.vega)}">${gk(net.vega, 0)}</span></div>
           <div class="risk-cell"><span class="k">RHO</span><span class="v">${gk(net.rho, 0)}</span></div>
+          <div class="risk-cell" id="pf-livedelta"><span class="k">DELTA P&amp;L SINCE MARK</span>
+            <span class="v faint">—</span></div>
         </div>
         ${r.complete ? "" : `<div class="risk-warn">NET EXCLUDES ${r.unmarked.length}
           UNMARKED LEG${r.unmarked.length > 1 ? "S" : ""}: ${esc(r.unmarked.join(" · "))}
@@ -3544,8 +3641,18 @@ function connectWS() {
       paintFeed();
       msg.data.forEach((t) => {
         t._at = new Date(state.lastTickAt);
+        const prev = state.tickStore.get(t.symbol);
         state.tickStore.set(t.symbol, t);
+        // Uptick / downtick against this symbol's own previous print, which is
+        // what a tape shows. Not against the previous close.
+        state.tape.unshift({
+          at: state.lastTickAt, symbol: t.symbol, ltp: t.ltp,
+          dir: prev ? Math.sign(t.ltp - prev.ltp) : 0,
+          change_pct: t.change_pct, volume: t.volume,
+        });
+        if (state.tape.length > state.tapeMax) state.tape.length = state.tapeMax;
         liveUpdatePulse(t);
+        if (state.view === "portfolio") paintLiveDelta();
       });
       updateStatusbar();
     } else if (msg.type === "alert") {
@@ -3595,6 +3702,44 @@ function paintFeed() {
       : "no tick has arrived on this connection";
   }
   updateStatusbar();
+}
+
+/* ---------- data age ----------------------------------------------------- */
+/* Three different claims, never conflated:
+     AS OF <t>   the source said this was true at t. Real provenance.
+     FETCHED <t> we asked at t; the source published no time of its own.
+     RENDERED <t> the browser drew it at t and nobody knows how old it is.
+   The old stamp() printed the browser clock in every case, so a chain that
+   was ninety seconds stale looked exactly as current as one a tick old. */
+
+function ageOf(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function ageClass(ms, warn = 30_000, bad = 120_000) {
+  if (ms === null) return "";
+  return ms > bad ? "down" : ms > warn ? "warn" : "";
+}
+
+function ageText(ms) {
+  if (ms === null) return "";
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m${String(s % 60).padStart(2, "0")}s` : `${Math.floor(m / 60)}h${m % 60}m`;
+}
+
+/* Renders the age badge for a panel. Pass the payload's as_of when it has one. */
+function ageStamp(as_of, { fetched = true } = {}) {
+  const ms = ageOf(as_of);
+  if (ms === null) {
+    return `<span class="age" title="the source published no timestamp; this is when the request was made">`
+         + `${fetched ? "FETCHED" : "RENDERED"} ${fmt.ist()}</span>`;
+  }
+  return `<span class="age ${ageClass(ms)}" title="source timestamp ${new Date(as_of).toLocaleString()}">`
+       + `AS OF ${fmt.ist(new Date(as_of))} · ${ageText(ms)} OLD</span>`;
 }
 
 const TICK_TO_PULSE = { NIFTY: "^NSEI", BANKNIFTY: "^NSEBANK" };

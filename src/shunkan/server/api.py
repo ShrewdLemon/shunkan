@@ -644,6 +644,9 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         return _clean({
             "symbol": c.symbol, "spot": c.spot, "expiry": str(c.expiry),
             "expiries": expiries, "t_years": c.t_years,
+            # When the source said this was true. null means it published no
+            # time, and the UI then says "fetched" instead of "as of".
+            "as_of": c.as_of.isoformat() if c.as_of else None,
             # lot_size is null when no source could name the contract lot —
             # the UI shows a dash and lot_size_source says why.
             "lot_size": c.lot_size, "lot_size_source": c.lot_size_source,
@@ -2068,6 +2071,10 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             "unrealized_pnl": portfolio.unrealized_pnl(prices),
             # null when unpriced or priced against a different book — margin
             # nets across legs, so there is no honest per-position figure
+            # The oldest source timestamp among the chains this book marked
+            # against. The book is only as fresh as its stalest leg.
+            "as_of": min((c.as_of for c in chains.values() if c.as_of),
+                         default=None),
             "margin_used": portfolio.margin_used(),
             "margin": portfolio.margin,
             # ...and why it is null when it is: never asked, asked and refused,
