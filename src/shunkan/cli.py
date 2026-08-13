@@ -35,6 +35,10 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--port", type=int, default=8720)
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--no-browser", action="store_true")
+    p_serve.add_argument(
+        "--i-understand-the-risk", action="store_true",
+        help="Allow binding a non-loopback host. Exposes a live broker session "
+             "and may violate your broker's market-data terms.")
 
     p_quote = sub.add_parser("quote", help="Print quotes for symbols")
     p_quote.add_argument("symbols", nargs="+")
@@ -173,6 +177,7 @@ def _pct(value: float) -> str:
 
 
 def cmd_serve(args) -> int:
+    import secrets
     import threading
     import webbrowser
 
@@ -180,11 +185,39 @@ def cmd_serve(args) -> int:
 
     from shunkan.server import create_app
 
-    url = f"http://{args.host}:{args.port}"
+    loopback = args.host in ("127.0.0.1", "localhost", "::1")
+    token, allowed = "", ()
+
+    if not loopback:
+        # This process holds a live broker session, the position book and the
+        # trade endpoint. Zerodha's terms also forbid showing their market data
+        # "to the public at large", so a shared bind is a licence problem on
+        # top of a security one. Refuse unless the operator says it out loud.
+        if not getattr(args, "i_understand_the_risk", False):
+            console.print(
+                f"[bold red]Refusing to bind {args.host}.[/bold red]\n"
+                "Shunkan has no accounts and holds a live broker session: anyone "
+                "who can reach this port can read your book and place paper trades.\n"
+                "Zerodha's API terms also prohibit displaying their market data to "
+                "anyone but you, so a shared deployment can end your API access.\n\n"
+                "If you still mean it, re-run with --i-understand-the-risk. "
+                "Shunkan will print a one-time token you must append as ?t=..."
+            )
+            return 2
+        token = secrets.token_urlsafe(32)
+        allowed = (args.host, "localhost", "127.0.0.1")
+        console.print(
+            "[bold red]Bound to a non-loopback address.[/bold red] "
+            "Access requires this token, which changes on every restart:"
+        )
+        console.print(f"  [bold]http://{args.host}:{args.port}/?t={token}[/bold]")
+
+    url = f"http://{args.host}:{args.port}" + (f"/?t={token}" if token else "")
     console.print(f"[bold yellow]Shunkan web terminal[/bold yellow] → {url}")
     if not args.no_browser:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
-    uvicorn.run(create_app(), host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(create_app(access_token=token, allowed_hosts=allowed),
+                host=args.host, port=args.port, log_level="warning")
     return 0
 
 
@@ -619,6 +652,8 @@ def cmd_news(args) -> int:
 
 
 def cmd_connect(args) -> int:
+    import getpass
+
     from shunkan.data.brokers import (
         CONNECT_HELP,
         GrowwProvider,
@@ -630,11 +665,21 @@ def cmd_connect(args) -> int:
     )
     from shunkan.data.provider import DataError
 
+    if args.api_secret or getattr(args, "token", None):
+        console.print(
+            "[yellow]Warning:[/yellow] a secret passed on the command line lands "
+            "in your shell history and is visible in `ps` to every account on "
+            "this machine. Prefer the hidden prompt."
+        )
+
     if args.broker == "zerodha":
         stored = load_credentials().get("zerodha", {})
         api_key = args.api_key or stored.get("api_key") or input("Kite api_key: ").strip()
+        # api_secret never expires, so echoing it into scrollback, a tmux log
+        # or a screen share is worse than echoing the daily token would be.
         api_secret = (
-            args.api_secret or stored.get("api_secret") or input("Kite api_secret: ").strip()
+            args.api_secret or stored.get("api_secret")
+            or getpass.getpass("Kite api_secret (hidden): ").strip()
         )
         if not api_key or not api_secret:
             console.print("[red]Both api_key and api_secret are required.[/red]")
@@ -647,7 +692,7 @@ def cmd_connect(args) -> int:
         return 0
 
     if args.broker == "groww":
-        token = args.token or input("Groww api_token: ").strip()
+        token = args.token or getpass.getpass("Groww api_token (hidden): ").strip()
         if not token:
             console.print("[red]An api_token is required.[/red]")
             return 1

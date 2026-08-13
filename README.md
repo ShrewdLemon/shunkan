@@ -192,8 +192,12 @@ at large" and forbid building redistributable caches of it. Running
 host, a VPS with a public port, or in front of other users is a licence
 violation and can get your API access terminated.
 
-There's no authentication in Shunkan. If you bind it to anything other than
-127.0.0.1 you're exposing a live broker session to your network.
+Shunkan has no accounts. `shunkan serve` refuses to bind a non-loopback
+address unless you pass `--i-understand-the-risk`, and when you do it prints a
+per-run token that every API call and the tick socket require. Treat that as a
+guard rail rather than a security model: it is one shared secret, the licence
+problem above does not go away, and you are still exposing a live broker
+session.
 
 ## Status
 

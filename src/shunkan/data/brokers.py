@@ -59,7 +59,19 @@ def save_credentials(section: str, **fields: str) -> None:
         except (json.JSONDecodeError, OSError):
             creds = {}
     creds.setdefault(section, {}).update({k: v for k, v in fields.items() if v})
-    CREDENTIALS_FILE.write_text(json.dumps(creds, indent=2))
+    # Write to a 0600 temp file in the same directory and rename over the
+    # target. write_text-then-chmod published api_secret and access_token at
+    # the process umask for the width of a syscall, and left a half-written
+    # file behind if the process died mid-write.
+    tmp = CREDENTIALS_FILE.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(creds, fh, indent=2)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(tmp, CREDENTIALS_FILE)
     try:
         CREDENTIALS_FILE.chmod(0o600)
     except OSError:
@@ -140,10 +152,11 @@ def kite_login_flow(
         timeout=10.0,
     )
     if resp.status_code != 200:
-        raise DataError(f"Token exchange failed ({resp.status_code}): {resp.text[:200]}")
+        raise DataError(f"Token exchange failed (HTTP {resp.status_code}). "
+                        "Check the api_secret and the redirect URL on your Kite app.")
     access_token = resp.json().get("data", {}).get("access_token", "")
     if not access_token:
-        raise DataError(f"No access_token in response: {resp.text[:200]}")
+        raise DataError("Kite accepted the request but returned no access_token.")
 
     save_credentials(
         "zerodha", api_key=api_key, api_secret=api_secret, access_token=access_token
@@ -207,10 +220,11 @@ def kite_catch_and_exchange(
         headers={"X-Kite-Version": "3"}, timeout=10.0,
     )
     if resp.status_code != 200:
-        raise DataError(f"Token exchange failed ({resp.status_code}): {resp.text[:200]}")
+        raise DataError(f"Token exchange failed (HTTP {resp.status_code}). "
+                        "Check the api_secret and the redirect URL on your Kite app.")
     access_token = resp.json().get("data", {}).get("access_token", "")
     if not access_token:
-        raise DataError(f"No access_token in response: {resp.text[:200]}")
+        raise DataError("Kite accepted the request but returned no access_token.")
     save_credentials("zerodha", api_key=api_key, api_secret=api_secret,
                      access_token=access_token)
     return access_token

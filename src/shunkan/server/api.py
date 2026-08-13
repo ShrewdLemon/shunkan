@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -61,6 +61,16 @@ def _quote_dict(q) -> dict:
             "day_low": q.day_low, "market_cap": q.market_cap, "name": q.name,
         }
     )
+
+
+def _same_secret(sent: str, expected: str) -> bool:
+    """Constant-time compare. encode() first: compare_digest raises
+    UnicodeEncodeError on a non-ASCII str, which would turn a junk header into
+    an unhandled 500 instead of a clean 401."""
+    import hmac
+
+    return hmac.compare_digest(sent.encode("utf-8", "replace"),
+                               expected.encode("utf-8", "replace"))
 
 
 def _chain_error(symbol: str, exc: Exception) -> HTTPException:
@@ -195,7 +205,14 @@ class MLTrainRequest(BaseModel):
     end: str | None = None
 
 
-def create_app() -> FastAPI:
+def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> FastAPI:
+    """Build the app.
+
+    `access_token` and `allowed_hosts` are set by `shunkan serve` when it binds
+    to anything other than loopback. Left empty (the default, and the only case
+    for a normal localhost run) the guards below are inert, so nothing about
+    the single-user experience changes.
+    """
     provider = get_provider()
     portfolio = Portfolio.load()
     alert_book = AlertBook()
@@ -315,6 +332,35 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Shunkan", version=__version__, lifespan=lifespan)
     app.add_middleware(GZipMiddleware, minimum_size=1500)
+
+    @app.middleware("http")
+    async def _guard(request, call_next):
+        """Host pinning, token auth and an Origin check on writes.
+
+        All three are no-ops on a default localhost run. They exist because
+        this process holds a live broker session: without them, binding to a
+        LAN address hands the position book, the trade endpoint and the
+        licensed Kite tape to the whole network segment.
+
+        The Origin check covers the loopback case too. A page that has DNS
+        rebound to 127.0.0.1 is same-origin, so CORS never fires, and the
+        bodyless POSTs here are CORS-simple and would never see a preflight.
+        """
+        if allowed_hosts:
+            host = (request.headers.get("host") or "").split(":")[0]
+            if host not in allowed_hosts:
+                return JSONResponse({"detail": "host not allowed"}, status_code=403)
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            origin = request.headers.get("origin")
+            if origin and origin != str(request.base_url).rstrip("/"):
+                return JSONResponse({"detail": "cross-origin write refused"},
+                                    status_code=403)
+        if access_token and request.url.path.startswith("/api/"):
+            sent = (request.headers.get("x-shunkan-token")
+                    or request.query_params.get("t") or "")
+            if not _same_secret(sent, access_token):
+                return JSONResponse({"detail": "unauthorised"}, status_code=401)
+        return await call_next(request)
 
     @app.middleware("http")
     async def _no_stale_static(request, call_next):
@@ -2204,6 +2250,17 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws/ticks")
     async def ws_ticks(ws: WebSocket):
+        # Starlette's HTTP middleware never sees a websocket scope, so this
+        # route has to repeat the guard itself. It carries the live exchange
+        # tape, which is the data Zerodha licenses for your own use only.
+        if allowed_hosts:
+            host = (ws.headers.get("host") or "").split(":")[0]
+            if host not in allowed_hosts:
+                await ws.close(code=1008)
+                return
+        if access_token and not _same_secret(ws.query_params.get("t", ""), access_token):
+            await ws.close(code=1008)
+            return
         await ws.accept()
         await hub.attach(ws)
         try:
