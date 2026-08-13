@@ -243,8 +243,20 @@ def cmd_serve(args) -> int:
         )
         console.print(f"  [bold]http://{args.host}:{args.port}/?t={token}[/bold]")
 
-    url = f"http://{args.host}:{args.port}" + (f"/?t={token}" if token else "")
+    # 0.0.0.0 is a bind address, not somewhere you can browse to. Printing it
+    # as a link sent people to a dead URL while the container underneath was
+    # reporting healthy, because the healthcheck runs INSIDE the container and
+    # cannot see whether the port was ever published.
+    shown = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
+    url = f"http://{shown}:{args.port}" + (f"/?t={token}" if token else "")
     console.print(f"[bold yellow]Shunkan web terminal[/bold yellow] → {url}")
+    if args.host in ("0.0.0.0", "::"):
+        console.print(
+            f"[dim]Bound {args.host}:{args.port} inside this process. That address "
+            "only reaches you if the port is published: with Docker use "
+            "`docker compose up -d`, not `docker run` or the Desktop Run button, "
+            "which expose the port without publishing it.[/dim]"
+        )
     if not args.no_browser:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     uvicorn.run(create_app(access_token=token, allowed_hosts=allowed),

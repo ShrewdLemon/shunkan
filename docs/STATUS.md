@@ -60,6 +60,12 @@ Things with real test coverage that have been verified against a live broker.
 
 ## Known rough edges
 
+- **A container can report healthy while being unreachable.** The healthcheck
+  runs inside the container, so it passes whenever the app is up, regardless of
+  whether the port was ever published. `docker run` and Docker Desktop's Run
+  button both expose without publishing. Docker gives the container no way to
+  see its own host mapping, so the startup log warns instead.
+
 - **Live delta P&L is first order only.** Net delta times the spot move since
   the last full mark. Gamma, theta and vega are all moving too, so it is not
   the book's P&L and is labelled as what it is. It resets on every mark rather
