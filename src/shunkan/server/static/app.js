@@ -280,9 +280,14 @@ function sparkline(canvas, closes, w = 88, h = 24) {
   const min = Math.min(...closes), max = Math.max(...closes);
   const X = (i) => (i / (closes.length - 1)) * (w - 2) + 1;
   const Y = (v) => 2 + (1 - (v - min) / (max - min || 1)) * (h - 4);
-  const upward = closes[closes.length - 1] >= closes[0];
-  ctx.strokeStyle = upward ? "#2ebd85" : "#f1564b";
-  ctx.lineWidth = 1.2;
+  // Deliberately NOT coloured by direction. This sparkline spans a month while
+  // the CHG% beside it is the day, so colouring both left every row saying two
+  // things at once: NIFTY down 0.5% on the day in red, next to a green line
+  // because the month was up. The column header names the period; the line
+  // carries shape, and CHG% is the only thing on the row allowed to carry
+  // direction.
+  ctx.strokeStyle = "rgba(255, 166, 43, 0.75)";
+  ctx.lineWidth = 1;
   ctx.beginPath();
   closes.forEach((v, i) => (i === 0 ? ctx.moveTo(X(i), Y(v)) : ctx.lineTo(X(i), Y(v))));
   ctx.stroke();
