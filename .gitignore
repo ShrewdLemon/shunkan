@@ -18,14 +18,18 @@ dist/
 # SHUNKAN_HOME at the working tree these patterns stop a broker token or a
 # market-data cache from being committed. Zerodha's API terms also prohibit
 # redistributing their data, so the store never belongs in git.
+#
+# Anchor these to the repo root with a leading slash. An unanchored `store/`
+# also matches src/shunkan/store/, which is a source package, and silently
+# drops it from the repo. CI caught that; a local editable install did not.
 credentials.json
 *.token
 .env
 .env.*
-.shunkan/
-store/
-cache/
+/.shunkan/
+/store/
+/cache/
 *.parquet
-portfolio.json
-watchlist.json
-alerts.json
+/portfolio.json
+/watchlist.json
+/alerts.json
