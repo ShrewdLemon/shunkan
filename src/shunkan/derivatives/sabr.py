@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from shunkan.derivatives.greeks import implied_vol
+
 # A smile fitted to fewer than this many strikes is describing noise. Three
 # free parameters need meaningfully more than three points to mean anything.
 MIN_STRIKES = 6
@@ -285,8 +287,19 @@ def calibrate_chain(chain, beta: float = 0.5, rate: float = 0.065) -> SABRFit:
     forward = float(chain.spot) * float(np.exp(rate * max(chain.t_years, 0.0)))
 
     otm_is_call = strikes >= forward
-    iv = np.where(otm_is_call, chain.call_iv, chain.put_iv)
     oi = np.where(otm_is_call, chain.call_oi, chain.put_oi)
+
+    # Solve from the mid of the quoted book where there is one. A strike that
+    # last traded ten minutes ago still has a live two-sided market, and its
+    # last print is not a price: on real NIFTY quotes this was the difference
+    # between an unfittable zigzag and a smile.
+    call_px, put_px = chain.quote_price("call"), chain.quote_price("put")
+    px = np.where(otm_is_call, call_px, put_px)
+    iv = np.array([
+        implied_vol(float(p_), forward, float(k_), float(chain.t_years), bool(c_))
+        if p_ > 0 else np.nan
+        for p_, k_, c_ in zip(px, strikes, otm_is_call)
+    ], dtype=np.float64)
 
     return calibrate_sabr(forward=forward, strikes=strikes, market_iv=iv,
                           t_years=float(chain.t_years), beta=beta,
