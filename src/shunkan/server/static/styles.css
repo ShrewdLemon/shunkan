@@ -973,3 +973,29 @@ main { overflow-x: hidden; }
 .age { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.06em; color: var(--text-dim); }
 .age.warn { color: var(--amber); }
 .age.down { color: var(--down); }
+
+/* --- broker setup --------------------------------------------------------- */
+.setup {
+  width: 440px; max-width: 92vw; margin: 12vh auto 0;
+  background: var(--bg-panel-2); border: 1px solid var(--amber);
+  padding: 18px 20px;
+}
+.setup-head {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.18em;
+  color: var(--amber); font-weight: 700; margin-bottom: 12px;
+}
+.setup p { font-size: 11px; color: var(--text-dim); line-height: 1.55; margin-bottom: 12px; }
+.setup a { color: var(--blue); }
+.setup code { font-size: 10.5px; background: var(--bg); padding: 1px 4px; border: 1px solid var(--stroke); }
+.setup label {
+  display: block; font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em;
+  color: var(--blue); margin-bottom: 10px;
+}
+.setup input {
+  display: block; width: 100%; margin-top: 4px; padding: 6px 8px;
+  background: var(--bg); border: 1px solid var(--stroke); color: var(--text);
+  font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em;
+}
+.setup input:focus { outline: none; border-color: var(--amber); }
+.setup-note { font-size: 10px; color: var(--text-faint); }
+.setup-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }

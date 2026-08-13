@@ -109,11 +109,17 @@ be the paid Connect app, not the free Personal one, which returns
 2. Set the redirect URL to exactly `http://127.0.0.1:8722/callback`. This is
    hardcoded in `data/brokers.py` and a mismatch fails silently, which is a
    miserable thing to debug.
-3. Run `shunkan connect zerodha` and paste the api_key and api_secret once.
+3. Open the terminal and click the broker chip in the top bar. Paste the
+   api_key and api_secret once; it saves them and takes you straight to the
+   Zerodha login. (`shunkan connect zerodha` does the same from a shell if you
+   prefer.)
 
-Kite invalidates the access token every morning around 07:30 IST, so
-`shunkan connect zerodha` is a daily ritual. Zerodha's terms say automating that
-login isn't allowed, so Shunkan doesn't try.
+Kite invalidates the access token every morning around 07:30 IST. The chip
+turns amber and says RECONNECT; clicking it opens the Zerodha login and
+hot-swaps the new token into the running session, no restart. Zerodha's terms
+say automating that login isn't allowed, so Shunkan doesn't try.
+
+You type your Zerodha password on Zerodha's own page. Shunkan never sees it.
 
 Credentials go to `~/.shunkan/credentials.json` with mode 0600. Nothing is sent
 anywhere except Kite.

@@ -3846,9 +3846,13 @@ async function refreshStatus() {
       `NSE <b class="${s.session.open ? "ok" : ""}">${s.session.phase.replace(/_/g, " ").toUpperCase()}</b>`;
     const chip = $("#chip-broker");
     if (!s.broker) {
+      // Was a dead chip that told you to go and use the CLI. A terminal that
+      // cannot be connected from inside itself is not self-contained.
       chip.innerHTML = s.offline ? `<b class="warn">OFFLINE MODE</b>`
-        : `BROKER <b class="warn">NONE · DELAYED</b>`;
-      chip.onclick = null; chip.style.cursor = "";
+        : `BROKER <b class="warn">NONE · CONNECT</b>`;
+      chip.title = s.offline ? "" : "Add your Kite api_key and api_secret";
+      chip.style.cursor = s.offline ? "" : "pointer";
+      chip.onclick = s.offline ? null : brokerSetup;
     } else if (s.broker_healthy === false) {
       // configured is not healthy — say so, and make the fix one click
       chip.innerHTML = `BROKER <b class="warn">${s.broker.toUpperCase()} ⚠ RECONNECT</b>`;
@@ -3861,6 +3865,52 @@ async function refreshStatus() {
     }
     $("#sb-version").textContent = `SHUNKAN v${s.version}`;
   } catch {}
+}
+
+function brokerSetup() {
+  // One-time credential entry. The secret goes to localhost and is written
+  // 0600; it is never returned by the API, so this form is the only place it
+  // ever exists in the browser and it is cleared as soon as it is sent.
+  const back = elv("div", "palette-backdrop");
+  back.innerHTML = `
+    <div class="setup">
+      <div class="setup-head">CONNECT ZERODHA</div>
+      <p>One time. Create a <b>Connect</b> app at
+        <a href="https://developers.kite.trade" target="_blank" rel="noopener">developers.kite.trade</a>
+        and set its redirect URL to exactly
+        <code>http://127.0.0.1:8722/callback</code>.</p>
+      <label>API KEY<input id="bs-key" autocomplete="off" spellcheck="false"></label>
+      <label>API SECRET<input id="bs-secret" type="password" autocomplete="off" spellcheck="false"></label>
+      <p class="setup-note">Stored on this machine at <code>~/.shunkan/credentials.json</code>,
+        owner-only. Never sent anywhere except Kite. You type your Zerodha password
+        on Zerodha's own page, never here.</p>
+      <div class="setup-actions">
+        <button class="tbtn" id="bs-cancel">CANCEL</button>
+        <button class="tbtn" id="bs-save">SAVE &amp; LOG IN</button>
+      </div>
+    </div>`;
+  document.body.appendChild(back);
+  const close = () => back.remove();
+  $("#bs-cancel").onclick = close;
+  back.onclick = (e) => { if (e.target === back) close(); };
+  $("#bs-key").focus();
+
+  const save = async () => {
+    const api_key = $("#bs-key").value.trim();
+    const api_secret = $("#bs-secret").value;
+    try {
+      await postJSON("/api/broker/setup", { api_key, api_secret });
+      $("#bs-secret").value = "";        // out of the DOM immediately
+      close();
+      toast("Credentials saved — opening Zerodha login", "ok");
+      reconnectBroker();
+    } catch (e) { toast(e.message, "err"); }
+  };
+  $("#bs-save").onclick = save;
+  back.onkeydown = (e) => {
+    if (e.key === "Escape") close();
+    if (e.key === "Enter") save();
+  };
 }
 
 async function reconnectBroker() {
