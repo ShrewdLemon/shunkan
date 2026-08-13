@@ -2046,21 +2046,36 @@ function drawTape() {
 async function renderScreener(view) {
   view.innerHTML = panel({
     title: "SCREENER", id: "scr-panel", flush: true,
-    meta: `<span class="controls">
+    meta: `<span id="scr-upd">IDLE</span>
+      <span class="controls" style="display:inline-flex;margin-left:8px">
       <select class="in" id="scr-uni">${["nifty50","banks","it","fno","mega","tech","semis","etf"]
         .map((u) => `<option>${u}</option>`).join("")}</select>
       <input class="in" id="scr-rules" placeholder="rsi<40, above_sma200" size="20">
       <button class="btn" id="scr-go">SCREEN</button></span>`,
     body: `<div class="empty">Rules AND together: rsi, ret_1w/1mo/3mo, vol_ann, from_high, vol_surge, above_sma50/200</div>`,
   });
-  $("#scr-go").onclick = async () => {
+
+  // The query the timer repeats — the last one that SUCCEEDED, not whatever is
+  // currently typed: half-finished text in the box must never fire a sweep.
+  // Null until the trader screens once, because a universe sweep is a history
+  // fetch per symbol and nobody asked for one by opening the view.
+  let query = null, inflight = false;
+
+  const run = async (q, manual) => {
+    if (inflight) {
+      if (manual) toast("a screen is already running", "err");
+      return;
+    }
+    inflight = true;
     const body = $("#scr-panel .panel-body");
-    body.innerHTML = loading("scanning");
+    if (manual) body.innerHTML = loading("scanning");
     try {
-      const rules = $("#scr-rules").value.split(",").map((s) => s.trim()).filter(Boolean).join(",");
-      const r = await getJSON(`/api/screen?universe=${$("#scr-uni").value}&rules=${encodeURIComponent(rules)}`);
-      $("#scr-panel .panel-meta") && ($("#scr-panel .panel-head .panel-meta").innerHTML =
-        stamp(`${r.rows.length}/${r.universe_size} PASS${r.errors ? ` · ${r.errors} ERRORS` : ""}`));
+      const r = await getJSON(
+        `/api/screen?universe=${q.universe}&rules=${encodeURIComponent(q.rules)}`);
+      if (!document.body.contains(view)) return;  // view switched mid-flight
+      query = q;
+      $("#scr-upd").innerHTML = stamp(
+        `${r.rows.length}/${r.universe_size} PASS${r.errors ? ` · ${r.errors} ERRORS` : ""} · AUTO 5m`);
       body.innerHTML = `
         <table class="tbl"><thead><tr><th>SYMBOL</th><th>PRICE</th><th>1W</th><th>1M</th><th>3M</th>
         <th>RSI</th><th>VOL ANN</th><th>OFF HIGH</th><th>SMA50</th><th>SMA200</th></tr></thead>
@@ -2076,17 +2091,127 @@ async function renderScreener(view) {
           <td class="${row.above_sma50 ? "up" : "faint"}">${row.above_sma50 ? "ABOVE" : "below"}</td>
           <td class="${row.above_sma200 ? "up" : "faint"}">${row.above_sma200 ? "ABOVE" : "below"}</td>
         </tr>`).join("")}</tbody></table>`;
-    } catch (e) { body.innerHTML = `<div class="empty">${e.message}</div>`; }
+    } catch (e) {
+      if (!document.body.contains(view)) return;  // view switched mid-flight
+      // A failed poll must never wipe the last good table; a failed manual
+      // screen must always say why.
+      $("#scr-upd").innerHTML = `<span class="down">SCREEN FAILED ${fmt.ist()}</span>`;
+      if (manual || !query) body.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    } finally {
+      inflight = false;
+    }
   };
+
+  $("#scr-go").onclick = () => run({
+    universe: $("#scr-uni").value,
+    rules: $("#scr-rules").value.split(",").map((s) => s.trim()).filter(Boolean).join(","),
+  }, true);
+  // Every metric here is derived from daily candles behind a 15-minute history
+  // cache (provider.py:169-170), so 5 minutes picks up a cache turnover well
+  // inside its life without re-deriving identical rows every minute.
+  addTimer("screener:refresh", () => { if (query) run(query, false); }, 300000);
 }
 
 /* ---------- PORTFOLIO ---------- */
+
+/* Margin is the exchange's number or nothing. Priced, it shows the SPAN split
+   and what the netting saved — the hedge benefit is the whole reason a condor
+   is affordable and one naked short is not. Unpriced, it names the missing
+   round trip instead of filling the gap with arithmetic of our own. */
+function marginLine(p) {
+  if (!p.positions.length) return "";
+  const st = p.margin_status || {}, m = p.margin || {};
+  const btn = `<button class="tbtn" id="pf-reprice" style="padding:2px 9px;font-size:9px">${
+    st.state === "priced" ? "REPRICE" : "PRICE NOW"}</button>`;
+  // A stale `margin` still holds the PREVIOUS basket's SPAN numbers, so the
+  // breakdown is shown only when the status says it is the current book's.
+  if (st.state !== "priced" || !m.final) {
+    return `<div class="margin-line"><span>MARGIN —</span>
+      <span class="why">${esc(st.reason || "not priced")}</span>${btn}</div>`;
+  }
+  return `<div class="margin-line">
+    <span>SPAN <b>${fmt.i(m.final.span)}</b></span>
+    <span>EXPOSURE <b>${fmt.i(m.final.exposure)}</b></span>
+    <span>PREMIUM <b>${fmt.i(m.final.option_premium)}</b></span>
+    <span>HEDGE BENEFIT <b class="up">${fmt.i(m.hedge_benefit)}</b></span>
+    <span>${esc(m.source || "")}</span>${btn}</div>`;
+}
 
 async function renderPortfolio(view) {
   view.innerHTML = panel({ title: "BOOK", id: "pf-panel", flush: true, meta: "—",
     body: loading("valuing") });
 
   const gk = (v, d = 0) => (v === null || v === undefined ? "—" : fmt.n(v, d));
+  // The same identity margin is priced against server-side — position key AND
+  // net size — so this changes exactly when the exchange's number stops
+  // applying, and never more often.
+  const bookKey = (p) => p.positions.map((x) => `${x.symbol}@${x.quantity}`).join("|");
+  let asked = null;    // book state the exchange has already been asked about
+  let ticket = null;   // open settlement ticket, if any
+
+  const priceMargin = async (force) => {
+    try { await postJSON(`/api/portfolio/margin${force ? "?force=true" : ""}`); }
+    catch (e) { toast(e.message, "err"); }
+    if (document.body.contains(view)) draw();
+  };
+
+  // Settlement ticket. Assignment is a real cash event, so the price is the
+  // trader's to state: nothing here derives one from a spot we happen to hold,
+  // and nothing pre-fills it. Lives inside the view, so switching views takes
+  // it along — no document-level listener to leak, no ticket left floating.
+  const closeTicket = () => { ticket?.remove(); ticket = null; };
+  const openSettle = (tr) => {
+    closeTicket();
+    const key = tr.dataset.key, label = tr.dataset.label;
+    const qty = Number(tr.dataset.qty), avg = Number(tr.dataset.avg);
+    const el = elv("div", "ticket");
+    el.innerHTML = `
+      <div class="ticket-head">SETTLE ${esc(label)}</div>
+      <div class="ticket-row">
+        <span class="tk-lots" style="margin-left:0">${fmt.n(qty, 0)} @ AVG ${fmt.n(avg)}</span>
+        <input class="in st-px" placeholder="settle px" size="8" style="margin-left:auto">
+      </div>
+      <div class="ticket-foot"><span class="st-note">price per unit — 0 is a number you type</span>
+        <span class="tk-keys">↵ record · esc</span></div>
+      <div class="tk-note">your number, not the exchange's — journalled as a settlement,
+        not as a fill. Cash only: a physically settled stock option's delivery leg is a
+        separate trade.</div>`;
+    const pxIn = el.querySelector(".st-px"), note = el.querySelector(".st-note");
+    // Preview only — both figures are arithmetic on numbers already on screen,
+    // and the position is one-sided, so realized is exact rather than an
+    // approximation of what the book will record.
+    const preview = () => {
+      const px = Number(pxIn.value);
+      note.innerHTML = pxIn.value.trim() === "" || !(px >= 0)
+        ? "price per unit — 0 is a number you type"
+        : `${qty < 0 ? "pay" : "receive"} <b>${fmt.n(Math.abs(qty) * px, 0)}</b>
+           · realized <span class="${cls((px - avg) * qty)}">${fmt.n((px - avg) * qty, 0)}</span>`;
+    };
+    const record = async () => {
+      const px = Number(pxIn.value);
+      if (pxIn.value.trim() === "" || !(px >= 0)) {
+        return toast("settlement price required — type it, including 0", "err");
+      }
+      try {
+        const r = await postJSON("/api/portfolio/settle", { symbol: key, price: px });
+        toast(`SETTLED ${r.label} ${fmt.n(r.quantity, 0)} @ ${fmt.n(r.price)}`
+          + ` · realized ${fmt.n(r.realized, 0)}`, "ok");
+        closeTicket();
+        draw();
+      } catch (e) { toast(e.message, "err"); }
+    };
+    pxIn.oninput = preview;
+    el.onkeydown = (ev) => {
+      if (ev.key === "Escape") return closeTicket();
+      if (ev.key === "Enter") return record();
+    };
+    const box = tr.getBoundingClientRect();
+    el.style.top = `${box.bottom + 4}px`;
+    el.style.left = `${Math.min(box.left, innerWidth - 260)}px`;
+    view.appendChild(el);
+    pxIn.focus();
+    ticket = el;
+  };
 
   const draw = async () => {
     try {
@@ -2109,6 +2234,7 @@ async function renderPortfolio(view) {
           ["MARGIN", p.margin_used === null || p.margin_used === undefined
             ? "—" : "\u20b9" + fmt.n(p.margin_used, 0)],
         ])}
+        ${marginLine(p)}
 
         <div class="risk-strip">
           <div class="risk-cell"><span class="k">NET DELTA</span><span class="v ${cls(net.delta)}">${gk(net.delta, 1)}</span></div>
@@ -2123,10 +2249,13 @@ async function renderPortfolio(view) {
 
         ${p.positions.length ? `<div class="tbl-scroll"><table class="tbl"><thead><tr>
           <th>CONTRACT</th><th>QTY</th><th>AVG</th><th>LAST</th><th>VALUE</th><th>P&amp;L</th></tr></thead>
-          <tbody>${p.positions.map((pos) => `<tr class="${pos.expired ? "row-dead" : ""}">
+          <tbody>${p.positions.map((pos) => `<tr class="${pos.expired ? "row-dead" : ""}"
+            data-key="${esc(pos.symbol)}" data-label="${esc(pos.label || pos.symbol)}"
+            data-qty="${pos.quantity}" data-avg="${pos.avg_cost}">
             <td class="txt sym">${esc(pos.label || pos.symbol)}
               ${pos.is_short ? '<span class="tag-short">SHORT</span>' : ""}
-              ${pos.expired ? '<span class="tag-dead">EXPIRED</span>' : ""}</td>
+              ${pos.expired ? '<span class="tag-dead">EXPIRED</span>' : ""}
+              ${pos.settleable ? '<button class="tbtn pf-settle" style="padding:1px 7px;font-size:9px">SETTLE</button>' : ""}</td>
             <td class="${pos.is_short ? "down" : "up"}">${fmt.n(pos.quantity, 0)}${
               pos.lot_size ? `<span class="faint"> (${fmt.n(pos.quantity / pos.lot_size, 0)}L)</span>` : ""}</td>
             <td>${fmt.n(pos.avg_cost)}</td><td>${fmt.n(pos.last)}</td>
@@ -2135,10 +2264,35 @@ async function renderPortfolio(view) {
           </tbody></table></div>`
           : `<div class="empty">Flat. Paper-only — orders never reach a broker.
              Book a leg from the OPT chain by clicking a premium.</div>`}`;
+
+      const rep = $("#pf-reprice");
+      // Re-asking is the trader's call, and force is the only way past the
+      // server's one-answer-per-book memo.
+      if (rep) rep.onclick = () => { asked = bookKey(p); priceMargin(true); };
+      // Fill the tile unprompted, at most one exchange round trip per book
+      // state: SPAN nets across the whole basket, so margin cannot be kept
+      // fresh leg by leg, and a desk that adjusts all day should not have to
+      // click for the number after every fill. `asked` is the client-side half
+      // of the guard — price_margin() is idempotent on the same fingerprint,
+      // but a refusal that never reaches it (no broker) must not loop here.
+      const key = bookKey(p);
+      if ((p.margin_used === null || p.margin_used === undefined)
+          && p.positions.length && asked !== key) {
+        asked = key;
+        priceMargin(false);
+      }
     } catch (e) {
-      $("#pf-panel .panel-body").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+      const host = $("#pf-panel .panel-body");
+      if (host) host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     }
   };
+
+  // The panel shell outlives every redraw, so one delegated listener covers
+  // rows that do not exist yet and cannot stack up per draw.
+  $("#pf-panel").addEventListener("click", (ev) => {
+    const b = ev.target.closest(".pf-settle");
+    if (b) openSettle(b.closest("tr"));
+  });
   draw();
   addTimer("portfolio:draw", draw, 30000);
 }

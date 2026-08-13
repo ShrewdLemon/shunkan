@@ -39,6 +39,14 @@ class Portfolio:
         # an iron condor costs a third of one naked short. A per-leg number
         # would be arithmetic the exchange never agreed to.
         self.margin: dict | None = None
+        # The book we last ASKED the exchange about, priced or refused. The
+        # answer only ever applied to that exact basket, so a second ask about
+        # it is spent broker latency for a number already held — this is what
+        # lets a view poll price_margin() without costing a round trip a poll.
+        self.margin_asked: list | None = None
+        # Why the last ask produced no number. When there is no figure to show,
+        # the reason IS the product: the tile owes the trader a dash AND a why.
+        self.margin_error: str | None = None
 
     @property
     def positions(self) -> dict[str, BookPosition]:
@@ -79,6 +87,46 @@ class Portfolio:
                 "Trade in units, or reconnect a source that names the lot."
             )
         return self.trade(instrument, side, lots * instrument.lot_size, price)
+
+    def settle_expired(self, instrument: Instrument | str, price: float) -> float:
+        """Close a dead contract at a settlement price the TRADER supplies.
+
+        Expiry is the one cash event this book cannot observe. There is no
+        settlement feed here, and deriving a price from whatever spot happened
+        to be cached would write a fabricated number straight into realized
+        P&L — the same class of error as a guessed lot size. So the trader
+        states it, including the 0 of an option that expired worthless, which
+        is typed rather than assumed on their behalf.
+
+        The offset itself is an ordinary closing fill: same FIFO, same realized
+        arithmetic, same cash direction. Only the journal differs, and that is
+        the point — the history has to say which cash movements were executed
+        and which were asserted.
+        """
+        inst = self._coerce(instrument)
+        pos = self.book.get(inst)
+        if pos is None or not pos.net_quantity:
+            raise ValueError(f"No open position in {inst.label} to settle.")
+        if not inst.settled():
+            # Gated on the bell, not the date: a contract that still trades is
+            # closed with a trade, at a price the market actually printed.
+            raise ValueError(
+                f"{inst.label} has not stopped trading — close it with a trade, "
+                "not a settlement."
+            )
+        if not (price >= 0):  # NaN fails this too, which is the intent
+            raise ValueError("settlement price must be zero or positive")
+
+        quantity = abs(pos.net_quantity)
+        side = SELL if pos.net_quantity > 0 else BUY
+        realized, closed, _ = self.book.trade(inst, side, quantity, price)
+        self.cash += (quantity * price) * (-1 if side == BUY else 1)
+        self.realized_pnl += realized
+        self._journal(
+            side, inst, quantity, price, realized=realized, closed=closed,
+            settlement=True,
+            note="settled at a price the trader supplied — not an executed fill")
+        return realized
 
     # Long-only helpers kept so existing equity callers and the CLI keep working.
     def buy(self, symbol: str, quantity: float, price: float) -> None:
@@ -127,35 +175,83 @@ class Portfolio:
             return None  # priced against a different book, so currently unknown
         return self.margin["final"]["total"]
 
+    def margin_status(self) -> dict:
+        """Why margin_used() reads what it reads, in words a desk can act on.
+
+        A dash is only honest if it can name its own cause: nothing to margin,
+        never asked, asked and refused, priced against a book that has since
+        changed, or priced but missing a leg the exchange would not name. The
+        branches mirror margin_used() exactly and must never disagree with it.
+        """
+        if not self.positions:
+            return {"state": "flat", "reason": "no positions — nothing to margin"}
+        if not self.margin:
+            if self.margin_asked == self._book_fingerprint():
+                return {"state": "refused",
+                        "reason": self.margin_error
+                        or "the exchange did not price this book"}
+            return {"state": "unpriced",
+                    "reason": "not priced — SPAN nets across the whole basket, "
+                              "so it is one exchange call for the book, never a "
+                              "sum of legs"}
+        if self.margin.get("unpriceable"):
+            return {"state": "unpriceable",
+                    "reason": "no exchange contract name for "
+                              + " · ".join(self.margin["unpriceable"])}
+        if self.margin.get("book") != self._book_fingerprint():
+            return {"state": "stale",
+                    "reason": "priced against a different book — the book has "
+                              "changed since"}
+        return {"state": "priced", "reason": self.margin.get("source", "")}
+
     def _book_fingerprint(self) -> list[tuple[str, float]]:
         """Identity AND size. Halving a leg leaves the position keys
         untouched but changes the margin completely, so a key-only
         fingerprint would keep reporting a number the exchange never quoted."""
         return sorted((k, p.net_quantity) for k, p in self.positions.items())
 
-    def price_margin(self, kite) -> dict | None:
+    def price_margin(self, kite, force: bool = False) -> dict | None:
         """Ask the exchange what this book costs to hold.
 
         Never raises: an unpriceable book shows a dash, it does not break the
         portfolio. Prices the NET position per instrument, which is what the
         exchange actually margins.
+
+        Idempotent per book state, and that idempotence IS the trigger design.
+        The answer is only ever valid for the exact basket it was asked about
+        (see margin_used), so a second ask about that basket spends broker
+        latency to re-learn a number already held. A caller may therefore ask
+        on every draw and a desk that adjusts all day still pays exactly one
+        round trip per adjustment — which is why nothing prices margin per
+        FILL: a four-leg condor is entered one leg at a time, and three of
+        those four baskets are books the trader never meant to hold. `force`
+        is the trader's explicit re-ask, the only way past the memo — and the
+        only way to pick up SPAN parameters that moved under an unchanged book.
         """
         from shunkan.data.kite_fno import basket_margin
 
         if not self.positions:
-            self.margin = None
+            self.margin = self.margin_error = self.margin_asked = None
             return None
+        fingerprint = self._book_fingerprint()
+        if not force and self.margin_asked == fingerprint:
+            return self.margin  # this exact basket has already been asked about
+        self.margin_asked = fingerprint
         legs = [{"instrument": p.instrument,
                  "side": SELL if p.net_quantity < 0 else BUY,
                  "quantity": abs(p.net_quantity)}
                 for p in self.positions.values() if p.net_quantity]
         try:
             priced = basket_margin(kite, legs)
-        except Exception:
+        except Exception as exc:
+            # Still no number, and still no estimate — but now the refusal can
+            # say what was tried, which is the difference between an honest
+            # dash and a blank one.
             self.margin = None
+            self.margin_error = str(exc)[:200]
             return None
-        priced["book"] = self._book_fingerprint()
-        self.margin = priced
+        priced["book"] = fingerprint
+        self.margin, self.margin_error = priced, None
         return priced
 
     # -- persistence --------------------------------------------------------

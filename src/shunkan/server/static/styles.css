@@ -765,3 +765,23 @@ button.btn.danger { background: transparent; color: var(--down); border: 1px sol
 .tag-short { color: var(--down); background: var(--down-soft); }
 .tag-dead  { color: var(--amber); background: var(--amber-dim); }
 .row-dead td { opacity: 0.55; }
+
+/* Margin line — the exchange's own SPAN split, or the reason there is none.
+   The dash and its cause sit on the same row so neither can be read alone. */
+.margin-line {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  padding: 6px 12px; border-bottom: 1px solid var(--stroke);
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+.margin-line b { color: var(--text); font-variant-numeric: tabular-nums; }
+.margin-line b.up { color: var(--up); }
+.margin-line .why { color: var(--amber); letter-spacing: 0; }
+.margin-line .tbtn { margin-left: auto; }
+
+/* A settlement is the trader's number, and the ticket says so in full. */
+.tk-note {
+  margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--stroke-soft);
+  font-family: var(--mono); font-size: 9px; line-height: 1.5;
+  color: var(--text-faint); letter-spacing: 0;
+}

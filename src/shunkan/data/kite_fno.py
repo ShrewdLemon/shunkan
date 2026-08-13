@@ -514,5 +514,9 @@ def basket_margin(kite: KiteProvider, legs: list[dict]) -> dict:
         "final": final,
         "hedge_benefit": max(initial["total"] - final["total"], 0.0),
         "unpriceable": unpriceable,   # named, never silently dropped from the total
-        "source": "Zerodha SPAN calculator (/margins/basket)",
+        # consider_positions=true above nets this basket against the account's
+        # LIVE broker positions, which is what a desk holding both wants — and
+        # it changes what the number means, so the label says so rather than
+        # letting the tile read as though the paper book were priced alone.
+        "source": "Zerodha SPAN calculator (/margins/basket, netted against live positions)",
     }

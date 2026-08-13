@@ -26,8 +26,17 @@ Things with real test coverage that have been verified against a live broker.
 - **Order ticket.** The API path is verified end to end over HTTP. The actual
   click and keyboard interaction has not been exercised in a browser yet. If
   you hit something odd, that's why.
-- **Margin trigger.** `Portfolio.price_margin()` works but nothing calls it
-  automatically yet, so the PRT margin tile reads a dash until something does.
+- **Margin trigger.** `POST /api/portfolio/margin`, fired unprompted by PRT once
+  per book state and forceable with REPRICE. `price_margin()` is idempotent on
+  the book fingerprint, so a desk pays one exchange call per adjustment. Unit
+  tested against a stubbed basket call; the live round trip is still the one
+  verified by hand, not by a test.
+- **Settling an expired position.** `Portfolio.settle_expired()` plus
+  `POST /api/portfolio/settle`, at a price the trader types. The API path is
+  tested end to end over HTTP; the SETTLE ticket has not been clicked in a
+  browser.
+- **Screener auto refresh.** `renderScreener` now repeats the last successful
+  query every 5 minutes. Untested in a browser.
 - **MCX, BFO, CDS.** The instrument model and margin lookup are venue aware and
   unit tested, but only NFO has been exercised against the live API. Commodity
   and BSE paths are code correct and unproven.
@@ -39,11 +48,9 @@ Things with real test coverage that have been verified against a live broker.
   can show a green LIVE with a zero tick count. Being fixed.
 - **No source timestamps on payloads.** The UI stamps the browser clock, so a
   number that's minutes stale looks current. Being fixed alongside the above.
-- **The screener never auto refreshes.** Every other view has a timer,
-  `renderScreener` doesn't.
-- **Expired positions can't be settled.** They're surfaced and tagged in PRT but
-  there's no way to close one out. Assignment is a real cash event so it won't
-  be invented, but there needs to be an explicit path.
+- **No settlement blotter.** The journal marks a settlement as asserted rather
+  than executed, but nothing renders `portfolio.history`, so that distinction
+  lives only in `~/.shunkan/portfolio.json` and the `/api/portfolio` payload.
 - **Cold load is slow.** First paint of Pulse can sit on spinners for 15 to 20
   seconds while the initial fetches complete.
 - **No authentication.** By design for a localhost tool, but it means `--host`

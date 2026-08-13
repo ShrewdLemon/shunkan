@@ -118,6 +118,21 @@ class TradeRequest(BaseModel):
     lot_size: int | None = None
 
 
+class SettleRequest(BaseModel):
+    """A settlement recorded against a contract that has stopped trading.
+
+    `symbol` is the position key exactly as /api/portfolio reports it
+    ("NFO:NIFTY|2026-08-11|24500|CE"), so venue, series and strike come from
+    the book rather than being re-parsed off a form and possibly disagreeing
+    with it. `price` is per unit and has no default: an expiry that settled
+    worthless is a real zero the trader asserts, and a defaulted zero would be
+    the terminal quietly filling in the most common answer.
+    """
+
+    symbol: str
+    price: float
+
+
 class BacktestRequest(BaseModel):
     symbol: str
     strategy: str = "sma_cross"
@@ -1950,6 +1965,11 @@ def create_app() -> FastAPI:
             # nets across legs, so there is no honest per-position figure
             "margin_used": portfolio.margin_used(),
             "margin": portfolio.margin,
+            # ...and why it is null when it is: never asked, asked and refused,
+            # priced against a book that has since changed, or missing a leg
+            # the exchange has no contract name for. A dash with no cause is
+            # the one thing the tile is not allowed to render.
+            "margin_status": portfolio.margin_status(),
             # net delta/gamma/theta/vega across the book. `complete` is false
             # when a leg could not be marked — those legs are named, and the
             # net below excludes them rather than counting them as zero.
@@ -1965,7 +1985,13 @@ def create_app() -> FastAPI:
                  "last": prices.get(s, p.avg_cost),
                  "market_value": p.market_value(prices.get(s, p.avg_cost)),
                  "unrealized": p.unrealized_pnl(prices.get(s, p.avg_cost)),
-                 "expired": p.instrument.expired()}
+                 "expired": p.instrument.expired(),
+                 # `expired` is the date-level question the book asks about
+                 # membership; `settleable` is the 15:30 bell. They differ only
+                 # between the bell and midnight on expiry day — which is when
+                 # a settlement price first becomes knowable, so the SETTLE
+                 # control follows this flag, not the tag.
+                 "settleable": p.instrument.settled()}
                 for s, p in sorted(portfolio.positions.items())
             ],
             "history": portfolio.history[-50:],
@@ -2027,6 +2053,81 @@ def create_app() -> FastAPI:
         portfolio.save()
         return {"ok": True, "price": price, "quantity": quantity,
                 "instrument": inst.key, "label": inst.label, "realized": realized}
+
+    @app.post("/api/portfolio/margin")
+    def price_book_margin(force: bool = False):
+        """Price the whole book against the exchange's own SPAN calculator.
+
+        Deliberately NOT wired into /api/portfolio/trade. A four-leg condor is
+        entered one fill at a time, so pricing per fill spends four broker
+        round trips on three baskets the trader never meant to hold — and adds
+        that latency to every fill. Margin is asked for once per BOOK STATE
+        instead, which is exactly what Portfolio.price_margin is idempotent on:
+        the view may call this on every draw, and a desk adjusting all day
+        still pays one round trip per adjustment. force=true is the explicit
+        re-ask, the only way past that memo.
+
+        Always 200. "The exchange would not price this" is an ordinary state
+        the tile renders as a dash plus a reason, not a failed request — a 502
+        here would turn a normal Tuesday without a broker into an error toast
+        on every draw.
+        """
+        def _answer(status: dict | None = None) -> dict:
+            # Same shape as /api/portfolio's margin keys, so one renderer reads
+            # both and the two can never drift into disagreeing vocabularies.
+            return {"margin_used": portfolio.margin_used(),
+                    "margin": portfolio.margin,
+                    "margin_status": status or portfolio.margin_status()}
+
+        if not portfolio.positions:
+            return _answer()
+        if is_offline():
+            return _answer({"state": "refused",
+                            "reason": "offline mode (SHUNKAN_OFFLINE=1) — no "
+                                      "exchange to ask"})
+        broker = None
+        try:
+            from shunkan.data.brokers import KiteProvider, get_broker
+
+            b = get_broker()
+            if isinstance(b, KiteProvider):
+                broker = b
+        except Exception:
+            broker = None
+        if broker is None:
+            # The basket endpoint is the only SPAN calculator here. A local
+            # approximation of exchange netting would overstate a hedged book
+            # and understate a naked one — precisely the plausible-looking
+            # number this terminal refuses to print.
+            return _answer({"state": "refused",
+                            "reason": "no Kite connection — SPAN margin is the "
+                                      "exchange's number or nothing"})
+        portfolio.price_margin(broker, force=force)
+        return _answer()
+
+    @app.post("/api/portfolio/settle")
+    def settle_position(req: SettleRequest):
+        """Resolve an expired contract at a price the trader states.
+
+        The price is never derived here. An index option settles against the
+        exchange's published closing value of the underlying, and inferring one
+        from whatever spot happened to be cached would put a fabricated cash
+        movement into realized P&L. The book takes the trader's number,
+        journals it as asserted rather than executed, and closes the contract.
+        """
+        key = req.symbol.strip().upper()
+        pos = portfolio.positions.get(key)
+        if pos is None:
+            raise HTTPException(404, f"No open position keyed {req.symbol!r}")
+        inst = pos.instrument
+        quantity = pos.net_quantity  # the book drops the position on a full close
+        try:
+            realized = portfolio.settle_expired(inst, req.price)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        portfolio.save()
+        return {"ok": True, "instrument": inst.key, "label": inst.label,
+                "quantity": quantity, "price": req.price, "realized": realized}
 
     @app.get("/api/alerts")
     def get_alerts():

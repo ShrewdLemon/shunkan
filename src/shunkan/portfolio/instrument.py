@@ -118,6 +118,25 @@ class Instrument:
 
         return self.expiry < (when or today_ist())
 
+    def settled(self, when=None) -> bool:
+        """True once this contract's 15:30 IST bell has rung.
+
+        Stricter in time than `expired`, which is the date-level question the
+        book asks about membership. The two differ only between 15:30 and
+        midnight on expiry day — and that window is exactly when a settlement
+        price first becomes knowable, so it is this predicate, not `expired`,
+        that gates recording one.
+
+        `when` is a DATETIME here, not the date `expired` takes: this question
+        is the intraday one, and markets.is_expired is the single clock that
+        answers it.
+        """
+        if self.expiry is None:
+            return False
+        from shunkan.markets import is_expired
+
+        return is_expired(self.expiry, when)
+
     @classmethod
     def parse(cls, key: str, lot_size: int | None = None) -> "Instrument":
         """Inverse of `key`. Round-trips persisted positions."""
