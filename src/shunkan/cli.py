@@ -176,6 +176,20 @@ def _pct(value: float) -> str:
     return f"[{color}]{value:+.2%}[/{color}]"
 
 
+def _in_container() -> bool:
+    """Best-effort container detection. Wrong in the safe direction: a false
+    negative only means the operator has to pass --i-understand-the-risk."""
+    from pathlib import Path
+
+    if Path("/.dockerenv").exists():
+        return True
+    try:
+        return any(k in Path("/proc/1/cgroup").read_text()
+                   for k in ("docker", "containerd", "kubepods"))
+    except OSError:
+        return False
+
+
 def cmd_serve(args) -> int:
     import secrets
     import threading
@@ -187,6 +201,23 @@ def cmd_serve(args) -> int:
 
     loopback = args.host in ("127.0.0.1", "localhost", "::1")
     token, allowed = "", ()
+
+    # In a container 0.0.0.0 is not a choice, it is the only address Docker's
+    # port publishing can reach. The security boundary moves outward to how the
+    # port is published on the host, which the container cannot see, so the
+    # refusal below would block every containerised run for no gain. Warn
+    # instead, and ship a compose file that publishes to 127.0.0.1 only.
+    if not loopback and _in_container():
+        console.print(
+            "[yellow]Container detected.[/yellow] Binding "
+            f"{args.host} because port publishing requires it.\n"
+            "Shunkan has no accounts, so whether this is safe now depends "
+            "entirely on how you published the port. The bundled compose file "
+            "publishes 127.0.0.1:8720 (host-only). If you changed that to "
+            "0.0.0.0 or -p 8720:8720, you have exposed a live broker session "
+            "to your network and, under Zerodha's terms, its market data too."
+        )
+        loopback = True
 
     if not loopback:
         # This process holds a live broker session, the position book and the

@@ -1,0 +1,34 @@
+services:
+  shunkan:
+    build: .
+    image: shunkan:local
+    container_name: shunkan
+
+    ports:
+      # HOST-ONLY on purpose. "8720:8720" would publish on every interface and
+      # hand an unauthenticated live broker session to your whole network,
+      # which is also a Zerodha market-data licence violation. Do not widen
+      # this without reading the terms section in the README.
+      - "127.0.0.1:8720:8720"
+      # Kite redirects the login to 127.0.0.1:8722/callback on the HOST. Without
+      # this line `shunkan connect zerodha` hangs forever waiting for a request
+      # that can never arrive.
+      - "127.0.0.1:8722:8722"
+
+    volumes:
+      # Credentials, the paper book, and the parquet archive. Without this you
+      # re-authenticate on every restart and lose the instruments history that
+      # can only be accumulated forward.
+      - shunkan-data:/data
+
+    environment:
+      - SHUNKAN_HOME=/data
+      - TZ=Asia/Kolkata
+
+    # This is the "stop starting it from a terminal" part: it comes back on
+    # boot and after a crash. Kite's daily token still needs a human once each
+    # morning; nothing here works around that, by design.
+    restart: unless-stopped
+
+volumes:
+  shunkan-data:
