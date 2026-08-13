@@ -20,6 +20,9 @@ Things with real test coverage that have been verified against a live broker.
 - **Net book Greeks.** Delta, gamma, theta, vega, rho netted across positions,
   unmarkable legs named and excluded. Verified live on a 2 lot short straddle.
 - **Instruments archive.** Daily contract master per venue, idempotent.
+- **Feed state.** Liveness is observed rather than asserted: LIVE requires a
+  tick inside the last two minutes, and the badge degrades to STALE on its own
+  when they stop. Verified across all five states in a browser.
 
 ## Works but thinly tested
 
@@ -49,11 +52,9 @@ Things with real test coverage that have been verified against a live broker.
 
 ## Known rough edges
 
-- **The LIVE badge is asserted, not observed.** `stream/factory.py` stamps
-  `live=True` when the ticker constructs, not when a tick arrives. A dead token
-  can show a green LIVE with a zero tick count. Being fixed.
 - **No source timestamps on payloads.** The UI stamps the browser clock, so a
-  number that's minutes stale looks current. Being fixed alongside the above.
+  REST number that's minutes stale still looks current. The tick feed is now
+  honest about its own age; the REST panels are not yet.
 - **No settlement blotter.** The journal marks a settlement as asserted rather
   than executed, but nothing renders `portfolio.history`, so that distinction
   lives only in `~/.shunkan/portfolio.json` and the `/api/portfolio` payload.

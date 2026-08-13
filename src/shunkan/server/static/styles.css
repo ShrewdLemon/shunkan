@@ -956,3 +956,13 @@ main { padding: 6px; }
    scrolling sideways to find a price has already lost. */
 .panel-body { overflow-x: auto; }
 main { overflow-x: hidden; }
+
+/* --- feed state dots ------------------------------------------------------ */
+/* Five states, five glyphs. STALE and DOWN used to collapse into the same
+   grey dot as CONNECTING, so a feed that died mid-session looked identical to
+   one that had not started yet. */
+.dot.live  { background: var(--up);    box-shadow: 0 0 6px var(--up); animation: pulse 2s infinite; }
+.dot.wait  { background: var(--amber); }
+.dot.stale { background: var(--amber); animation: pulse 1.1s infinite; }
+.dot.demo  { background: var(--blue); }
+.dot.down  { background: var(--down);  animation: pulse 0.8s infinite; }
