@@ -15,11 +15,17 @@ services:
       # that can never arrive.
       - "127.0.0.1:8722:8722"
 
+    # Run as the host user so the bind mount below is readable and writable.
+    # A named volume would have been tidier, but it starts empty: you would be
+    # re-authenticating and, worse, starting a fresh instruments archive while
+    # the one on your host keeps the history that can only accumulate forward.
+    user: "${SHUNKAN_UID:-501}:${SHUNKAN_GID:-20}"
+
     volumes:
-      # Credentials, the paper book, and the parquet archive. Without this you
-      # re-authenticate on every restart and lose the instruments history that
-      # can only be accumulated forward.
-      - shunkan-data:/data
+      # Your real ~/.shunkan: credentials, the paper book, the parquet archive.
+      # Bind-mounted rather than copied, so the container and a bare
+      # `shunkan serve` on the host share one state directory and cannot drift.
+      - ${HOME}/.shunkan:/data
 
     environment:
       - SHUNKAN_HOME=/data
@@ -29,6 +35,3 @@ services:
     # boot and after a crash. Kite's daily token still needs a human once each
     # morning; nothing here works around that, by design.
     restart: unless-stopped
-
-volumes:
-  shunkan-data:

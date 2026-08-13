@@ -23,11 +23,22 @@ shunkan serve
 If you would rather not start it from a terminal every day:
 
 ```
-docker compose up -d
+SHUNKAN_UID=$(id -u) SHUNKAN_GID=$(id -g) docker compose up -d
 ```
 
-Then open http://127.0.0.1:8720. It restarts on boot and after a crash, and
-`~/.shunkan` lives in a named volume so credentials and the archive survive.
+Then open http://127.0.0.1:8720. It restarts on boot and after a crash.
+
+Use `docker compose`, not `docker run` and not Docker Desktop's Run button.
+Those start the image without applying the compose file, so the ports are
+*exposed* but never *published*: the container reports healthy (its healthcheck
+runs inside itself and passes) while nothing on your machine can reach it. The
+symptom is a terminal that renders but shows WS OFFLINE, `API —` and spinners
+that never resolve.
+
+`~/.shunkan` is bind-mounted, so the container shares one state directory with
+a bare `shunkan serve` on the host: same credentials, same paper book, same
+archive, no drift between them. That is also why it runs as your uid, which is
+what the two variables above are for.
 
 Two things about the compose file worth not changing casually. The ports are
 published to `127.0.0.1` only, because Shunkan has no accounts and a wider
