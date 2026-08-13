@@ -128,6 +128,15 @@ class TradeRequest(BaseModel):
     lot_size: int | None = None
 
 
+class BrokerSetup(BaseModel):
+    # Must live at module scope: `from __future__ import annotations` makes
+    # `req: BrokerSetup` a string that FastAPI resolves against module globals,
+    # so a class defined inside create_app() is invisible and the request body
+    # degrades into a query parameter with a 422 that names the wrong field.
+    api_key: str
+    api_secret: str
+
+
 class SettleRequest(BaseModel):
     """A settlement recorded against a contract that has stopped trading.
 
@@ -399,6 +408,32 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
     def broker_status():
         return _broker_health()
 
+    @app.post("/api/broker/setup")
+    def broker_setup(req: BrokerSetup):
+        """One-time credential entry, so the terminal is self-contained.
+
+        This was CLI-only, which meant a fresh install (or a fresh container)
+        could not be brought up from the app it ships with. The secret is
+        written 0600 and is never returned, logged or echoed into an error:
+        the only response is whether it worked.
+        """
+        from shunkan.data.brokers import save_credentials
+
+        if is_offline():
+            raise HTTPException(400, "offline mode — nothing to connect to")
+        key = (req.api_key or "").strip()
+        secret = (req.api_secret or "").strip()
+        # Shape check only. Kite does not publish exact lengths, so anything
+        # stricter would reject valid credentials on a guess.
+        if not key or not secret:
+            raise HTTPException(400, "both api_key and api_secret are required")
+        if len(key) < 6 or len(secret) < 6 or any(c.isspace() for c in key + secret):
+            raise HTTPException(400, "that does not look like a Kite api_key/api_secret "
+                                     "— check for a stray space or a truncated paste")
+        save_credentials("zerodha", api_key=key, api_secret=secret)
+        # Deliberately returns nothing about the values themselves.
+        return {"ok": True, "next": "login"}
+
     @app.post("/api/broker/reconnect")
     async def broker_reconnect():
         """Web-native daily re-auth: returns the Zerodha login URL for the
@@ -415,8 +450,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         creds = load_credentials().get("zerodha", {})
         api_key, api_secret = creds.get("api_key"), creds.get("api_secret")
         if not (api_key and api_secret):
-            raise HTTPException(400, "No saved Zerodha api_key/api_secret — run "
-                                     "the one-time `shunkan connect zerodha` setup first")
+            raise HTTPException(400, "No saved Zerodha api_key/api_secret — "
+                                     "add them from the broker chip in the top bar")
 
         async def catch():
             try:

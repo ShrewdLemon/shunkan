@@ -25,6 +25,9 @@ Things with real test coverage that have been verified against a live broker.
   each has a blind spot the other covers: permutation cannot see selection
   bias, deflation cannot see whether the timing does anything. A best-of-800
   search over pure noise now fails.
+- **Self-contained broker setup.** Both first-run credentials and the daily
+  re-auth happen from the broker chip in the top bar. The CLI still works but
+  is no longer required for anything.
 - **Feed state.** Liveness is observed rather than asserted: LIVE requires a
   tick inside the last two minutes, and the badge degrades to STALE on its own
   when they stop. Verified across all five states in a browser.

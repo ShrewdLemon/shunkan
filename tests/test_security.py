@@ -117,3 +117,51 @@ def test_no_broker_response_body_is_formatted_into_an_error():
 def brokers_path():
     import shunkan.data.brokers as brokers
     return brokers.__file__
+
+
+# -- in-app broker setup ------------------------------------------------------
+
+
+def test_setup_never_returns_the_secret(tmp_path, monkeypatch):
+    """The whole point of this endpoint is that the secret goes in and nothing
+    comes back out. A response that echoed it would put it in browser history,
+    devtools and any proxy in between."""
+    import shunkan.data.brokers as brokers
+
+    monkeypatch.setattr(brokers, "CREDENTIALS_FILE", tmp_path / "credentials.json")
+    monkeypatch.setattr(brokers, "ensure_dirs", lambda: None, raising=False)
+    with TestClient(create_app()) as c:
+        r = c.post("/api/broker/setup",
+                   json={"api_key": "abc123key", "api_secret": "supersecretvalue"})
+        assert r.status_code in (200, 400)   # 400 only if the app is offline
+        body = r.text
+        assert "supersecretvalue" not in body
+        assert "abc123key" not in body
+
+
+def test_setup_rejects_a_mangled_paste(monkeypatch, tmp_path):
+    """A truncated paste or a stray space is the common way this goes wrong,
+    and it fails later and more confusingly at the token exchange."""
+    import shunkan.data.brokers as brokers
+    import shunkan.server.api as api_mod
+
+    monkeypatch.setattr(brokers, "CREDENTIALS_FILE", tmp_path / "credentials.json")
+    monkeypatch.setattr(api_mod, "is_offline", lambda: False)
+    with TestClient(create_app()) as c:
+        for bad in ({"api_key": "", "api_secret": "x" * 20},
+                    {"api_key": "abc123key", "api_secret": ""},
+                    {"api_key": "abc 123", "api_secret": "x" * 20},
+                    {"api_key": "ab", "api_secret": "x" * 20}):
+            assert c.post("/api/broker/setup", json=bad).status_code == 400, bad
+        # and a well-formed pair is accepted
+        assert c.post("/api/broker/setup",
+                      json={"api_key": "abc123key",
+                            "api_secret": "x" * 24}).status_code == 200
+
+
+def test_setup_is_behind_the_token_gate(guarded):
+    """It writes a credential, so it must not be reachable unauthenticated
+    when the server is exposed."""
+    r = guarded.post("/api/broker/setup",
+                     json={"api_key": "abc123key", "api_secret": "x" * 20})
+    assert r.status_code == 401
