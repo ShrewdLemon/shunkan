@@ -244,6 +244,72 @@ def _norm_ppf(p: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Where the trial count comes from
+# ---------------------------------------------------------------------------
+#
+# The deflated Sharpe is only as honest as n_trials, and a hand-supplied count
+# is the easiest way to make it say what you want: pass 1 and a best-of-800
+# winner sails through. Every search in this package already knows how many
+# candidates it evaluated, so it reports that itself and callers stop guessing.
+
+
+@dataclass
+class SearchTrials:
+    """What a parameter search actually did, in the terms deflation needs."""
+
+    n_trials: int
+    sharpe_std: float | None = None   # spread of Sharpe across the candidates
+    source: str = ""                  # which search, for the provenance line
+
+    @classmethod
+    def single(cls) -> "SearchTrials":
+        """One hypothesis, no search. Nothing to deflate."""
+        return cls(n_trials=1, sharpe_std=None, source="single backtest")
+
+
+def trials_of(search) -> SearchTrials:
+    """Read the honest trial count off a search result.
+
+    Accepts an OptimizationResult, a SwarmResult, a plain int, or None. The int
+    path stays for callers that genuinely know better, but nothing inside this
+    package uses it any more.
+    """
+    if search is None:
+        return SearchTrials.single()
+    if isinstance(search, int):
+        return SearchTrials(n_trials=max(search, 1), source="caller-supplied")
+
+    # Grid search: one row per combo, so the table carries both numbers.
+    table = getattr(search, "table", None)
+    combos = getattr(search, "combos_tested", None)
+    if combos is not None:
+        std = None
+        if table is not None and "sharpe" in getattr(table, "columns", []):
+            col = table["sharpe"].to_numpy(dtype=np.float64)
+            col = col[np.isfinite(col)]
+            if len(col) > 1:
+                std = float(col.std(ddof=1))
+        return SearchTrials(n_trials=max(int(combos), 1), sharpe_std=std,
+                            source=f"grid search, {combos} combos")
+
+    # Swarm: n_evals counts UNIQUE backtests. Memoised repeats are the same
+    # parameter set, so they are not extra independent chances to get lucky
+    # and must not inflate the count.
+    evals = getattr(search, "n_evals", None)
+    if evals is not None:
+        std = None
+        fits = [f for it in getattr(search, "iterations", [])
+                for f in np.asarray(it.fitness, dtype=np.float64).ravel()]
+        fits = np.array([f for f in fits if np.isfinite(f)])
+        if len(fits) > 1:
+            std = float(fits.std(ddof=1))
+        return SearchTrials(n_trials=max(int(evals), 1), sharpe_std=std,
+                            source=f"swarm, {evals} unique evaluations")
+
+    raise TypeError(f"cannot read a trial count from {type(search).__name__}")
+
+
+# ---------------------------------------------------------------------------
 # The combined gate
 # ---------------------------------------------------------------------------
 
@@ -252,6 +318,7 @@ def _norm_ppf(p: float) -> float:
 class Validation:
     permutation: PermutationResult
     deflation: DeflatedSharpeResult
+    trials: SearchTrials | None = None
 
     @property
     def passes(self) -> bool:
@@ -269,11 +336,19 @@ class Validation:
         """
         return self.permutation.significant and self.deflation.survives
 
+    @property
+    def basis(self) -> str:
+        """Say what the deflation was measured against. A pass at one trial and
+        a pass at eight hundred are different claims and must not read alike."""
+        t = self.trials
+        return f" [{t.source}]" if t and t.source else ""
+
     def verdict(self) -> str:
         if self.passes:
             return ("passes both: the timing fits better than chance AND the Sharpe "
                     "survives the number of trials. Still in-sample — this is what "
-                    "you run before you have out-of-sample data, not instead of it.")
+                    "you run before you have out-of-sample data, not instead of it."
+                    + self.basis)
         fails = []
         if not self.permutation.significant:
             fails.append(f"timing is not distinguishable from random placement "
@@ -281,17 +356,19 @@ class Validation:
         if not self.deflation.survives:
             fails.append(f"Sharpe does not survive {self.deflation.n_trials} trials "
                          f"(DSR={self.deflation.deflated:.3f})")
-        return "rejected: " + "; and ".join(fails)
+        return "rejected: " + "; and ".join(fails) + self.basis
 
 
-def validate(result, n_trials: int, bar_returns=None,
+def validate(result, search=None, bar_returns=None,
              n_permutations: int = 1000, periods: int = 252) -> Validation:
     """Run both tests on a BacktestResult.
 
-    `n_trials` is every parameter set the search touched, not the number kept.
-    Understating it is the easiest way to make this pass something it should
-    not, so callers that ran an optimiser must pass the optimiser's own count.
+    `search` is the OptimizationResult or SwarmResult that produced this
+    strategy, and the trial count is read off it. Pass None only when the
+    strategy really was a single hypothesis with no search behind it, because
+    that is the assumption that makes deflation say yes.
     """
+    t = trials_of(search)
     if bar_returns is None:
         # Back out the market's own bar returns from the strategy's, so the
         # permutation null is the real series and not a reconstruction.
@@ -300,5 +377,7 @@ def validate(result, n_trials: int, bar_returns=None,
     return Validation(
         permutation=permutation_test(result.positions, bar_returns,
                                      n_permutations=n_permutations, periods=periods),
-        deflation=deflated_sharpe(result.returns, n_trials=n_trials, periods=periods),
+        deflation=deflated_sharpe(result.returns, n_trials=t.n_trials,
+                                  trial_sharpe_std=t.sharpe_std, periods=periods),
+        trials=t,
     )

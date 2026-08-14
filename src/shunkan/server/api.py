@@ -157,7 +157,7 @@ class BacktestRequest(BaseModel):
     strategy: str = "sma_cross"
     params: dict[str, float] = {}
     period: str = "5y"
-    mode: str = "backtest"  # backtest | walkforward | montecarlo
+    mode: str = "backtest"  # backtest | walkforward | montecarlo | validate
 
 
 class BuilderRequest(BaseModel):
@@ -1052,6 +1052,48 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         bt = run_backtest(hist, strat.signal(hist, **params), BacktestConfig(),
                           symbol=req.symbol, strategy_name=strat.name,
                           params={**strat.defaults, **params})
+        if req.mode == "validate":
+            # The gate. `search` is None here because this endpoint runs one
+            # named strategy with given parameters and did not search: that is
+            # the honest reading, and it is also the most generous one, so a
+            # rejection here is not an artefact of an inflated trial count.
+            from shunkan.backtest.validate import validate
+
+            v = validate(bt, search=None)
+            return _clean({
+                "mode": "validate",
+                "passes": v.passes,
+                "verdict": v.verdict(),
+                "trials": {"n": v.trials.n_trials, "source": v.trials.source},
+                "permutation": {
+                    "p_value": v.permutation.p_value,
+                    "observed_sharpe": v.permutation.observed_sharpe,
+                    "percentile": v.permutation.percentile,
+                    "significant": v.permutation.significant,
+                    "verdict": v.permutation.verdict(),
+                },
+                "deflated_sharpe": {
+                    "observed": v.deflation.observed_sharpe,
+                    "expected_max_from_trials": v.deflation.expected_max_sharpe,
+                    "dsr": v.deflation.deflated,
+                    "survives": v.deflation.survives,
+                    "verdict": v.deflation.verdict(),
+                },
+                "prov": prov(
+                    "strategy validation",
+                    {"trials": v.trials.n_trials,
+                     "permutations": v.permutation.n_permutations},
+                    "in-sample only",
+                    method="block permutation of the position series against the "
+                           "real bar returns, plus Bailey & Lopez de Prado "
+                           "deflated Sharpe; both must pass",
+                    caveat="in-sample. Neither test substitutes for out-of-sample "
+                           "data. The permutation test cannot see selection bias "
+                           "and the deflated Sharpe cannot see whether the timing "
+                           "does anything, which is why the gate requires both.",
+                ),
+            })
+
         if req.mode == "montecarlo":
             mc = monte_carlo(bt.returns)
             n = mc.n_bars
@@ -1994,8 +2036,16 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             )
         except (DataError, KeyError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from exc
+        # A swarm is a search, so anything it produces has to be read against
+        # how many candidates it tried. Surfacing the count here means the
+        # winner cannot be quoted later as if it were a single hypothesis.
+        from shunkan.backtest.validate import trials_of
+
+        t = trials_of(res)
         return _clean({
             "symbol": res.symbol, "strategy": res.strategy,
+            "trials": {"n": t.n_trials, "sharpe_std": t.sharpe_std,
+                       "source": t.source},
             "param_names": list(res.param_names),
             "bounds": [list(res.bounds[0]), list(res.bounds[1])],
             "landscape": {"x": res.landscape_x.tolist(),

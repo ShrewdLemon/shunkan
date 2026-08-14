@@ -24,7 +24,10 @@ Things with real test coverage that have been verified against a live broker.
   deflated Sharpe (Bailey & Lopez de Prado). The gate requires BOTH, because
   each has a blind spot the other covers: permutation cannot see selection
   bias, deflation cannot see whether the timing does anything. A best-of-800
-  search over pure noise now fails.
+  search over pure noise now fails. The trial count is read off the search
+  itself (`trials_of`), so it cannot be understated by a caller; an unknown
+  search object raises rather than defaulting to 1. `POST /api/backtest` with
+  `mode: "validate"` runs the gate.
 - **Self-contained broker setup.** Both first-run credentials and the daily
   re-auth happen from the broker chip in the top bar. The CLI still works but
   is no longer required for anything.
