@@ -307,6 +307,10 @@ const state = {
   // tick arrives: a dead token used to show a pulsing green LIVE all session
   // next to a tick counter stuck on zero.
   feedClaim: null, tickCount: 0, lastTickAt: null,
+  // Declared, not implied. It is read in three places but was only ever
+  // assigned by ws.onopen/onclose, so before the first socket event it was
+  // undefined and worked purely because undefined is falsy.
+  wsDown: false,
   // Rolling print log for the tape, newest first. Bounded: a full session at
   // index tick rates is hundreds of thousands of prints, and an unbounded
   // array is a memory leak with a tidy name.
@@ -325,6 +329,31 @@ function addTimer(key, fn, ms) {
   return id;
 }
 function clearTimers() { state.timers.forEach(clearInterval); state.timers.clear(); }
+
+// Anything a view attaches OUTSIDE its own DOM has to be taken back, because
+// show() only clears timers, charts and main.innerHTML. A listener on
+// `document` survives the view that made it: renderChain's ticket dismiss
+// added one on every visit and they all kept firing forever.
+//
+// Deliberately shaped like addTimer so there is one lifecycle idea in this
+// file, not two. Forgetting to call it leaves today's behaviour rather than
+// breaking the view, which matters with 19 render functions and no tests.
+const _teardowns = [];
+function onTeardown(fn) { _teardowns.push(fn); }
+function runTeardowns() {
+  while (_teardowns.length) {
+    // One bad teardown must not strand the rest, or a single throw leaks
+    // everything registered after it.
+    try { _teardowns.pop()(); } catch (e) { console.warn("teardown failed", e); }
+  }
+}
+
+/* Attach a listener that dies with the view. Same arguments as
+   addEventListener, so a leaking call site is fixed by adding one word. */
+function onView(target, type, handler, opts) {
+  target.addEventListener(type, handler, opts);
+  onTeardown(() => target.removeEventListener(type, handler, opts));
+}
 
 const VIEWS = [
   { id: "pulse",     code: "PLS", label: "Pulse" },
@@ -360,6 +389,7 @@ function buildRail() {
 
 function show(viewId, params = {}) {
   clearTimers();
+  runTeardowns();
   destroyCharts();
   vizDispose();
   state.view = viewId;
@@ -381,8 +411,13 @@ const loading = (msg = "loading") => `<div class="loading"><span class="spin"></
 
 function pulseRow(q, sparkId) {
   const has = q.price !== undefined && q.price !== null;
-  return `<tr data-symbol="${q.symbol || ""}">
-    <td class="txt sym" onclick="show('chart',{symbol:'${(q.name || "").replace(/\s.*/, "")}'})">${q.name}</td>
+  // data-chart-symbol is what the row routes on. It comes from the server via
+  // denormalize_symbol rather than being derived from the display name here:
+  // the old `name.replace(/\s.*/, "")` sent BANK NIFTY to "BANK", INDIA VIX to
+  // "INDIA" and S&P 500 to "S&P". Delegated below, so nothing is interpolated
+  // into an onclick attribute where a quote in a name would break out of it.
+  return `<tr data-symbol="${esc(q.symbol || "")}" data-chart-symbol="${esc(q.chart_symbol || "")}">
+    <td class="txt sym">${esc(q.name)}</td>
     <td class="px">${has ? fmt.n(q.price) : "—"}</td>
     <td class="chg ${has ? cls(q.change_pct) : "faint"}">${has ? fmt.pct(q.change_pct) : "—"}</td>
     <td class="${has ? cls(q.change) : "faint"}">${has ? fmt.n(q.change) : "—"}</td>
@@ -494,6 +529,15 @@ async function renderPulse(view) {
       if (p) p.querySelector(".panel-body").innerHTML = `<div class="empty">news feed unavailable</div>`;
     }
   };
+
+  // Delegated on the view root rather than per-row: the rows are replaced on
+  // every 12s repaint, so per-row handlers would be re-bound constantly. The
+  // view root is destroyed by show(), so this needs no teardown.
+  view.addEventListener("click", (ev) => {
+    const row = ev.target.closest("tr[data-chart-symbol]");
+    const sym = row && row.dataset.chartSymbol;
+    if (sym) show("chart", { symbol: sym });
+  });
 
   drawQuotes(); drawMini(); drawBias();
   addTimer("pulse:quotes", drawQuotes, 12000);
@@ -1361,7 +1405,7 @@ function renderChain(view) {
     const cell = ev.target.closest(".ltp-cell");
     if (cell && last) openTicket(cell, last);
   });
-  document.addEventListener("mousedown", (ev) => {
+  onView(document, "mousedown", (ev) => {
     if (ticket && !ticket.el.contains(ev.target) && !ev.target.closest(".ltp-cell")) {
       closeTicket();
     }
