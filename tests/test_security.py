@@ -195,3 +195,43 @@ def test_oauth_catcher_binds_all_interfaces_in_a_container(monkeypatch, tmp_path
 
     monkeypatch.setattr(pathlib.Path, "exists", fake_exists)
     assert brokers._catcher_bind() == "0.0.0.0"
+
+
+# -- the OAuth callback page --------------------------------------------------
+
+
+def test_callback_never_redirects_off_loopback():
+    """That page is reached with a request_token in its own URL. An
+    unvalidated redirect would hand the token to whatever host was asked for."""
+    from shunkan.data.brokers import _safe_return_to
+
+    fallback = "http://127.0.0.1:8720/"
+    for hostile in ("https://evil.example/steal",
+                    "http://127.0.0.1.evil.example/",
+                    "javascript:alert(1)",
+                    "//evil.example",
+                    "",
+                    None):
+        assert _safe_return_to(hostile) == fallback, hostile
+
+    # loopback in any spelling, on any port, is honoured
+    assert _safe_return_to("http://localhost:9999/x") == "http://localhost:9999/"
+    assert _safe_return_to("http://127.0.0.1:8731/") == "http://127.0.0.1:8731/"
+
+
+def test_callback_page_returns_you_to_the_terminal():
+    from shunkan.data.brokers import _callback_page
+
+    page = _callback_page(True, "http://127.0.0.1:8731/").decode()
+    assert "http://127.0.0.1:8731/" in page
+    assert "http-equiv=\"refresh\"" in page      # works even without script
+    assert "window.close()" in page              # closes only if it is a popup
+    assert "location.replace" in page            # otherwise navigates back
+
+
+def test_callback_page_says_so_when_the_login_failed():
+    from shunkan.data.brokers import _callback_page
+
+    page = _callback_page(False).decode()
+    assert "No request_token" in page
+    assert "location.replace" not in page   # do not bounce away from an error
