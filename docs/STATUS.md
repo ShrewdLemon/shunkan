@@ -71,12 +71,15 @@ Things with real test coverage that have been verified against a live broker.
   an HTML attribute. They work and the input is not user content, but they are
   the same shape as the pulse row bug and should move to delegation when those
   views are next touched.
-- **No router.** `location.hash` is still unused, so a view is not
-  deep-linkable and a refresh returns you to Pulse. Designed but deliberately
-  not shipped: routing rewrites `show()`, which is reached from inline onclick
-  in three places, and a hashchange handler alongside the rail gives two
-  independent paths into `show()` that can double-render. Needs to ship alone
-  with all 17 views walked.
+- **The router covers view + symbol only.** Per-view modifiers (chart period
+  and interval, chain expiry, payoff strategy, quant tab) are not in the URL,
+  so a deep link restores the screen and the instrument but not the exact
+  configuration. That is where the breakage risk concentrated and it is worth
+  roughly a fifth of the value.
+- **Browser verification needs a HARD reload.** A hash-only navigation never
+  re-fetches, so bumping `?v=` is not enough on its own: two checks in a row
+  passed against a cached `app.js` that did not contain the change under
+  test. Always reload ignoring cache before believing a browser result.
 
 - **Anything binding 127.0.0.1 inside a container is unreachable from the
   host.** Docker forwards a published port to the container's eth0, never to
