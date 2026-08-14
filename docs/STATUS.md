@@ -66,6 +66,18 @@ Things with real test coverage that have been verified against a live broker.
 
 ## Known rough edges
 
+- **Two inline `onclick="show(...)"` sites remain** (tape snapshot, screener).
+  They interpolate an exchange ticker from our own API into a JS string inside
+  an HTML attribute. They work and the input is not user content, but they are
+  the same shape as the pulse row bug and should move to delegation when those
+  views are next touched.
+- **No router.** `location.hash` is still unused, so a view is not
+  deep-linkable and a refresh returns you to Pulse. Designed but deliberately
+  not shipped: routing rewrites `show()`, which is reached from inline onclick
+  in three places, and a hashchange handler alongside the rail gives two
+  independent paths into `show()` that can double-render. Needs to ship alone
+  with all 17 views walked.
+
 - **Anything binding 127.0.0.1 inside a container is unreachable from the
   host.** Docker forwards a published port to the container's eth0, never to
   its loopback. This bit the OAuth catcher: the Kite login succeeded, the

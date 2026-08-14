@@ -28,7 +28,12 @@ from shunkan import __version__
 from shunkan.alerts import AlertBook, desktop_notify, parse_alert
 from shunkan.config import load_watchlist, save_watchlist
 from shunkan.data.provider import DataError, get_provider, is_offline
-from shunkan.markets import GLOBAL_PULSE, INDIA_PULSE, session_phase
+from shunkan.markets import (
+    GLOBAL_PULSE,
+    INDIA_PULSE,
+    denormalize_symbol,
+    session_phase,
+)
 from shunkan.portfolio import Portfolio
 from shunkan.provenance import prov
 
@@ -59,6 +64,11 @@ def _quote_dict(q) -> dict:
             "change_pct": q.change_pct, "volume": q.volume,
             "prev_close": q.prev_close, "day_high": q.day_high,
             "day_low": q.day_low, "market_cap": q.market_cap, "name": q.name,
+            # What the terminal should route on when this row is clicked. The
+            # frontend used to derive it by truncating `name` at the first
+            # space, which sent BANK NIFTY to "BANK" and S&P 500 to "S&P":
+            # seven of the nine rows on the landing board went nowhere.
+            "chart_symbol": denormalize_symbol(q.symbol),
         }
     )
 
