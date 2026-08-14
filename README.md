@@ -188,6 +188,14 @@ harvesting drift, not timing anything.
 noise, because the maximum of N draws grows with N. This corrects the observed
 Sharpe for how many things were tried, plus skew and fat tails.
 
+The trial count comes from the search, not from whoever is reporting the
+result. `grid_search` knows it ran 19 combos and `swarm_optimize` knows how many
+unique candidates it evaluated, so both report it themselves. That matters more
+than it sounds: the same returns score DSR 0.497 against an honest 19 trials and
+0.845 if quoted as a single hypothesis, which is the difference between rejected
+and arguable. An unrecognised search object raises rather than defaulting to 1,
+because a silent default turns an integration mistake into a passing grade.
+
 They are required together because each is blind where the other sees. Measured
 on synthetic cases:
 

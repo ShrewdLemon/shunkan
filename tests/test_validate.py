@@ -142,3 +142,71 @@ def test_monte_carlo_no_longer_claims_an_edge():
     verdict = monte_carlo(r, n_paths=200).verdict()
     assert "edge survives" not in verdict
     assert "path" in verdict.lower()
+
+
+# -- the trial count reports itself -------------------------------------------
+
+
+def test_grid_search_reports_its_own_trial_count():
+    """The number was always there in combos_tested; it just never reached the
+    validator, so every caller had to be trusted to pass it honestly."""
+    from shunkan.backtest.optimize import grid_search
+    from shunkan.backtest.strategies import get_strategy
+    from shunkan.backtest.validate import trials_of
+
+    rng = np.random.default_rng(4)
+    n = 1200
+    px = pd.DataFrame({"close": 100 * np.exp(np.cumsum(rng.normal(0.0002, 0.011, n)))},
+                      index=pd.bdate_range("2018-01-01", periods=n))
+    for c in ("open", "high", "low"):
+        px[c] = px["close"]
+    px["volume"] = 1e6
+
+    opt = grid_search(px, get_strategy("sma_cross"), symbol="TEST")
+    t = trials_of(opt)
+    assert t.n_trials == opt.combos_tested > 1
+    assert t.sharpe_std is not None and t.sharpe_std > 0
+    assert "grid search" in t.source
+
+
+def test_no_search_means_one_trial_and_says_so():
+    from shunkan.backtest.validate import trials_of
+
+    t = trials_of(None)
+    assert t.n_trials == 1
+    assert t.source == "single backtest"
+
+
+def test_understating_trials_materially_changes_the_verdict():
+    """The whole reason the count must come from the search. Same returns,
+    different claim about how they were found, different answer."""
+    from shunkan.backtest.validate import deflated_sharpe
+
+    r = pd.Series(np.random.default_rng(21).normal(0.0011, 0.01, 900))
+    honest = deflated_sharpe(r, n_trials=500)
+    claimed = deflated_sharpe(r, n_trials=1)
+    assert claimed.deflated > honest.deflated
+    assert claimed.survives and not honest.survives
+
+
+def test_a_search_result_cannot_be_passed_off_as_one_trial(monkeypatch):
+    """validate() reads the count off the search object, so a caller cannot
+    quietly supply a smaller one."""
+    from shunkan.backtest.validate import trials_of
+
+    class FakeGrid:
+        combos_tested = 800
+        table = pd.DataFrame({"sharpe": np.random.default_rng(1).normal(0, 1, 800)})
+
+    t = trials_of(FakeGrid())
+    assert t.n_trials == 800
+    assert t.sharpe_std == pytest.approx(1.0, abs=0.15)
+
+
+def test_unknown_search_object_raises_rather_than_defaulting_to_one():
+    """Silently defaulting to 1 would turn an integration mistake into a
+    passing grade."""
+    from shunkan.backtest.validate import trials_of
+
+    with pytest.raises(TypeError):
+        trials_of(object())
