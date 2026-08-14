@@ -387,13 +387,70 @@ function buildRail() {
   });
 }
 
+/* ---------- routing --------------------------------------------------------
+   The URL is a PROJECTION of state, never a second copy of it. show() stays
+   the only thing that renders and gains exactly one new job: after folding
+   params into state, it writes the address bar. hashchange reads the address
+   bar and calls show() with that write suppressed.
+
+   That ordering is the whole safety argument. Every existing caller of show()
+   keeps working untouched, including the three inline onclick attributes in
+   generated HTML, and there is only ever one path that renders. A design
+   where the rail wrote the hash and the hash drove the rail would give two
+   independent entry points that can double-render, in a file with no tests.
+
+   Deliberately view + symbol only. Per-view modifiers (chart period, chain
+   expiry, payoff strategy, quant tab) are where the breakage risk lives and
+   they are worth roughly a fifth of the value. */
+
+// Exchange tickers, not free text: M&M, BAJAJ-AUTO and ^NSEI must pass, and a
+// hash someone typed by hand must not reach state.symbol unchecked.
+const SYM_RE = /^[\^A-Z0-9][A-Z0-9._&^-]{0,23}$/;
+
+// Views that take a symbol. The rest refuse one, so #/tape/RELIANCE does not
+// quietly set the global symbol as a side effect of a malformed link.
+const SYMBOL_VIEWS = new Set([
+  "chart", "chain", "payoff", "iv", "volume", "news", "backtest",
+  "viz", "mlstudio", "brief",
+]);
+
+let _routing = false;   // true while show() is being driven BY the hash
+
+function hashFor(viewId, symbol) {
+  return SYMBOL_VIEWS.has(viewId) && symbol ? `#/${viewId}/${symbol}` : `#/${viewId}`;
+}
+
+function parseHash() {
+  const raw = (location.hash || "").replace(/^#\/?/, "");
+  if (!raw) return null;
+  const [viewId, sym] = raw.split("/");
+  if (!viewId || !RENDER[viewId]) return null;          // unknown view: ignore
+  // A symbol only survives if this view actually takes one. SYMBOL_VIEWS was
+  // being consulted when WRITING the hash but not when reading it, so
+  // #/tape/RELIANCE set the global symbol as a side effect of a malformed
+  // link and the next chain you opened was silently the wrong instrument.
+  if (!SYMBOL_VIEWS.has(viewId)) return { viewId, symbol: "" };
+  const symbol = sym ? decodeURIComponent(sym).toUpperCase() : "";
+  return { viewId, symbol: SYM_RE.test(symbol) ? symbol : "" };
+}
+
+function syncHash() {
+  const want = hashFor(state.view, state.symbol);
+  if (location.hash === want) return;
+  // replaceState, not assignment: a 60s auto-refresh or a repaint must not
+  // stack history entries you then have to press Back through.
+  history.replaceState(null, "", want);
+}
+
 function show(viewId, params = {}) {
   clearTimers();
   runTeardowns();
   destroyCharts();
   vizDispose();
   state.view = viewId;
-  if (params.symbol) state.symbol = params.symbol.toUpperCase();
+  if (params.symbol && SYM_RE.test(String(params.symbol).toUpperCase())) {
+    state.symbol = String(params.symbol).toUpperCase();
+  }
   document.querySelectorAll(".rail-btn").forEach((b) => b.classList.remove("active"));
   const btn = $(`#rail-${viewId}`);
   if (btn) btn.classList.add("active");
@@ -401,8 +458,20 @@ function show(viewId, params = {}) {
   main.innerHTML = "";
   const view = elv("div", "view");
   main.appendChild(view);
+  if (!_routing) syncHash();
   RENDER[viewId](view, params);
 }
+
+// Back, forward, and a hash someone edited or pasted. Suppressed while it is
+// this handler doing the driving, so the write above cannot loop.
+window.addEventListener("hashchange", () => {
+  const r = parseHash();
+  if (!r) return;
+  if (r.viewId === state.view && (!r.symbol || r.symbol === state.symbol)) return;
+  _routing = true;
+  try { show(r.viewId, r.symbol ? { symbol: r.symbol } : {}); }
+  finally { _routing = false; }
+});
 window.show = show;
 
 const loading = (msg = "loading") => `<div class="loading"><span class="spin"></span>${msg}</div>`;
@@ -4015,4 +4084,16 @@ $("#palette-backdrop").addEventListener("click", (e) => {
   if (e.target.id === "palette-backdrop") closePalette();
 });
 
-show("pulse");
+// Deep link on cold start. No hash still means Pulse: restoring a "last view"
+// from storage would change cold-start behaviour in a way that reads as a bug
+// the first time it surprises you.
+(() => {
+  const r = parseHash();
+  if (r) {
+    _routing = true;
+    try { show(r.viewId, r.symbol ? { symbol: r.symbol } : {}); }
+    finally { _routing = false; syncHash(); }
+  } else {
+    show("pulse");
+  }
+})();
