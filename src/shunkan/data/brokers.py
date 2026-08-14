@@ -82,6 +82,31 @@ def save_credentials(section: str, **fields: str) -> None:
 # Zerodha daily login flow
 # ---------------------------------------------------------------------------
 
+def _catcher_bind() -> str:
+    """Which interface the one-shot OAuth catcher listens on.
+
+    127.0.0.1 on a normal host: the catcher accepts a request_token off the
+    wire, so it should not be reachable from the LAN even for the few seconds
+    it lives.
+
+    0.0.0.0 in a container, because there it has to be. Docker forwards a
+    published port to the container's eth0, never to its loopback, so a
+    catcher bound to 127.0.0.1 inside a container is unreachable from the host
+    and Kite's redirect dies with "the server unexpectedly dropped the
+    connection" while the login itself succeeded. The boundary there is the
+    host publish mapping, which the bundled compose file pins to 127.0.0.1.
+    """
+    from pathlib import Path
+
+    if Path("/.dockerenv").exists():
+        return "0.0.0.0"
+    try:
+        cg = Path("/proc/1/cgroup").read_text()
+        return "0.0.0.0" if any(k in cg for k in ("docker", "containerd", "kubepods")) else "127.0.0.1"
+    except OSError:
+        return "127.0.0.1"
+
+
 KITE_REDIRECT_PORT = 8722  # Redirect URL in your Kite app must be
 KITE_REDIRECT_PATH = "/callback"  # http://127.0.0.1:8722/callback
 
@@ -122,7 +147,7 @@ def kite_login_flow(
         def log_message(self, *args):  # silence per-request stderr noise
             pass
 
-    server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    server = http.server.HTTPServer((_catcher_bind(), port), Handler)
     server.timeout = 1.0
 
     login_url = f"https://kite.zerodha.com/connect/login?v=3&api_key={api_key}"
@@ -201,7 +226,7 @@ def kite_catch_and_exchange(
         def log_message(self, *args):
             pass
 
-    server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    server = http.server.HTTPServer((_catcher_bind(), port), Handler)
     server.timeout = 1.0
     deadline = _time.monotonic() + timeout
     while "request_token" not in holder and _time.monotonic() < deadline:
