@@ -82,6 +82,74 @@ def save_credentials(section: str, **fields: str) -> None:
 # Zerodha daily login flow
 # ---------------------------------------------------------------------------
 
+def _safe_return_to(url: str | None) -> str:
+    """Where the callback page may send the browser after a successful login.
+
+    This page is reached carrying a request_token in its own URL, so an
+    unvalidated redirect here would hand that token to whatever host an
+    attacker put in the parameter. Only loopback origins are allowed, and
+    anything else falls back to the default terminal port rather than being
+    honoured or erroring.
+    """
+    import urllib.parse
+
+    default = f"http://127.0.0.1:8720/"
+    if not url:
+        return default
+    try:
+        u = urllib.parse.urlparse(url)
+    except ValueError:
+        return default
+    if u.scheme not in ("http", "https"):
+        return default
+    if u.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return default
+    port = f":{u.port}" if u.port else ""
+    return f"{u.scheme}://{u.hostname}{port}/"
+
+
+def _callback_page(ok: bool, return_to: str | None = None) -> bytes:
+    """The page Kite's redirect lands on.
+
+    It used to be two lines of unstyled HTML telling you to close the tab
+    yourself. The login often happens in the terminal's own window, so closing
+    it is the wrong instruction and window.close() would shut the app. It now
+    tries to close only if it was opened as a popup, and otherwise sends you
+    back where you came from.
+    """
+    target = _safe_return_to(return_to)
+    if not ok:
+        body = ("<h2>No request_token in the redirect.</h2>"
+                "<p>The login did not complete. Try the broker chip again.</p>")
+        meta = ""
+        script = ""
+    else:
+        body = ("<h2>Login captured.</h2>"
+                "<p>Returning to the terminal\u2026</p>")
+        # Belt and braces: the meta refresh works even if script is blocked.
+        meta = f'<meta http-equiv="refresh" content="2;url={target}">'
+        script = (
+            "<script>setTimeout(function(){"
+            # window.close() only succeeds for a script-opened popup. In the
+            # terminal's own window it is a no-op, so the redirect below runs.
+            "try{window.close()}catch(e){}"
+            f"location.replace({target!r});"
+            "},1200)</script>"
+        )
+    return (
+        "<!doctype html><meta charset=utf-8>"
+        f"{meta}<title>Shunkan</title>"
+        "<style>"
+        "body{background:#000;color:#e6e1d6;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
+        "display:grid;place-items:center;height:100vh;margin:0;text-align:center}"
+        "h2{color:#ffa62b;font-size:15px;letter-spacing:.18em;text-transform:uppercase;font-weight:700}"
+        "p{color:#9b968c;font-size:12px}"
+        "a{color:#5fa8dc}"
+        "</style>"
+        f"<div>{body}<p><a href='{target}'>open the terminal</a></p></div>{script}"
+    ).encode("utf-8")
+
+
 def _catcher_bind() -> str:
     """Which interface the one-shot OAuth catcher listens on.
 
@@ -112,7 +180,8 @@ KITE_REDIRECT_PATH = "/callback"  # http://127.0.0.1:8722/callback
 
 
 def kite_login_flow(
-    api_key: str, api_secret: str, port: int = KITE_REDIRECT_PORT, timeout: float = 300.0
+    api_key: str, api_secret: str, port: int = KITE_REDIRECT_PORT,
+    timeout: float = 300.0, return_to: str | None = None,
 ) -> str:
     """Run the Kite Connect daily login: open the browser, catch the
     request_token on the local redirect, exchange it for an access_token,
@@ -137,12 +206,7 @@ def kite_login_flow(
             self.end_headers()
             if token:
                 holder["request_token"] = token
-                self.wfile.write(
-                    b"<h2>Shunkan: login captured.</h2>"
-                    b"<p>You can close this tab and return to the terminal.</p>"
-                )
-            else:
-                self.wfile.write(b"<h2>Shunkan: no request_token in redirect.</h2>")
+            self.wfile.write(_callback_page(bool(token), return_to))
 
         def log_message(self, *args):  # silence per-request stderr noise
             pass
@@ -195,7 +259,7 @@ def kite_login_url(api_key: str) -> str:
 
 def kite_catch_and_exchange(
     api_key: str, api_secret: str, port: int = KITE_REDIRECT_PORT,
-    timeout: float = 300.0,
+    timeout: float = 300.0, return_to: str | None = None,
 ) -> str:
     """Headless half of the daily login: listen for the redirect, exchange
     the request_token, persist. The caller opens the login URL (browser tab
@@ -217,11 +281,7 @@ def kite_catch_and_exchange(
             self.end_headers()
             if token:
                 holder["request_token"] = token
-                self.wfile.write(b"<h2>Shunkan: login captured.</h2>"
-                                 b"<p>You can close this tab - the terminal "
-                                 b"reconnects itself.</p>")
-            else:
-                self.wfile.write(b"<h2>Shunkan: no request_token in redirect.</h2>")
+            self.wfile.write(_callback_page(bool(token), return_to))
 
         def log_message(self, *args):
             pass

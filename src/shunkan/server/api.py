@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -435,7 +435,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         return {"ok": True, "next": "login"}
 
     @app.post("/api/broker/reconnect")
-    async def broker_reconnect():
+    async def broker_reconnect(request: Request):
         """Web-native daily re-auth: returns the Zerodha login URL for the
         browser to open (credentials are typed on Zerodha's page, never
         here), while a background task catches the redirect on :8722,
@@ -453,10 +453,19 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             raise HTTPException(400, "No saved Zerodha api_key/api_secret — "
                                      "add them from the broker chip in the top bar")
 
+        # Send the browser back to the page it started from. Taken from the
+        # request's own origin rather than a config value, so it is right
+        # whatever port or host the terminal is actually being reached on.
+        # _safe_return_to rejects anything non-loopback: the callback page
+        # carries a request_token in its URL, so an open redirect there would
+        # hand that token to whoever asked.
+        origin = request.headers.get("origin") or str(request.base_url)
+
         async def catch():
             try:
                 token = await asyncio.to_thread(
-                    kite_catch_and_exchange, api_key, api_secret)
+                    kite_catch_and_exchange, api_key, api_secret,
+                    return_to=origin)
                 b = get_broker()
                 if isinstance(b, KiteProvider):
                     b.set_token(api_key, token)
