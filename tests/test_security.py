@@ -165,3 +165,33 @@ def test_setup_is_behind_the_token_gate(guarded):
     r = guarded.post("/api/broker/setup",
                      json={"api_key": "abc123key", "api_secret": "x" * 20})
     assert r.status_code == 401
+
+
+def test_oauth_catcher_binds_loopback_on_a_normal_host(monkeypatch):
+    """It accepts a request_token off the wire, so on a host it must not be
+    reachable from the LAN even for the seconds it lives."""
+    import pathlib
+
+    import shunkan.data.brokers as brokers
+
+    monkeypatch.setattr(pathlib.Path, "exists", lambda self: False)
+    monkeypatch.setattr(pathlib.Path, "read_text",
+                        lambda self, *a, **k: (_ for _ in ()).throw(OSError()))
+    assert brokers._catcher_bind() == "127.0.0.1"
+
+
+def test_oauth_catcher_binds_all_interfaces_in_a_container(monkeypatch, tmp_path):
+    """Docker forwards a published port to eth0, never to the container's
+    loopback. A catcher on 127.0.0.1 inside a container is unreachable, and
+    Kite's redirect dies with a dropped connection after a successful login."""
+    import pathlib
+
+    import shunkan.data.brokers as brokers
+
+    real_exists = pathlib.Path.exists
+
+    def fake_exists(self):
+        return True if str(self) == "/.dockerenv" else real_exists(self)
+
+    monkeypatch.setattr(pathlib.Path, "exists", fake_exists)
+    assert brokers._catcher_bind() == "0.0.0.0"

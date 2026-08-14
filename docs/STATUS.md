@@ -63,6 +63,13 @@ Things with real test coverage that have been verified against a live broker.
 
 ## Known rough edges
 
+- **Anything binding 127.0.0.1 inside a container is unreachable from the
+  host.** Docker forwards a published port to the container's eth0, never to
+  its loopback. This bit the OAuth catcher: the Kite login succeeded, the
+  redirect reached the container's network stack, and nothing was listening on
+  the interface it arrived on. `_catcher_bind()` now returns 0.0.0.0 in a
+  container and 127.0.0.1 on a host. If you add another listener, remember it.
+
 - **A container can report healthy while being unreachable.** The healthcheck
   runs inside the container, so it passes whenever the app is up, regardless of
   whether the port was ever published. `docker run` and Docker Desktop's Run
