@@ -45,12 +45,54 @@ from shunkan.data.provider import DataError
 _BACKFILL_DELAY = 0.9   # polite to Google; a year of one symbol is ~1 minute
 
 
-def store_file(root=None):
+def news_dir(root=None):
     from shunkan.store.store import STORE_DIR
 
     d = (root or STORE_DIR) / "news"
     d.mkdir(parents=True, exist_ok=True)
-    return d / "headlines.parquet"
+    return d
+
+
+def store_file(origin: str = "live", root=None):
+    """One file PER WRITER, and that is the whole design.
+
+    The first version used a single headlines.parquet, and two legitimate
+    writers (the host backfill script and the container's half-hour loop) did
+    read-modify-write against it concurrently. When one read landed mid-write
+    it saw an unreadable file, and the old recovery path - "rewrite rather
+    than lose the fetch" - kept only its own rows and clobbered 10,084 rows
+    down to 675. The recovery path caused the loss.
+
+    So: the live loop writes live.parquet, the container's rotation writes
+    rotation.parquet, the host backfill writes backfill.parquet. Writers never
+    share a file, there is nothing to lock across a macOS host and a Linux
+    container (where flock over a bind mount is not trustworthy), and readers
+    merge everything and dedup. The legacy single file, where it survives, is
+    read-only.
+    """
+    safe = re.sub(r"[^a-z0-9_-]", "", origin.lower()) or "live"
+    return news_dir(root) / f"{safe}.parquet"
+
+
+def _all_files(root=None):
+    d = news_dir(root)
+    legacy = d / "headlines.parquet"
+    files = sorted(f for f in d.glob("*.parquet")
+                   if not f.name.endswith(".corrupt.parquet"))
+    return ([legacy] if legacy.exists() and legacy not in files else []) + files
+
+
+def _read_all(root=None) -> pd.DataFrame:
+    frames = []
+    for f in _all_files(root):
+        try:
+            frames.append(pd.read_parquet(f))
+        except Exception:
+            continue  # a bad file never poisons the merge; persist quarantines it
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
+    return df.drop_duplicates(subset=["key"], keep="first")
 
 
 def _key(title: str, published) -> str:
@@ -79,7 +121,7 @@ def persist(items, origin: str, aliases=None, root=None,
         return 0
     if aliases is None:
         aliases = alias_table(universe())
-    path = store_file(root)
+    path = store_file(origin, root)
     have: set = set()
     frames = []
     if path.exists():
@@ -88,7 +130,19 @@ def persist(items, origin: str, aliases=None, root=None,
             have = set(old["key"])
             frames.append(old)
         except Exception:
-            pass  # unreadable archive: rewrite rather than lose the fetch
+            # NEVER overwrite what cannot be read. Quarantine the bytes for
+            # forensics and start a fresh file; the old fallback proceeded
+            # with an empty frame and clobbered 10,084 rows down to 675.
+            path.rename(path.with_suffix(f".{int(time.time())}.corrupt.parquet"))
+    # dedup against EVERY writer's file, not only our own, so the same
+    # article fetched through two channels is still stored once
+    for f in _all_files(root):
+        if f == path:
+            continue
+        try:
+            have |= set(pd.read_parquet(f, columns=["key"])["key"])
+        except Exception:
+            continue
 
     rows = []
     fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -119,7 +173,7 @@ def persist(items, origin: str, aliases=None, root=None,
 
 def backfill_symbol(symbol: str, name: str, weeks: int = 52,
                     end: date | None = None, aliases=None, root=None,
-                    progress=None) -> dict:
+                    progress=None, origin: str = "backfill") -> dict:
     """Pull weekly windows of history for one company, newest first.
 
     Query is the company NAME in quotes - that is what headlines say - and
@@ -137,7 +191,7 @@ def backfill_symbol(symbol: str, name: str, weeks: int = 52,
         try:
             items = fetch_news(q, limit=100)
             fetched += len(items)
-            added += persist(items, origin="backfill", aliases=aliases,
+            added += persist(items, origin=origin, aliases=aliases,
                              root=root, query_symbol=symbol)
         except Exception:
             failed += 1
@@ -150,10 +204,9 @@ def backfill_symbol(symbol: str, name: str, weeks: int = 52,
 
 def news_for(symbol: str, days: int = 3650, root=None) -> pd.DataFrame:
     """Archived headlines tagged with this symbol, oldest first."""
-    path = store_file(root)
-    if not path.exists():
-        return pd.DataFrame()
-    df = pd.read_parquet(path)
+    df = _read_all(root)
+    if df.empty:
+        return df
     sym = symbol.upper()
     pat = r"(?:^|\s)" + re.escape(sym) + r"(?:\s|$)"
     df = df[df["symbols"].str.contains(pat, regex=True, na=False)].copy()
@@ -164,10 +217,9 @@ def news_for(symbol: str, days: int = 3650, root=None) -> pd.DataFrame:
 
 def coverage(root=None) -> pd.DataFrame:
     """Rows per symbol per origin, so a gap is visible rather than assumed."""
-    path = store_file(root)
-    if not path.exists():
-        return pd.DataFrame()
-    df = pd.read_parquet(path)
+    df = _read_all(root)
+    if df.empty:
+        return df
     rows = []
     for _, r in df.iterrows():
         for s in (r["symbols"].split() or ["(untagged)"]):

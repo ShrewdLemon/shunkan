@@ -93,7 +93,7 @@ def test_title_mapping_wins_over_query_attribution(tmp_path):
             root=tmp_path, query_symbol="RELIANCE")
     import pandas as pd
 
-    df = pd.read_parquet(store_file(tmp_path))
+    df = pd.read_parquet(store_file("backfill", tmp_path))
     assert df.iloc[0]["symbols"] == "SBIN"
     assert df.iloc[0]["query_symbol"] == "RELIANCE"
     assert df.iloc[0]["origin"] == "backfill"
@@ -118,3 +118,42 @@ def test_constituents_parser_and_format_refusal():
     from shunkan.data.provider import DataError
     with pytest.raises(DataError):
         parse_constituents_csv("a,b\n1,2\n", "NIFTY50")
+
+
+# -- the concurrency incident, pinned so it cannot recur ----------------------
+
+
+def test_writers_with_different_origins_never_share_a_file(tmp_path):
+    """Two by-design writers clobbered each other through one parquet and a
+    10,084-row archive became 675. Per-origin files are the fix: there is
+    nothing to lock across a macOS host and a Linux container."""
+    persist([item("Reliance Industries expands retail")], "backfill", ALIASES, root=tmp_path)
+    persist([item("SBI cuts deposit rates")], "live", ALIASES, root=tmp_path)
+    assert store_file("backfill", tmp_path).exists()
+    assert store_file("live", tmp_path).exists()
+    assert store_file("backfill", tmp_path) != store_file("live", tmp_path)
+    # readers merge both channels
+    assert len(news_for("RELIANCE", root=tmp_path)) == 1
+    assert len(news_for("SBIN", root=tmp_path)) == 1
+
+
+def test_an_unreadable_file_is_quarantined_never_overwritten(tmp_path):
+    """The old fallback read garbage, proceeded with an empty frame, and
+    wrote only its own rows over everything. Now the bytes are set aside."""
+    path = store_file("live", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"mid-write garbage from another process")
+    persist([item("SBI cuts deposit rates")], "live", ALIASES, root=tmp_path)
+    corrupt = list(path.parent.glob("*.corrupt.parquet"))
+    assert len(corrupt) == 1                       # original bytes preserved
+    assert corrupt[0].read_bytes().startswith(b"mid-write")
+    assert len(news_for("SBIN", root=tmp_path)) == 1   # and the fetch was kept
+
+
+def test_cross_channel_dedup_still_holds(tmp_path):
+    """The same article through two channels is stored once, whichever file
+    it landed in first."""
+    persist([item("Reliance Industries expands retail")], "backfill", ALIASES, root=tmp_path)
+    n = persist([item("Reliance Industries expands retail")], "live", ALIASES, root=tmp_path)
+    assert n == 0
+    assert len(news_for("RELIANCE", root=tmp_path)) == 1

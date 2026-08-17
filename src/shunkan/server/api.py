@@ -457,7 +457,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                         for c in uni[rotation % len(uni):][:6]:
                             r = await asyncio.to_thread(
                                 backfill_symbol, c.symbol, c.name, 1,
-                                None, aliases)
+                                None, aliases, None, None, "rotation")
                             n += r["added"]
                         rotation += 6
                         news_status["cycles"] = news_status.get("cycles", 0) + 1

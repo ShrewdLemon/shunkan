@@ -133,6 +133,30 @@ Things with real test coverage that have been verified against a live broker.
   stated beta of 1. The derivatives layer of event studies still needs the
   capture archive to accumulate.
 
+## Store concurrency, the incident and the rule
+
+- **What happened (2026-08-17):** the host news backfill and the container's
+  news loop both did read-modify-write on one parquet. When the loop's read
+  landed mid-write it saw an unreadable file, and the recovery path -
+  "rewrite rather than lose the fetch" - kept its own rows and clobbered the
+  archive from 10,084 rows to 675. The recovery path caused the loss. All of
+  it was refetchable, which is luck of the channel, not design.
+- **The rule now:** one writer per file. News writes per-origin files
+  (live / rotation / backfill) and readers merge and dedup; there is nothing
+  to lock across a macOS host and a Linux container, so file discipline
+  replaces locking. And no fallback anywhere may overwrite what it cannot
+  read: unreadable files are quarantined to *.corrupt.parquet with their
+  bytes intact. Applied to news, harvest, and participant stores; each has a
+  test that fails on the old behaviour.
+- **Still exposed:** ChainStore.snapshot is single-file read-modify-write and
+  safe only because the container is its sole writer. Host research scripts
+  must treat the store as read-only while the container runs; anything that
+  calls get_chain from the host writes through _capture and races the 60s
+  loop. Live-verified MCX/BFO/CDS this session; found lot_size=1 on MCX/CDS
+  (Kite's order-in-lots convention, not the economic multiplier), so rupee
+  math on those venues is blocked until multipliers are sourced. BFO is fully
+  verified including SPAN margin (169,620 for 1 lot short SENSEX CE).
+
 ## News archive
 
 - **Headlines persist now.** `store/news/headlines.parquet`, fed by a 30-minute
