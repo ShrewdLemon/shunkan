@@ -8,16 +8,13 @@ twice. Progress state is the archive itself, read at startup, so this script
 skips any symbol that already has backfill rows and continues with the rest.
 """
 
-import pandas as pd
-
 from shunkan.data.constituents import alias_table, universe
-from shunkan.data.newsstore import backfill_symbol, store_file
+from shunkan.data.newsstore import _read_all, backfill_symbol
 
 done: set[str] = set()
-f = store_file()
-if f.exists():
-    df = pd.read_parquet(f)
-    done = set(df[df.origin == "backfill"]["query_symbol"].unique())
+df = _read_all()
+if len(df):
+    done = set(df[df.origin == "backfill"]["query_symbol"].unique()) - {""}
     print(f"archive: {len(df):,} rows; already backfilled: {len(done)} symbols")
 
 uni = universe()

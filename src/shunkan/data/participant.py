@@ -158,7 +158,10 @@ def backfill(days: int = 380, root=None, progress=None) -> dict:
             try:
                 fresh = pd.concat([pd.read_parquet(path), fresh], ignore_index=True)
             except Exception:
-                pass
+                # quarantine, never overwrite - see newsstore.store_file for
+                # the incident that made this the house rule
+                fresh_path = path.with_suffix(f".{int(time.time())}.corrupt.parquet")
+                path.rename(fresh_path)
         fresh = (fresh.drop_duplicates(subset=["date", "client_type"], keep="last")
                       .sort_values(["date", "client_type"]))
         fresh.to_parquet(path, index=False)

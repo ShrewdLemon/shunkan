@@ -189,7 +189,13 @@ def _upsert(path, rows: list[dict]) -> int:
         try:
             fresh = pd.concat([pd.read_parquet(path), fresh])
         except Exception:
-            pass  # unreadable file: better to rewrite than to lose today's pull
+            # Quarantine, never overwrite. An "unreadable" file here is as
+            # likely to be another process mid-write as real corruption, and
+            # the news archive lost 10,084 rows to a fallback that assumed
+            # otherwise. The bytes are kept for forensics either way.
+            import time as _t
+
+            path.rename(path.with_suffix(f".{int(_t.time())}.corrupt.parquet"))
     fresh = (fresh.drop_duplicates(subset=["tradingsymbol", "ts"], keep="last")
                   .sort_values(["ts", "strike", "right"]))
     fresh.to_parquet(path, index=False)
@@ -231,6 +237,8 @@ def coverage(root=None) -> pd.DataFrame:
     """What the archive holds, so a gap is visible rather than assumed absent."""
     rows = []
     for f in sorted(contracts_dir(root).glob("*.parquet")):
+        if f.name.endswith(".corrupt.parquet"):
+            continue
         try:
             df = pd.read_parquet(f, columns=["ts", "tradingsymbol", "oi"])
         except Exception:
