@@ -95,6 +95,12 @@ CAPTURE_SYMBOLS = ("NIFTY", "BANKNIFTY")
 # restart is exactly when you want the count to start again.
 capture_status: dict = {"ok": 0, "failed": 0, "skipped": 0}
 
+# Six hours: the harvest is an idempotent upsert over data that changes once a
+# day, and a full sweep is ~15 min of rate-limited calls. Four passes a day is
+# ample to catch every expiry before it delists, and re-running is free.
+HARVEST_INTERVAL_S = 6 * 3600.0
+harvest_status: dict = {"runs": 0, "failed": 0}
+
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
@@ -362,6 +368,48 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                         pass
                 await asyncio.sleep(6 * 3600.0)
 
+        async def harvest_loop():
+            """Pull the full traded life of every listed option contract.
+
+            The only job here with a real deadline. Kite deletes an expired
+            contract from the instruments master, so after expiry its candles
+            cannot be fetched and its token cannot even be named. A contract
+            still listed carries months of history; measured 2026-08-17, the
+            series expiring the next day held 24 day-candles back to 2026-07-15
+            and the full sweep returned 133,968 candles back to 2025-07-13.
+
+            Runs on a long cycle because it is an upsert over a slow-moving
+            asset: a full sweep is ~15 minutes of rate-limited calls and the
+            data only changes once a day. Expiries closest to expiring are
+            swept first, so an interrupted run has already saved the part that
+            disappears soonest.
+            """
+            from shunkan.data.brokers import KiteProvider, get_broker
+            from shunkan.data.harvest import harvest_contract_lives
+
+            await asyncio.sleep(120.0)  # never compete with the open
+            while True:
+                if not is_offline():
+                    try:
+                        broker = get_broker()
+                        if isinstance(broker, KiteProvider):
+                            res = await asyncio.to_thread(
+                                harvest_contract_lives, broker)
+                            harvest_status["runs"] = harvest_status.get("runs", 0) + 1
+                            harvest_status["last_ok"] = _now_iso()
+                            harvest_status["candles"] = sum(
+                                r.candles_written for r in res)
+                            harvest_status["detail"] = [r.summary() for r in res]
+                        else:
+                            harvest_status["last_skip"] = "no Kite session"
+                    except Exception as exc:
+                        # Named, not swallowed. A harvest that silently stops is
+                        # how a week of expiries goes missing unnoticed.
+                        harvest_status["failed"] = harvest_status.get("failed", 0) + 1
+                        harvest_status["last_error"] = str(exc)[:200]
+                        harvest_status["last_error_at"] = _now_iso()
+                await asyncio.sleep(HARVEST_INTERVAL_S)
+
         async def instruments_archive_loop():
             """Keep each day's contract master.
 
@@ -386,7 +434,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
         tasks = [asyncio.create_task(t()) for t in
                  (alert_loop, bar_flush_loop, chain_capture_loop, history_sync_loop,
-                  instruments_archive_loop)]
+                  instruments_archive_loop, harvest_loop)]
         yield
         for t in tasks:
             t.cancel()
@@ -560,6 +608,9 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             # re-fetched, so a morning of silent capture failures is
             # unrecoverable and has to be visible while it is happening.
             "capture": dict(capture_status),
+            # Option history is the only irreversible asset here: an expiry not
+            # harvested before it delists cannot be bought back at any price.
+            "harvest": dict(harvest_status),
             "server_time": datetime.now(timezone.utc).isoformat(),
         }
 
