@@ -490,3 +490,23 @@ def test_an_unparseable_source_timestamp_becomes_none_not_now():
                   "PE": {"lastPrice": 90.0, "openInterest": 900}}],
     }}
     assert _parse_chain("NIFTY", payload, None).as_of is None
+
+
+def test_daily_analysis_composes_root_first(client):
+    """Every section present; a missing input is a named reason, never a
+    filled box, and the whole thing carries provenance."""
+    d = client.get("/api/analysis/daily/NIFTY").json()
+    for k in ("chart", "vol", "positioning", "participants", "events", "news"):
+        assert k in d, k
+        assert isinstance(d[k], dict)
+    ev = d["events"]
+    if "error" not in ev:
+        # baselines ship next to every conditional stat, by construction
+        assert "baseline" in ev["down_2s"] and "horizons" in ev["down_2s"]
+    assert "no verdict" in d["prov"]["caveat"]
+
+
+def test_pulse_cached_refuses_offline(client):
+    """A synthetic board must never be persisted or served as a snapshot."""
+    r = client.get("/api/pulse?cached=1")
+    assert r.status_code == 404

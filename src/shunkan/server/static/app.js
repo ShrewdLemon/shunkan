@@ -357,7 +357,7 @@ function onView(target, type, handler, opts) {
 
 const VIEWS = [
   { id: "pulse",     code: "PLS", label: "Pulse" },
-  { id: "brief",     code: "BRF", label: "Brief" },
+  { id: "brief",     code: "BRF", label: "Daily" },
   { id: "workspace", code: "WSP", label: "Work" },
   { id: "chart",     code: "CHT", label: "Chart" },
   { id: "chain",     code: "OPT", label: "Chain" },
@@ -530,20 +530,35 @@ async function renderPulse(view) {
   drawGlobe();
   addTimer("pulse:globe", drawGlobe, 30000);
 
+  const paintBoards = (data, live) => {
+    for (const [key, pid] of [["india", "p-india"], ["global", "p-global"]]) {
+      const p = $(`#${pid}`);
+      if (!p) return;
+      // A snapshot says how old it is; only a live paint claims freshness.
+      p.querySelector(".panel-meta").innerHTML = live
+        ? stamp("REST 12s + WS TICKS")
+        : ageStamp(data.as_of) + ' <span class="faint">· REFRESHING</span>';
+      p.querySelector(".panel-body").innerHTML = `
+        <table class="tbl"><thead><tr>
+          <th>INSTRUMENT</th><th>LAST</th><th>CHG%</th><th>CHG</th><th>DAY RANGE</th><th>1M</th>
+        </tr></thead><tbody>
+          ${data[key].map((q, i) => pulseRow(q, `${key}-spark-${i}`)).join("")}
+        </tbody></table>`;
+    }
+  };
+
+  // Cold start used to sit on spinners for the ~20s the live quote fan-out
+  // takes. Paint the last real snapshot immediately, aged honestly, while the
+  // live fetch runs. 404 just means no snapshot yet, which is fine.
+  getJSON("/api/pulse?cached=1")
+    .then((snap) => { if (state.view === "pulse" && !state.pulseLive) paintBoards(snap, false); })
+    .catch(() => {});
+
   const drawQuotes = async () => {
     try {
       const data = await getJSON("/api/pulse");
-      for (const [key, pid] of [["india", "p-india"], ["global", "p-global"]]) {
-        const p = $(`#${pid}`);
-        if (!p) return;
-        p.querySelector(".panel-meta").innerHTML = stamp("REST 12s + WS TICKS");
-        p.querySelector(".panel-body").innerHTML = `
-          <table class="tbl"><thead><tr>
-            <th>INSTRUMENT</th><th>LAST</th><th>CHG%</th><th>CHG</th><th>DAY RANGE</th><th>1M</th>
-          </tr></thead><tbody>
-            ${data[key].map((q, i) => pulseRow(q, `${key}-spark-${i}`)).join("")}
-          </tbody></table>`;
-      }
+      state.pulseLive = true;
+      paintBoards(data, true);
       // sparklines (cached server-side)
       for (const [key] of [["india"], ["global"]]) {
         const syms = (key === "india")
@@ -2485,7 +2500,26 @@ async function renderPortfolio(view) {
             <td class="${cls(pos.unrealized)}">\u20b9${fmt.n(pos.unrealized, 0)}</td></tr>`).join("")}
           </tbody></table></div>`
           : `<div class="empty">Flat. Paper-only — orders never reach a broker.
-             Book a leg from the OPT chain by clicking a premium.</div>`}`;
+             Book a leg from the OPT chain by clicking a premium.</div>`}
+
+        ${(p.history || []).length ? `
+          <div class="panel-head" style="border-top:1px solid var(--stroke)">
+            <span class="panel-title">JOURNAL</span>
+            <span class="panel-meta">LAST ${Math.min((p.history || []).length, 30)} ·
+              SETTLEMENTS ARE ASSERTED, NOT EXECUTED</span></div>
+          <div class="tbl-scroll" style="max-height:26vh"><table class="tbl"><thead><tr>
+            <th class="txt">TIME</th><th class="txt">SIDE</th><th class="txt">CONTRACT</th>
+            <th>QTY</th><th>PRICE</th><th>REALIZED</th></tr></thead><tbody>
+            ${p.history.slice(-30).reverse().map((h) => `<tr>
+              <td class="txt faint">${esc((h.time || "").replace("T", " ").slice(5, 16))}</td>
+              <td class="txt ${h.side === "BUY" ? "up" : "down"}">${esc(h.side || "")}${
+                h.settlement ? ' <span class="tag-dead" title="closed at a price the trader supplied, not an executed fill">SETTLED</span>' : ""}</td>
+              <td class="txt sym">${esc(h.label || h.symbol || "")}</td>
+              <td>${fmt.n(h.qty, 0)}</td>
+              <td>${fmt.n(h.price)}</td>
+              <td class="${h.realized != null ? cls(h.realized) : "faint"}">${
+                h.realized != null ? "\u20b9" + fmt.n(h.realized, 0) : "\u2014"}</td></tr>`).join("")}
+          </tbody></table></div>` : ""}`;
 
       const rep = $("#pf-reprice");
       // Re-asking is the trader's call, and force is the only way past the
@@ -3531,88 +3565,131 @@ const CUE_LABELS = { "^GSPC": "S&P 500", "^IXIC": "NASDAQ", INDIAVIX: "INDIA VIX
 const DIR_CHIP = { bullish: ["▲", "up"], bearish: ["▼", "down"], neutral: ["•", "faint"] };
 
 async function renderBrief(view, params = {}) {
+  // The daily analysis: root first (what the underlying did), then vol, then
+  // derivatives positioning, then who moved, then base rates, then news.
+  // Modelled on a desk end-of-day note with one deliberate difference: it
+  // ends at the facts. No verdict, no trade call.
   if (params.symbol) state.symbol = params.symbol.toUpperCase();
   view.innerHTML = `
     <div class="viz-bar">
-      <input id="brf-sym" class="viz-sym" value="${state.symbol}" spellcheck="false">
-      <span class="faint" style="font-size:10.5px">MORNING BRIEF — the full research loop, one screen · re-run any time</span>
+      <input id="brf-sym" class="viz-sym" value="${esc(state.symbol)}" spellcheck="false">
+      <span class="faint" style="font-size:10.5px">DAILY ANALYSIS — root to derivatives · facts and base rates, no verdict by design</span>
       <button class="viz-mini run" id="brf-run">REFRESH ⟳</button>
     </div>
-    <div id="brf-body">${loading("composing the brief — chain, vol, kalman, fan, analogs, news")}</div>`;
+    <div id="brf-body">${loading("composing: chart · vol · positioning · participants · base rates · news")}</div>`;
   $("#brf-sym").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { state.symbol = e.target.value.toUpperCase().trim(); loadBrief(); }
+    if (e.key === "Enter") { state.symbol = e.target.value.toUpperCase().trim(); loadDaily(); }
   });
-  $("#brf-run").onclick = loadBrief;
-  loadBrief();
+  $("#brf-run").onclick = loadDaily;
+  loadDaily();
 }
 
-async function loadBrief() {
-  const body = $("#brf-body");
-  if (!body) return;
-  body.innerHTML = loading("composing the brief");
+const secErr = (v) => `<div class="empty" style="padding:8px 12px">${esc(v.error || "unavailable")}</div>`;
+
+async function loadDaily() {
+  const host = $("#brf-body");
+  if (!host) return;
   try {
-    const d = await getJSON(`/api/brief/${state.symbol}`);
-    const p = d.positioning || {};
-    const v = d.vol || {};
-    const cueRow = Object.entries(d.cues || {})
-      .filter(([s]) => s !== d.symbol)
-      .map(([s, q]) => {
-        const pc = q.change_pct;
-        return `<span class="brf-cue"><span class="k">${CUE_LABELS[s] || s}</span>
-          <span class="${pc >= 0 ? "up" : "down"}">${pc === null || pc === undefined ? "—" : fmt.pct(pc)}</span></span>`;
+    const d = await getJSON(`/api/analysis/daily/${encodeURIComponent(state.symbol)}`);
+    const ch = d.chart || {}, vol = d.vol || {}, pos = d.positioning || {};
+    const parts = d.participants || {}, ev = d.events || {}, news = d.news || {};
+
+    const chartBody = ch.error ? secErr(ch) : `
+      ${metricsStrip([
+        ["CLOSE", fmt.n(ch.close), ""],
+        ["DAY", fmt.pct(ch.chg_pct / 100), cls(ch.chg_pct)],
+        ["GAP", fmt.pct(ch.gap_pct / 100), cls(ch.gap_pct)],
+        ["INTRADAY", fmt.pct(ch.intraday_pct / 100), cls(ch.intraday_pct)],
+        ["WEEK", fmt.pct(ch.week_chg_pct / 100), cls(ch.week_chg_pct)],
+        ["CANDLE", esc((ch.daily_candle || "").toUpperCase()),
+          ch.daily_candle && ch.daily_candle.includes("bear") ? "down"
+          : ch.daily_candle && ch.daily_candle.includes("bull") ? "up" : ""],
+      ])}
+      <div class="empty" style="padding:6px 12px">closed at ${
+        ch.range_pos_pct == null ? "—" : fmt.n(ch.range_pos_pct, 0) + "% of the day range"} ·
+        realised vol ${fmt.n(ch.rv5, 1)}% (5d) / ${fmt.n(ch.rv21, 1)}% (21d)</div>`;
+
+    const volBody = vol.error ? secErr(vol) : `
+      ${metricsStrip([
+        ["INDIA VIX", fmt.n(vol.vix, 2), ""],
+        ["PERCENTILE", fmt.n(vol.vix_pctile, 1) + "th", vol.vix_pctile < 20 ? "down" : vol.vix_pctile > 80 ? "up" : ""],
+        ["ATM IV", pos.atm_iv_pct ? fmt.n(pos.atm_iv_pct, 2) + "%" : "—", ""],
+        ["IMPLIED MOVE", pos.implied_move_pct ? "±" + fmt.n(pos.implied_move_pct, 2) + "%" : "—", ""],
+      ])}
+      <div class="empty" style="padding:6px 12px">VIX percentile is against every session since 2008 in the local archive (as of ${esc(vol.vix_date || "—")})</div>`;
+
+    const posBody = pos.error
+      ? `<div class="empty" style="padding:8px 12px">${esc(pos.error)}${
+          (pos.source_trail || []).map((t) => `<br><span class="faint">· ${esc(t)}</span>`).join("")}</div>`
+      : `${metricsStrip([
+          ["PCR (OI)", fmt.n(pos.pcr_oi, 2), pos.pcr_oi > 1.1 ? "up" : pos.pcr_oi < 0.9 ? "down" : ""],
+          ["MAX PAIN", fmt.i(pos.max_pain), ""],
+          ["VS SPOT", pos.dist_to_max_pain_pct == null ? "—" : fmt.pct(pos.dist_to_max_pain_pct / 100), cls(pos.dist_to_max_pain_pct)],
+          ["OI SUPPORT", fmt.i(pos.support), "up"],
+          ["OI RESIST", fmt.i(pos.resistance), "down"],
+        ])}
+        <div class="empty" style="padding:6px 12px">${esc(pos.source || "")} · expiry ${esc(pos.expiry || "—")}${
+          pos.is_model ? ' · <span class="warn">MODELLED — positioning here is not market data</span>' : ""}</div>`;
+
+    const partBody = parts.error ? secErr(parts) : `
+      <table class="tbl"><thead><tr><th class="txt">WHO</th>
+        <th>IDX FUT NET</th><th>Δ1D</th><th>IDX OPT NET</th><th>Δ1D</th><th class="txt">READ</th>
+      </tr></thead><tbody>
+        ${Object.entries(parts.by_participant || {}).map(([who, r]) => `<tr>
+          <td class="txt sym">${esc(who)}</td>
+          <td class="${cls(r.idx_fut_net)}">${fmt.n(r.idx_fut_net, 0)}</td>
+          <td class="${cls(r.idx_fut_net_chg)}">${r.idx_fut_net_chg == null ? "—" : fmt.n(r.idx_fut_net_chg, 0)}</td>
+          <td class="${cls(r.idx_opt_net)}">${fmt.n(r.idx_opt_net, 0)}</td>
+          <td class="${cls(r.idx_opt_net_chg)}">${r.idx_opt_net_chg == null ? "—" : fmt.n(r.idx_opt_net_chg, 0)}</td>
+          <td class="txt ${r.read === "added bullish exposure" ? "up" : r.read === "added bearish exposure" ? "down" : "faint"}">${esc(r.read || "")}</td></tr>`).join("")}
+      </tbody></table>
+      <div class="empty" style="padding:6px 12px">NSE participant-wise OI, ${esc(parts.date || "")} vs ${esc(parts.prev_date || "")} ·
+        contracts, direction-sign convention (long calls + short puts = bullish) · levels are structural, the CHANGE is the read</div>`;
+
+    const evToday = (ev.today && ev.today.classification) || "—";
+    const study = (key, label) => {
+      const s0 = ev[key]; if (!s0 || s0.error) return "";
+      const rows = ["1", "5", "10", "21"].map((h) => {
+        const c = s0.horizons[h], b = s0.baseline[h];
+        if (!c || !c.n) return "";
+        return `<tr><td class="txt">${label} → +${h}d</td>
+          <td class="${cls(c.mean_pct)}">${fmt.n(c.mean_pct, 2)}%</td>
+          <td>${fmt.n(c.hit_rate * 100, 0)}%</td>
+          <td class="faint">${fmt.n(b.mean_pct, 2)}%</td>
+          <td class="faint">${c.t_stat == null ? "—" : fmt.n(c.t_stat, 1)}</td>
+          <td class="faint">${c.n}</td></tr>`;
       }).join("");
-    const spotQ = (d.cues || {})[d.symbol] || {};
+      return rows;
+    };
+    const evBody = ev.error ? secErr(ev) : `
+      <div class="empty" style="padding:6px 12px">latest session classifies as
+        <b class="${evToday.includes("down") ? "down" : evToday.includes("up") ? "up" : ""}">${esc(evToday)}</b>
+        (z = ${ev.today && ev.today.z != null ? ev.today.z : "—"}) ·
+        base rates below are history, not a forecast</div>
+      <table class="tbl"><thead><tr><th class="txt">AFTER A…</th>
+        <th>MEAN</th><th>HIT</th><th>ANY-DAY MEAN</th><th>t</th><th>n</th></tr></thead>
+      <tbody>${study("down_2s", "−2σ day")}${study("up_2s", "+2σ day")}</tbody></table>`;
 
-    const voteRows = (d.votes || []).map((vt) => {
-      const [glyph, cls] = DIR_CHIP[vt.dir] || DIR_CHIP.neutral;
-      return `<div class="brf-vote">
-        <span class="chip ${cls}">${glyph} ${vt.dir.toUpperCase()}</span>
-        <span class="name">${vt.name.toUpperCase()}</span>
-        <span class="why">${vt.why}${vt.flag ? ` <span class="flag">⚠ ${vt.flag}</span>` : ""}</span>
+    const newsBody = news.error ? secErr(news) : `
+      <div class="empty" style="padding:6px 12px">bias ${esc(String(news.bias_label || "—"))}
+        (${news.bias_score == null ? "—" : fmt.n(news.bias_score, 2)}) · ${news.n_items || 0} headlines</div>
+      ${(news.headlines || []).map((h) => `<div class="empty" style="padding:2px 12px">· ${esc(h.title)}
+        <span class="faint">${esc(h.source || "")}</span></div>`).join("")}`;
+
+    const sec = (title, body) => panel({ title, flush: true, meta: "", body });
+    host.innerHTML = `
+      <div class="empty" style="padding:4px 2px">${ageStamp(d.as_of ? d.as_of + "T15:30:00+05:30" : null)}
+        <span class="faint">· root → derivatives · every section fails to a named reason, never a filled box</span></div>
+      <div style="display:grid;gap:6px">
+        ${sec("CHART — THE UNDERLYING", chartBody)}
+        ${sec("VOLATILITY", volBody)}
+        ${sec("OPEN INTEREST & POSITIONING", posBody)}
+        ${sec("PARTICIPANTS — WHO MOVED (FII / DII / CLIENT / PRO)", partBody)}
+        ${sec("EVENT BASE RATES — WHAT HISTORY SAYS ABOUT A DAY LIKE TODAY", evBody)}
+        ${sec("NEWS", newsBody)}
       </div>`;
-    }).join("");
-
-    body.innerHTML = `
-      ${panel({ title: `${d.symbol} — ${spotQ.price ? fmt.n(spotQ.price) : "—"}`,
-                meta: stamp(`GENERATED ${d.generated_at.replace("T", " ").replace("+00:00", " UTC")}`),
-                body: `<div class="brf-cues">${cueRow}</div>` })}
-      <div class="row cols-2" style="margin-top:12px">
-        ${panel({ title: "POSITIONING" + (p.model_oi ? " — ⚠ MODEL OI" : ""), body: p.error
-          ? `<div class="empty">${p.error}</div>`
-          : `<table class="viz-kv">
-              <tr><td>EXPIRY</td><td>${p.expiry}</td></tr>
-              <tr><td>PCR / MAX PAIN</td><td>${p.pcr?.toFixed(2)} / ${fmt.n(p.max_pain, 0)}</td></tr>
-              <tr><td>WALLS</td><td>${fmt.n(p.support, 0)} 🛡 · ⛔ ${fmt.n(p.resistance, 0)}</td></tr>
-              <tr><td>STRADDLE → MOVE</td><td>${fmt.n(p.straddle, 0)} → ±${(p.expected_move_pct * 100).toFixed(2)}%</td></tr>
-              <tr><td>READ</td><td>${p.bias}</td></tr>
-            </table>
-            ${(p.trail || []).length ? `<div class="brf-trail">${p.trail.map((t) =>
-              `<div>↳ ${t}</div>`).join("")}</div>` : ""}` })}
-        ${panel({ title: "VOL SETUP", body: v.atm_iv === undefined
-          ? `<div class="empty">vol data unavailable</div>`
-          : `<table class="viz-kv">
-              <tr><td>ATM IV</td><td>${(v.atm_iv * 100).toFixed(1)}%</td></tr>
-              <tr><td>RV 21D (CC / PARK)</td><td>${(v.rv_cc_21 * 100).toFixed(1)}% / ${(v.rv_park_21 * 100).toFixed(1)}%</td></tr>
-              <tr><td>IV PREMIUM</td><td class="${v.iv_premium > 0.03 ? "up" : ""}">${v.iv_premium === null ? "—" : (v.iv_premium * 100).toFixed(1) + " volpts"}</td></tr>
-              <tr><td>±1σ TOMORROW</td><td>${v.band_1d ? `${fmt.n(v.band_1d[0], 0)} – ${fmt.n(v.band_1d[1], 0)}` : "—"}</td></tr>
-            </table>
-            <div class="feed-note">${v.iv_premium > 0.03
-              ? "Options rich vs realized — movement is being overpaid for. Cuts both ways: seller's edge, buyer's warning."
-              : "IV near realized — no obvious premium either way."} IV source: ${v.iv_source}</div>` })}
-      </div>
-      ${panel({ title: "THE VOTES — EVERY SIGNAL, ITS REASON, ITS WEAKNESS",
-                body: voteRows || `<div class="empty">no votes computed</div>` })}
-      ${panel({ title: "NET READ", body: `
-        <div class="brf-net">
-          <span class="score ${d.net.score > 0 ? "up" : d.net.score < 0 ? "down" : "faint"}">${d.net.score > 0 ? "+" : ""}${d.net.score}</span>
-          <span class="label">${d.net.label} ${iM(d.net.prov, "NET READ")}</span>
-        </div>
-        ${d.news && d.news.gap_call ? `<div class="feed-note">news heuristic: ${d.news.gap_call}</div>` : ""}
-        <div class="brf-disclaimer">Transparent heuristics for decision support — not predictions,
-          not trade advice. Flagged votes carry less weight than the count implies.
-          Re-run at 09:20 IST when the live chain replaces any model data.</div>` })}`;
   } catch (e) {
-    body.innerHTML = `<div class="empty">${e.message}</div>`;
+    host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
 }
 

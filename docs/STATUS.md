@@ -54,12 +54,12 @@ Things with real test coverage that have been verified against a live broker.
   the book fingerprint, so a desk pays one exchange call per adjustment. Unit
   tested against a stubbed basket call; the live round trip is still the one
   verified by hand, not by a test.
-- **Settling an expired position.** `Portfolio.settle_expired()` plus
-  `POST /api/portfolio/settle`, at a price the trader types. The API path is
-  tested end to end over HTTP; the SETTLE ticket has not been clicked in a
-  browser.
-- **Screener auto refresh.** `renderScreener` now repeats the last successful
-  query every 5 minutes. Untested in a browser.
+- **Settling an expired position.** Verified in a browser on 2026-08-17:
+  SETTLE opens a ticket, the preview arithmetic is exact (short 65 @ 42.50
+  settled at 0 previewed and recorded realized 2,762.50), Enter records, the
+  book goes flat, and the journal row carries the settlement flag.
+- **Screener auto refresh.** Verified in a browser: query runs, 20 rows, the
+  keyed 5-minute timer registers, header says AUTO 5m.
 - **MCX, BFO, CDS.** The instrument model and margin lookup are venue aware and
   unit tested, but only NFO has been exercised against the live API. Commodity
   and BSE paths are code correct and unproven.
@@ -105,16 +105,33 @@ Things with real test coverage that have been verified against a live broker.
   Ticks are receipt-timed, not exchange-timed: the ticker subscribes in quote
   mode (44 bytes), which carries no exchange timestamp. Full mode (184) does,
   at triple the bandwidth.
-- **No settlement blotter.** The journal marks a settlement as asserted rather
-  than executed, but nothing renders `portfolio.history`, so that distinction
-  lives only in `~/.shunkan/portfolio.json` and the `/api/portfolio` payload.
-- **Cold load is slow.** First paint of Pulse can sit on spinners for 15 to 20
-  seconds while the initial fetches complete.
+- **Settlement blotter.** PRT now renders the journal: last 30 entries with a
+  SETTLED tag on asserted closes, under the positions table.
+- **Cold load.** Measured 20.6s (and 32s on a cold Yahoo path). The last real
+  pulse snapshot is now persisted and served in ~25ms, painted with an honest
+  AS OF age while the live fetch runs. Offline mode neither writes nor serves
+  it, so a synthetic board can never masquerade as a snapshot.
 - **No accounts.** By design for a single user localhost tool. `shunkan serve`
   now refuses a non-loopback bind unless you pass `--i-understand-the-risk`,
   and when you do it mints a per-run token that every `/api/` call and the tick
   socket require. That is a guard rail, not a security model: it is one shared
   secret and there is still no notion of users.
+
+## Daily analysis and event studies
+
+- **BRF is the Daily Analysis**: root to derivatives - chart facts, VIX
+  percentile against 2008+, live chain positioning, NSE participant-wise
+  FII/DII/Client/Pro nets with day-over-day change, event base rates with
+  baselines, news bias. Facts only, no verdict by design. On 2026-08-17 the
+  participants table independently matched Sensibull's published read for the
+  same session (FII bearish, Client bullish) from the same NSE source file.
+- **Participant archive**: 254 sessions backfilled from NSE's public archive,
+  kept current by a 6-hourly loop. Backfillable, so no survivorship problem.
+- **Event engine** (`analytics/events.py`): shocks standardised by lagged
+  trailing vol, non-overlapping forward windows, and a baseline beside every
+  conditional stat. Company studies can be run in excess-of-index terms at a
+  stated beta of 1. The derivatives layer of event studies still needs the
+  capture archive to accumulate.
 
 ## Research findings
 
