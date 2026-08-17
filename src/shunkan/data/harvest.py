@@ -22,6 +22,27 @@ before its Tuesday is a permanent hole in the surface history.
 Rate: Kite's historical endpoint tolerates ~3 requests/second, so a full sweep
 of both indices is minutes, not hours. Cheap insurance against an irreversible
 loss.
+
+WHAT THIS ARCHIVE IS NOT, and it took a research pass to notice
+A contract appears here for a past date only if it was STILL LISTED when the
+harvest ran. That is selection on a future variable, and it makes the long tail
+of this archive useless for research even though it looks impressive.
+
+Measured on the first sweep: 133,968 rows across 271 sessions back to
+2025-07-14, of which 69.8% had zero volume, 56.5% had zero open interest, and
+only 26 of 271 sessions contained any contract within 45 days of expiry. The
+median contract in January 2026 had 711 days to expiry. So the "13 months of
+option history" is roughly two months of genuine near-chain data bolted onto
+eleven months of illiquid LEAPS that happened to survive to harvest day.
+
+Worse: ZERO rows have date >= expiry, so the archive has never observed a
+single settlement. Every expiry-day question is unanswerable, not merely
+noisy.
+
+Both problems have the same fix and it is forward-looking: harvest each expiry
+ON its expiry day after the close, before Kite drops the contract overnight.
+Do that and the archive accumulates unbiased near-chain data with settlements.
+Nothing recovers the back-history; it was never really there.
 """
 
 from __future__ import annotations
@@ -173,6 +194,24 @@ def _upsert(path, rows: list[dict]) -> int:
                   .sort_values(["ts", "strike", "right"]))
     fresh.to_parquet(path, index=False)
     return len(fresh)
+
+
+def settling_today(kite, symbols=("NIFTY", "BANKNIFTY")) -> list:
+    """Expiries settling today. These are the harvest that matters most.
+
+    A contract is dropped from the instruments master overnight, so its final
+    session, the one containing settlement, is only fetchable between the close
+    and the drop. Miss that window and the expiry is in the archive with its
+    last day missing, which is precisely the day every expiry question needs.
+    """
+    from shunkan.data.kite_fno import load_instruments
+
+    nfo = load_instruments(kite, "NFO")
+    today = today_ist()
+    opts = nfo[(nfo["name"].isin(symbols))
+               & (nfo["instrument_type"].isin(["CE", "PE"]))
+               & (nfo["expiry"] == today)]
+    return sorted(opts["expiry"].unique())
 
 
 def expiring_soon(kite, symbols=("NIFTY", "BANKNIFTY"), within_days: int = 2):

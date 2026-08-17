@@ -385,7 +385,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             disappears soonest.
             """
             from shunkan.data.brokers import KiteProvider, get_broker
-            from shunkan.data.harvest import harvest_contract_lives
+            from shunkan.data.harvest import harvest_contract_lives, settling_today
+            from shunkan.markets import is_expired, now_ist
 
             await asyncio.sleep(120.0)  # never compete with the open
             while True:
@@ -393,6 +394,23 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                     try:
                         broker = get_broker()
                         if isinstance(broker, KiteProvider):
+                            # An expiry settling today is only fetchable between
+                            # the close and Kite dropping it from the master
+                            # overnight. That final session is the one every
+                            # expiry question needs, and the archive currently
+                            # holds ZERO settlements because this window was
+                            # never targeted. It goes first, alone, so a slow
+                            # full sweep cannot eat the window.
+                            for exp in await asyncio.to_thread(settling_today, broker):
+                                if is_expired(exp):
+                                    r = await asyncio.to_thread(
+                                        harvest_contract_lives, broker,
+                                        ("NIFTY", "BANKNIFTY"), "day", exp)
+                                    harvest_status["settlements"] = (
+                                        harvest_status.get("settlements", 0)
+                                        + sum(x.contracts_written for x in r))
+                                    harvest_status["last_settlement"] = (
+                                        f"{exp} at {now_ist():%H:%M}")
                             res = await asyncio.to_thread(
                                 harvest_contract_lives, broker)
                             harvest_status["runs"] = harvest_status.get("runs", 0) + 1

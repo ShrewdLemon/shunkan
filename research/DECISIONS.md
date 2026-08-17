@@ -71,3 +71,56 @@ condor is 0.53% at 50 lots. Any structure here would have needed to clear that
 before clearing the tail.
 
 ---
+
+## 2026-08-17 (Mon), later — signal hunt: NOTHING TRADEABLE
+
+Four research angles on the harvested option archive, each attacked by a
+dedicated killer whose job was to destroy rather than improve. Roughly 1,356
+honest trials across the session. Nothing survived, and the reason turned out
+to be my own data rather than the statistics.
+
+**The archive has survivorship bias and I did not see it.** A contract appears
+in it for a past date only if it was still listed when the harvest ran, which
+is selection on a future variable. Verified myself:
+
+- 133,968 rows, 271 sessions back to 2025-07-14, and **zero** rows where
+  date >= expiry. The archive has never observed a settlement.
+- 69.8% of candles have zero volume, **56.5% have zero open interest** — the
+  column the archive exists for.
+- Only **26 of 271 sessions** contain any contract within 45 days of expiry.
+  Median days-to-expiry in January 2026 was **711**.
+
+So "13 months of option history" was about two months of real near-chain data
+bolted onto eleven months of illiquid LEAPS that happened to survive to harvest
+day. I presented that as a research asset. It is not one.
+
+**What died** (all reproduced and killed by the workflow's own attackers):
+
+- *Max pain gravity* — beaten by a zero-information strike-ladder placebo at
+  every horizon, and 80% correlated with the trailing 5-day return. It is last
+  week's move wearing a costume.
+- *PCR-volume momentum*, the only candidate to pass a permutation gate
+  (p=0.025) — it is a put/call ratio computed on ~28 surviving LEAPS. The
+  near-dated version cannot be constructed at all.
+- *OI as support/resistance* — 12,019 strike-days is 57 independent days
+  wearing a costume; t moves from -1.44 to -5.86 on specification alone.
+- *Skew carry, skew reversion, term-structure prediction* — every univariate
+  result dies on a control for ATM IV, which it correlates -0.46 with.
+- *Expiry-day straddle* — untestable. Zero settlements in the archive.
+- *Day-after-expiry drift* — real before 2017, absent since (t=+0.20 for
+  2020-2026), found by an 88-cell sweep.
+
+**The least-dead thing**, named as such and not traded: NIFTY's overnight
+versus intraday decomposition. +9.411 bps/night, t=11.01 over 19 years,
+survives ex-2020 and both halves. It still fails on economics: +1.10%/yr over
+buy-and-hold before slippage, negative for the last 500 sessions, and its gross
+Sharpe of 2.57 against 0.19-0.98 in every other developed market is the kind of
+unexplained magnitude where artifacts live.
+
+**Decision: trade nothing. Fix the capture.** Harvest each expiry ON expiry day
+after the close, before Kite drops the contract overnight. That is now wired
+into harvest_loop. It does not recover the back-history, which was never really
+there, but from here the archive accumulates unbiased near-chain data with
+settlements in it.
+
+---
