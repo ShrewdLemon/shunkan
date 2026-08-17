@@ -83,6 +83,23 @@ def _same_secret(sent: str, expected: str) -> bool:
                                expected.encode("utf-8", "replace"))
 
 
+# 60s through the session gives ~375 samples a day against ~6 at the old 600s.
+# Well inside Kite's limits: a chain build is one batched /quote plus a cached
+# instruments read, so two symbols cost ~4 calls a minute against a 1 req/s
+# quote budget.
+CAPTURE_INTERVAL_S = 60.0
+CAPTURE_SYMBOLS = ("NIFTY", "BANKNIFTY")
+
+# Live counters for the capture loop, surfaced on /api/status. Not persisted:
+# the question this answers is "is the archive growing right now", and a
+# restart is exactly when you want the count to start again.
+capture_status: dict = {"ok": 0, "failed": 0, "skipped": 0}
+
+
+def _now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+
+
 def _chain_error(symbol: str, exc: Exception) -> HTTPException:
     """502 whose detail carries the source trail, so a failed chain shows
     which sources were tried and why — instead of a stand-in book."""
@@ -270,20 +287,48 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                         pass
 
         async def chain_capture_loop():
-            """Snapshot index chains every 10 min during market hours so ΔOI,
-            IV history and straddle series accumulate even if nobody opens
-            the chain view. get_chain itself captures via its cache path."""
+            """Snapshot index chains through the session so IV, skew and OI
+            series accumulate whether or not anyone is watching.
+
+            This archive is the only thing that compounds. Expired option
+            contracts cannot be re-fetched from Kite afterwards, so a session
+            not captured is a session gone for good, and there is no amount of
+            later effort that recovers it.
+
+            It used to sleep 600s and swallow every failure with a bare
+            `except: continue`. Kite invalidates its token every morning and
+            requires a manual login, so from 09:15 until someone logged in this
+            captured nothing and said nothing. Measured: 2026-08-17 had ONE
+            snapshot for the whole session, 2026-08-14 had 13. That is not a
+            dataset, and the silence is what made it invisible.
+            """
             from shunkan.data.chains import get_chain
 
+            await asyncio.sleep(20.0)  # let startup settle before the first pull
             while True:
-                await asyncio.sleep(600.0)
                 if is_offline() or not session_phase().is_open:
+                    capture_status["skipped"] = capture_status.get("skipped", 0) + 1
+                    capture_status["last_skip_reason"] = (
+                        "offline" if is_offline() else session_phase().phase)
+                    await asyncio.sleep(CAPTURE_INTERVAL_S)
                     continue
-                for sym in ("NIFTY", "BANKNIFTY"):
+                for sym in CAPTURE_SYMBOLS:
                     try:
-                        await asyncio.to_thread(get_chain, sym)
-                    except Exception:
-                        continue
+                        c = await asyncio.to_thread(get_chain, sym)
+                        capture_status["ok"] = capture_status.get("ok", 0) + 1
+                        capture_status["last_ok"] = _now_iso()
+                        capture_status["last_source"] = c.source
+                        capture_status.setdefault("per_symbol", {})[sym] = {
+                            "at": _now_iso(), "source": c.source,
+                            "expiry": str(c.expiry),
+                        }
+                    except Exception as exc:
+                        # Counted and named. A capture that fails all morning is
+                        # the single most expensive silent failure in this app.
+                        capture_status["failed"] = capture_status.get("failed", 0) + 1
+                        capture_status["last_error"] = f"{sym}: {str(exc)[:160]}"
+                        capture_status["last_error_at"] = _now_iso()
+                await asyncio.sleep(CAPTURE_INTERVAL_S)
 
         async def history_sync_loop():
             """Grow the local daily-candle archive while the terminal runs:
@@ -511,6 +556,10 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             "broker_reason": health["reason"],
             "session": {"phase": phase.phase, "open": phase.is_open,
                         "description": phase.description},
+            # Is the archive actually growing? Expired contracts cannot be
+            # re-fetched, so a morning of silent capture failures is
+            # unrecoverable and has to be visible while it is happening.
+            "capture": dict(capture_status),
             "server_time": datetime.now(timezone.utc).isoformat(),
         }
 
