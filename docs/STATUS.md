@@ -133,6 +133,24 @@ Things with real test coverage that have been verified against a live broker.
   stated beta of 1. The derivatives layer of event studies still needs the
   capture archive to accumulate.
 
+## News archive
+
+- **Headlines persist now.** `store/news/headlines.parquet`, fed by a 30-minute
+  server loop (market feed + a rotating slice of constituent-name queries) and
+  a per-company weekly-window backfill against Google News RSS, which honours
+  after:/before: (verified before building). Mapping is by company name IN THE
+  TITLE, longest-alias-first, against the NIFTY50 and BANKNIFTY constituent
+  lists fetched from NSE's own archive. The collision traps (Kotak Mahindra
+  Bank vs M&M vs Tech Mahindra, L&T vs LT) each have a test.
+- **The backfill channel is a sample, not a census.** A retrospective query
+  returns what Google indexes today, ranked by Google, ~100 items per window.
+  Rows carry origin=backfill so research can always separate the channels, and
+  old timestamps are date-granular, so daily joins only.
+- **Verified end to end:** one year of RELIANCE = 1,289 unique rows, 389
+  title-tagged; all 16 of its ±2σ days inside the window join to named news
+  within ±1 day. Presence-of-news is now measurable; separating informative
+  news from ambient coverage is the research this enables, not solves.
+
 ## Research findings
 
 Reproducible: `.venv/bin/python research/vrp_regime.py`, reads only the local
