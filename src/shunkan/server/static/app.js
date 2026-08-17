@@ -3976,6 +3976,24 @@ async function refreshStatus() {
       chip.innerHTML = `BROKER <b class="ok">${s.broker.toUpperCase()}</b>`;
       chip.title = ""; chip.onclick = null; chip.style.cursor = "";
     }
+    // Capture health in the status bar. This archive is the only asset that
+    // compounds and it used to fail silently every morning until someone
+    // logged in, so a stalled capture has to be visible without being asked for.
+    const cap = s.capture || {};
+    const capEl = $("#sb-capture");
+    if (capEl) {
+      const failing = (cap.failed || 0) > 0 && !cap.last_ok;
+      const stale = cap.last_ok && (Date.now() - Date.parse(cap.last_ok)) > 300000;
+      capEl.innerHTML = !s.session.open
+        ? `<span class="faint">CAPTURE IDLE</span>`
+        : failing ? `<span class="down">CAPTURE FAILING</span>`
+        : stale ? `<span class="warn">CAPTURE STALE</span>`
+        : `CAPTURE <span class="ok">${(cap.ok || 0).toLocaleString()}</span>`;
+      capEl.title = cap.last_error
+        ? `last error: ${cap.last_error}`
+        : cap.last_ok ? `last capture ${cap.last_ok} from ${cap.last_source || "?"}`
+        : "no capture yet on this run";
+    }
     $("#sb-version").textContent = `SHUNKAN v${s.version}`;
   } catch {}
 }
