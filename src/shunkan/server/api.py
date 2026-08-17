@@ -100,6 +100,7 @@ capture_status: dict = {"ok": 0, "failed": 0, "skipped": 0}
 # ample to catch every expiry before it delists, and re-running is free.
 HARVEST_INTERVAL_S = 6 * 3600.0
 harvest_status: dict = {"runs": 0, "failed": 0}
+participant_status: dict = {"failed": 0}
 
 
 def _now_iso() -> str:
@@ -428,6 +429,31 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                         harvest_status["last_error_at"] = _now_iso()
                 await asyncio.sleep(HARVEST_INTERVAL_S)
 
+        async def participant_loop():
+            """Keep the NSE participant-wise positioning current.
+
+            The file for a session appears in the evening; a 6-hourly
+            backfill(days=7) picks it up whenever it lands, refetches nothing
+            already on disk, and quietly rides over weekends and holidays.
+            This is the who-moved table the daily analysis reads, and unlike
+            option candles it is backfillable, so a missed evening costs
+            latency rather than data.
+            """
+            from shunkan.data.participant import backfill
+
+            await asyncio.sleep(90.0)
+            while True:
+                if not is_offline():
+                    try:
+                        r = await asyncio.to_thread(backfill, 7)
+                        participant_status.update(r)
+                        participant_status["last_ok"] = _now_iso()
+                    except Exception as exc:
+                        participant_status["failed"] = (
+                            participant_status.get("failed", 0) + 1)
+                        participant_status["last_error"] = str(exc)[:160]
+                await asyncio.sleep(6 * 3600.0)
+
         async def instruments_archive_loop():
             """Keep each day's contract master.
 
@@ -452,7 +478,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
         tasks = [asyncio.create_task(t()) for t in
                  (alert_loop, bar_flush_loop, chain_capture_loop, history_sync_loop,
-                  instruments_archive_loop, harvest_loop)]
+                  instruments_archive_loop, harvest_loop, participant_loop)]
         yield
         for t in tasks:
             t.cancel()
@@ -629,11 +655,30 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             # Option history is the only irreversible asset here: an expiry not
             # harvested before it delists cannot be bought back at any price.
             "harvest": dict(harvest_status),
+            "participant": dict(participant_status),
             "server_time": datetime.now(timezone.utc).isoformat(),
         }
 
     @app.get("/api/pulse")
-    def pulse():
+    def pulse(cached: int = 0):
+        """The landing board. ?cached=1 returns the last REAL snapshot from
+        disk instantly, stamped with the time it was true, so a cold start
+        paints in milliseconds with an honest AS OF instead of sitting on
+        spinners for the ~20s the live quote fan-out takes. The frontend then
+        fetches live and repaints. Offline mode neither writes nor serves the
+        snapshot: a synthetic board must never be persisted as a real one.
+        """
+        from shunkan.config import CACHE_DIR
+
+        snap_path = CACHE_DIR / "pulse_snapshot.json"
+        if cached:
+            if is_offline() or not snap_path.exists():
+                raise HTTPException(404, "no snapshot yet")
+            try:
+                return json.loads(snap_path.read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                raise HTTPException(404, "snapshot unreadable") from exc
+
         boards = {}
         for key, board in (("india", INDIA_PULSE), ("global", GLOBAL_PULSE)):
             try:
@@ -645,6 +690,14 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                  "name": name}  # board label wins over the quote's ticker name
                 for name, t in board
             ]
+        got_any = any("price" in row for b in boards.values() for row in b)
+        boards["as_of"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if got_any and not is_offline():
+            try:
+                snap_path.parent.mkdir(parents=True, exist_ok=True)
+                snap_path.write_text(json.dumps(boards))
+            except OSError:
+                pass  # a failed snapshot write must never break the live board
         return boards
 
     @app.get("/api/sparks")
@@ -1603,6 +1656,155 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                 ),
             },
         })
+
+    @app.get("/api/analysis/daily/{symbol}")
+    def analysis_daily(symbol: str):
+        """The daily analysis, root first: what the underlying did, then vol,
+        then derivatives positioning, then who moved (participants), then the
+        historical base rates for a day like today, then news.
+
+        Modelled on the shape of a desk's end-of-day note, with one deliberate
+        difference: it ends at the facts. No verdict and no trade call, because
+        the one strategy this codebase has fully validated so far was the
+        decision not to trade. Every section degrades to a named reason rather
+        than a blank, and nothing here is invented to fill a box.
+        """
+        import numpy as np
+
+        from shunkan.analytics.events import classify_today, event_study
+        from shunkan.data.participant import latest_with_change
+        from shunkan.markets import INDEX_ALIASES
+        from shunkan.store.store import STORE_DIR
+
+        sym = symbol.upper()
+        out: dict = {"symbol": sym}
+
+        # ---- root: the underlying, from the local archive -------------------
+        def archive_frame():
+            cands = [sym]
+            alias = INDEX_ALIASES.get(sym)
+            if alias:
+                cands.append(alias.replace("^", "_").replace("=", "_").replace("/", "_"))
+            for c in cands:
+                f = STORE_DIR / "history" / f"{c}.parquet"
+                if f.exists():
+                    df = pd.read_parquet(f).sort_values("date")
+                    df["date"] = pd.to_datetime(df["date"])
+                    return df
+            raise DataError(f"no archived history for {sym} (tried {cands})")
+
+        try:
+            hist = archive_frame()
+            row, prev = hist.iloc[-1], hist.iloc[-2]
+            close = hist.set_index("date")["close"]
+            r = np.log(close).diff()
+            week = close.resample("W-FRI").agg(["first", "last"]).dropna()
+            wk, wk_prev = week.iloc[-1], week.iloc[-2]
+            # candle facts, defined patterns only, no chart-reading mysticism
+            bearish_engulf = (row.close < row.open and prev.close > prev.open
+                              and row.open >= prev.close and row.close <= prev.open)
+            bullish_engulf = (row.close > row.open and prev.close < prev.open
+                              and row.open <= prev.close and row.close >= prev.open)
+            rng_lo, rng_hi = float(row.low), float(row.high)
+            out["as_of"] = row.date.date().isoformat()
+            out["chart"] = {
+                "close": float(row.close),
+                "chg_pct": float(row.close / prev.close - 1) * 100,
+                "gap_pct": float(row.open / prev.close - 1) * 100,
+                "intraday_pct": float(row.close / row.open - 1) * 100,
+                "range_pos_pct": (float((row.close - rng_lo) / (rng_hi - rng_lo)) * 100
+                                  if rng_hi > rng_lo else None),
+                "week_chg_pct": float(wk["last"] / wk["first"] - 1) * 100,
+                "prev_week_chg_pct": float(wk_prev["last"] / wk_prev["first"] - 1) * 100,
+                "daily_candle": ("bearish engulfing" if bearish_engulf
+                                 else "bullish engulfing" if bullish_engulf
+                                 else "red" if row.close < row.open else "green"),
+                "rv5": float(r.tail(5).std() * np.sqrt(252) * 100),
+                "rv21": float(r.tail(21).std() * np.sqrt(252) * 100),
+            }
+            # base rates for a day like today, and the standard studies either way
+            out["events"] = {
+                "today": classify_today(close),
+                "down_2s": event_study(close, sym, sigma=2.0, direction="down").to_dict(),
+                "up_2s": event_study(close, sym, sigma=2.0, direction="up").to_dict(),
+            }
+        except (DataError, IndexError, KeyError) as exc:
+            out["chart"] = {"error": str(exc)[:160]}
+            out["events"] = {"error": str(exc)[:160]}
+
+        # ---- vol context: VIX percentile from our own 2008+ series ----------
+        try:
+            vix = pd.read_parquet(STORE_DIR / "history" / "_INDIAVIX.parquet")
+            vix = vix.sort_values("date")
+            v = float(vix["close"].iloc[-1])
+            out["vol"] = {
+                "vix": v,
+                "vix_date": pd.Timestamp(vix["date"].iloc[-1]).date().isoformat(),
+                "vix_pctile": float((vix["close"] < v).mean() * 100),
+            }
+        except Exception as exc:
+            out["vol"] = {"error": f"VIX series unavailable: {str(exc)[:120]}"}
+
+        # ---- derivatives: the live chain, when a source will give us one ----
+        try:
+            from shunkan.data.chains import get_chain
+            from shunkan.derivatives.chain import analyze_chain
+
+            c = get_chain(sym if sym in INDEX_ALIASES or sym in ("NIFTY", "BANKNIFTY")
+                          else sym)
+            a = analyze_chain(c)
+            out["positioning"] = {
+                "expiry": str(c.expiry), "source": c.source, "is_model": c.is_model,
+                "spot": c.spot, "pcr_oi": a.pcr_oi, "max_pain": a.max_pain,
+                "dist_to_max_pain_pct": (a.max_pain / c.spot - 1) * 100 if c.spot else None,
+                "support": a.support, "resistance": a.resistance,
+                "atm_iv_pct": a.atm_iv * 100 if a.atm_iv else None,
+                "straddle": a.straddle_price,
+                "implied_move_pct": a.expected_move_pct * 100,
+            }
+        except (DataError, ValueError) as exc:
+            out["positioning"] = {"error": str(exc)[:200],
+                                  "source_trail": list(getattr(exc, "source_trail", []))}
+
+        # ---- participants: NSE's own who-did-what table ---------------------
+        try:
+            part = latest_with_change()
+            out["participants"] = part if part else {
+                "error": "fewer than two days captured; the change needs two "
+                         "observations and inventing one is not an option"}
+        except Exception as exc:
+            out["participants"] = {"error": str(exc)[:160]}
+
+        # ---- news: the existing intel layer, best effort --------------------
+        try:
+            from shunkan.intel import aggregate_bias
+            from shunkan.intel.feeds import fetch_news
+
+            items = fetch_news(limit=8)
+            bias = aggregate_bias(items)
+            out["news"] = {
+                "bias_score": getattr(bias, "score", None),
+                "bias_label": getattr(bias, "label", None),
+                "n_items": getattr(bias, "n_items", 0),
+                "headlines": [{"title": i.title, "source": getattr(i, "source", "")}
+                              for i in items[:5]],
+            }
+        except Exception as exc:
+            out["news"] = {"error": f"news unavailable: {str(exc)[:120]}"}
+
+        out["prov"] = prov(
+            "daily analysis",
+            {"sections": ", ".join(k for k in out if k not in ("symbol", "prov"))},
+            "local archive + live chain + NSE participant archive",
+            method="root first: underlying from the daily archive, VIX percentile "
+                   "from the 2008+ series, chain analytics from the live source, "
+                   "participant nets from NSE's published file, event base rates "
+                   "from non-overlapping shock studies with baselines",
+            caveat="facts and base rates only, no verdict by design - the base "
+                   "rates are unconditional history, not a forecast, and every "
+                   "section fails to a named reason rather than a filled box",
+        )
+        return _clean(out)
 
     @app.get("/api/brief/{symbol}")
     def brief(symbol: str):
