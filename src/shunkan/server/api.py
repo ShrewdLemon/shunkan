@@ -101,6 +101,7 @@ capture_status: dict = {"ok": 0, "failed": 0, "skipped": 0}
 HARVEST_INTERVAL_S = 6 * 3600.0
 harvest_status: dict = {"runs": 0, "failed": 0}
 participant_status: dict = {"failed": 0}
+news_status: dict = {"failed": 0}
 
 
 def _now_iso() -> str:
@@ -429,6 +430,44 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                         harvest_status["last_error_at"] = _now_iso()
                 await asyncio.sleep(HARVEST_INTERVAL_S)
 
+        async def news_archive_loop():
+            """Persist headlines so future event studies have something to
+            join a move against.
+
+            Two strands per cycle: the general market feed (the unbiased
+            channel), and a rotating slice of constituent-name queries so
+            per-company depth accumulates without hammering Google. The full
+            NIFTY50+BANKNIFTY rotation completes in about four hours at six
+            names per half-hour cycle.
+            """
+            from shunkan.data.constituents import alias_table, universe
+            from shunkan.data.newsstore import backfill_symbol, persist
+            from shunkan.intel.feeds import fetch_news
+
+            rotation = 0
+            await asyncio.sleep(60.0)
+            while True:
+                if not is_offline():
+                    try:
+                        uni = await asyncio.to_thread(universe)
+                        aliases = alias_table(uni)
+                        items = await asyncio.to_thread(fetch_news, None, 40)
+                        n = await asyncio.to_thread(
+                            persist, items, "live", aliases)
+                        for c in uni[rotation % len(uni):][:6]:
+                            r = await asyncio.to_thread(
+                                backfill_symbol, c.symbol, c.name, 1,
+                                None, aliases)
+                            n += r["added"]
+                        rotation += 6
+                        news_status["cycles"] = news_status.get("cycles", 0) + 1
+                        news_status["added_last"] = n
+                        news_status["last_ok"] = _now_iso()
+                    except Exception as exc:
+                        news_status["failed"] = news_status.get("failed", 0) + 1
+                        news_status["last_error"] = str(exc)[:160]
+                await asyncio.sleep(1800.0)
+
         async def participant_loop():
             """Keep the NSE participant-wise positioning current.
 
@@ -478,7 +517,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
         tasks = [asyncio.create_task(t()) for t in
                  (alert_loop, bar_flush_loop, chain_capture_loop, history_sync_loop,
-                  instruments_archive_loop, harvest_loop, participant_loop)]
+                  instruments_archive_loop, harvest_loop, participant_loop,
+                  news_archive_loop)]
         yield
         for t in tasks:
             t.cancel()
@@ -656,6 +696,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             # harvested before it delists cannot be bought back at any price.
             "harvest": dict(harvest_status),
             "participant": dict(participant_status),
+            "news_archive": dict(news_status),
             "server_time": datetime.now(timezone.utc).isoformat(),
         }
 
