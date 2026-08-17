@@ -195,9 +195,13 @@ class ChainStore:
         path = self._path(chain.symbol)
         existing = _read_parquet(path)
         if existing is not None:
-            last_ts = existing["ts"].iloc[-1]
-            # Don't spam identical snapshots within a minute of each other.
-            if last_ts == ts:
+            # Dedup on (ts, expiry), not ts alone. Two expiries captured in the
+            # same wall-clock second are two different observations, and the old
+            # check dropped the second: the archive would look like it had term
+            # structure while holding one expiry repeated. That is exactly the
+            # kind of silently-wrong data this codebase refuses to store.
+            dup = ((existing["ts"] == ts) & (existing["expiry"] == str(chain.expiry)))
+            if bool(dup.any()):
                 return
             df_new = pd.concat([existing, df_new])
         _write_parquet(path, df_new)

@@ -229,3 +229,30 @@ def test_write_day_snapshot_never_overwrites_an_observed_day(tmp_path):
     back = cs.last_snapshot_of_day("NIFTY", day)
     assert back["call_oi"].iloc[0] == 111.0
     assert back["source"].iloc[0] == "real"
+
+
+def test_snapshot_dedup_must_key_on_expiry_not_just_timestamp(tmp_path):
+    """Two expiries captured in the same wall-clock second are two different
+    observations. Keying dedup on ts alone silently drops the second, so the
+    archive looks like it has term structure when it has one expiry repeated.
+    """
+    from datetime import date
+
+    import numpy as np
+
+    from shunkan.derivatives.synthetic import synthetic_chain
+    from shunkan.store import ChainStore
+
+    cs = ChainStore(root=tmp_path)
+    near = synthetic_chain("NIFTY", expiry=date(2026, 8, 18))
+    far = synthetic_chain("NIFTY", expiry=date(2026, 9, 29))
+    for c in (near, far):
+        c.is_model = False          # pretend both came from an exchange
+        c.source = "Zerodha Kite (real-time)"
+
+    cs.snapshot(near)
+    cs.snapshot(far)
+    got = cs.snapshots_today("NIFTY")
+    assert got is not None
+    assert set(got["expiry"]) == {"2026-08-18", "2026-09-29"}, (
+        "second expiry was dropped: dedup is keying on ts alone")
