@@ -116,6 +116,30 @@ Things with real test coverage that have been verified against a live broker.
   socket require. That is a guard rail, not a security model: it is one shared
   secret and there is still no notion of users.
 
+## Research findings
+
+Reproducible: `.venv/bin/python research/vrp_regime.py`, reads only the local
+archive.
+
+- **The Indian variance risk premium is real.** India VIX minus subsequent
+  21-day realised vol: mean +2.946 vol points, positive on 79.7% of 4,484 days,
+  t=5.75 on 214 non-overlapping windows, 2008-2026. Monotone in VIX level
+  (+1.66 / +2.18 / +3.05 / +4.90 by quartile). Survives 2008 and 2020.
+- **You cannot sell it naively.** ATM straddle IV runs at 0.927x the index (77
+  observations reconstructed from listed contracts, 98.7% below 1.0). After
+  that haircut the unconditional monthly short straddle is +13.3 pts, t=0.73.
+  Not a trade.
+- **The regime-gated version does NOT pass our own validators.** Rich-tercile
+  looks strong on its own terms (+78.6 pts, NW t=2.98; +103 excluding 2020) but
+  permutation gives p=0.036 (better than chance, not decisively) and deflated
+  Sharpe gives DSR 0.454 against a generous 20 trials. Both must pass. It does
+  not, and it is not being traded.
+- **The tail is the whole story.** Worst rich-tercile window is Rs -148,196 per
+  lot with skew -1.30. Any sizing has to be for that, not for the mean.
+
+Net: a confirmed phenomenon and no confirmed way to harvest it. More capture
+does not fix this; a better-identified signal might.
+
 ## Not started
 
 - Global market execution. Read only context only, no feed beyond index quotes.
