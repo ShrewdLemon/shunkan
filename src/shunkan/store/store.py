@@ -309,6 +309,26 @@ def _atm_iv_of_snapshot(snap: pd.DataFrame) -> float | None:
     return float(np.mean(ivs)) if ivs else None
 
 
+def atm_iv_intraday(symbol: str, root: Path | None = None) -> list[dict]:
+    """Today's ATM-IV path, one point per captured snapshot.
+
+    Exists since 2026-08-18, when capture started storing solved IVs; the
+    series begins mid-session that day and is complete thereafter. Points
+    are (capture ts, atm_iv); snapshots that yield no ATM IV (NaN spot, no
+    usable prices) are simply absent, never interpolated."""
+    snaps = ChainStore(root).snapshots_today(symbol)
+    if snaps is None or snaps.empty:
+        return []
+    out = []
+    for ts, grp in snaps.groupby("ts", sort=True):
+        # a capture second may hold several expiries; ATM IV means the front
+        front = grp[grp["expiry"] == grp["expiry"].min()]
+        iv = _atm_iv_of_snapshot(front)
+        if iv is not None:
+            out.append({"ts": str(ts), "iv": iv})
+    return out
+
+
 def atm_iv_history(symbol: str, root: Path | None = None) -> pd.Series:
     """One ATM-IV observation per captured day (last snapshot of each day)."""
     cs = ChainStore(root)

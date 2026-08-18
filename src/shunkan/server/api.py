@@ -1052,6 +1052,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         from shunkan.data.chains import get_chain
         from shunkan.derivatives import analyze_vol
         from shunkan.store import iv_rank_local
+        from shunkan.store.store import atm_iv_intraday
 
         try:
             c = get_chain(symbol)
@@ -1073,6 +1074,10 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             "atm_iv": r.atm_iv, "rv_cc_21": r.rv_cc_21, "rv_park_21": r.rv_park_21,
             "iv_premium": r.iv_premium, "rv_percentile": r.rv_percentile,
             "iv_rank_local": rank,
+            # Today's captured ATM-IV path (60s cadence while the session is
+            # open and a token is live). Empty list = nothing captured yet
+            # today, which the panel says instead of drawing a flat line.
+            "intraday": atm_iv_intraday(c.symbol),
             "cone": {str(d): list(v) for d, v in r.cone.items()},
             "smile": [
                 {"strike": float(r.smile_strikes[i]),
