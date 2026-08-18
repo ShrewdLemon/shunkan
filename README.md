@@ -165,6 +165,34 @@ represent shows up as "poor" with visible errors rather than as a smooth curve,
 and calibrating a modelled chain is refused outright, since that would recover
 the generator's own parameters and render them as market structure.
 
+**ANA, the daily analysis.** Root first, then derivatives: what the underlying
+did, standardised against its own trailing vol, whether today counts as an
+event, VIX percentile against the 2008+ series, then chain positioning (PCR,
+max pain, implied move), NSE's participant-wise table with the day's change,
+and named news mapped to companies by title. Every section carries its source
+and the panel draws no verdict by design. The event engine behind it studies
+shocks at fixed horizons with a baseline beside every conditional stat.
+
+**The news archive.** Headlines persist to parquet with real timestamps, mapped
+to NIFTY 50 and BANKNIFTY companies by name in the title (alias table that
+knows Kotak Mahindra Bank is not Mahindra and L&T is not LT). A year of
+history backfilled per company through Google News date operators, origin
+tagged so research can separate the unbiased live channel from the sampled
+backfill. This is what makes "did the stock react to the news" answerable.
+
+**Live tick routing.** One websocket, subscriptions per view. The watchlist
+streams always; open a chart on anything else and its ticks start, leave and
+they stop, refcounts driving real subscribe/unsubscribe on the exchange
+socket. Slow consumers get bounded queues with counted drops in /api/status.
+Backpressure loses frames visibly or not at all.
+
+**Commodities and currency, in rupees.** MCX and CDS quote per unit but order
+in lots, and Kite's dump says lot_size=1 there. The economic multipliers live
+in a sourced table (contract_specs.py) with the verification attached: every
+row priced through the exchange's own SPAN calculator. GOLD is 100, NICKEL is
+250 now not the folklore 1500, and a name outside the table refuses rupee
+math with the reason spelled out.
+
 **QNT, the quant lab.** WebGL surfaces for IV, Greeks, Monte Carlo, Heston,
 correlation, VaR, the efficient frontier, Kalman, attention, and PSO
 optimisation over real backtests.
@@ -260,7 +288,12 @@ Everything lives under `~/.shunkan`:
 ```
 credentials.json          broker tokens, mode 0600
 store/history/            daily OHLCV per symbol, parquet
-store/chains/             option chain snapshots, real sources only
+store/chains/             option chain snapshots with solved IVs and mids
+store/bars/               1-minute bars built from the live tick stream
+store/contracts/          full traded lives of option contracts, plus
+                          settlement sessions harvested on expiry evenings
+store/participant/        NSE participant-wise OI, backfillable years deep
+store/news/               the headline archive, one parquet per writer
 store/instruments/        daily contract master per venue
 cache/                    instruments dump, short lived
 ```
@@ -275,10 +308,15 @@ relabelling a synthetic chain used to walk straight past the old check.
 pytest tests -q
 ```
 
-342 tests. Worth reading if you want the invariants: a good chunk of them exist
+452 tests. Worth reading if you want the invariants: a good chunk of them exist
 specifically to pin down honesty properties, like
-`test_store_refuses_model_chain_with_real_source` or
-`test_margin_goes_unknown_when_only_the_SIZE_changes`.
+`test_store_refuses_model_chain_with_real_source`,
+`test_margin_goes_unknown_when_only_the_SIZE_changes`, or
+`test_an_unreadable_file_is_quarantined_never_overwritten`.
+
+There is also a research log, `research/DECISIONS.md`, where every trade and
+no-trade call gets written down with the numbers that made it. So far it
+mostly records ideas being killed, which is the point.
 
 ## Terms, and please read this one
 
