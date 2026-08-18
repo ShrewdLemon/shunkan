@@ -81,6 +81,23 @@ def load_instruments(
     return df
 
 
+def _solve_chain_ivs(spot, strikes, t_years, c_mid, c_ltp, p_mid, p_ltp):
+    """Solve per-strike IVs at fetch time, from the same price quote_price()
+    would use: bid/ask mid when the book is two-sided, last trade otherwise.
+
+    This used to be "solved from prices on demand", and no demand ever came
+    from the snapshot path — every captured chain stored 0/25 IVs and the
+    20-day IV-rank promise could never fill. Solving here means the UI, the
+    SABR calibrator and the archive all see the same numbers, computed once
+    from the same prices. Strikes with no usable price stay NaN, as ever."""
+    from shunkan.derivatives.greeks import implied_vol
+
+    c_px = np.where(np.isnan(c_mid), np.where(c_ltp > 0, c_ltp, np.nan), c_mid)
+    p_px = np.where(np.isnan(p_mid), np.where(p_ltp > 0, p_ltp, np.nan), p_mid)
+    return (implied_vol(c_px, spot, strikes, t_years, is_call=True),
+            implied_vol(p_px, spot, strikes, t_years, is_call=False))
+
+
 def _one_lot_size(opts: pd.DataFrame) -> int | None:
     """The lot size every row agrees on, or None.
 
@@ -233,6 +250,9 @@ def kite_option_chain(
         cols[f"{side}_mid"][i] = (bid + ask) / 2.0 if bid > 0 and ask >= bid else np.nan
 
     t_years = time_to_expiry_years(chosen)
+    call_iv, put_iv = _solve_chain_ivs(
+        spot, strikes.astype(np.float64), t_years,
+        cols["c_mid"], cols["c_ltp"], cols["p_mid"], cols["p_ltp"])
     nan = np.full(n, np.nan)
     return OptionChain(
         symbol=sym,
@@ -244,12 +264,12 @@ def kite_option_chain(
         call_oi=cols["c_oi"],
         call_oi_change=np.zeros(n),  # Kite /quote has no prev-day OI delta
         call_volume=cols["c_vol"],
-        call_iv=nan.copy(),  # solved from prices on demand
+        call_iv=call_iv,  # solved AT FETCH — see _solve_chain_ivs
         put_ltp=cols["p_ltp"],
         put_oi=cols["p_oi"],
         put_oi_change=np.zeros(n),
         put_volume=cols["p_vol"],
-        put_iv=nan.copy(),
+        put_iv=put_iv,
         source="Zerodha Kite (real-time)",
         is_model=False,
         as_of=as_of,

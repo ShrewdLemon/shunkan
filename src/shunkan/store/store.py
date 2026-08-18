@@ -190,6 +190,12 @@ class ChainStore:
             "call_iv": chain.call_iv, "call_volume": chain.call_volume,
             "put_ltp": chain.put_ltp, "put_oi": chain.put_oi,
             "put_iv": chain.put_iv, "put_volume": chain.put_volume,
+            # Mids make the stored IVs re-derivable; older files lack these
+            # columns and concat fills them NaN, which readers must expect.
+            "call_mid": (chain.call_mid if getattr(chain, "call_mid", None)
+                         is not None else [np.nan] * n),
+            "put_mid": (chain.put_mid if getattr(chain, "put_mid", None)
+                        is not None else [np.nan] * n),
             "source": [chain.source] * n,
         })
         path = self._path(chain.symbol)
@@ -288,7 +294,16 @@ def chain_delta_oi(chain, root: Path | None = None) -> dict | None:
 
 def _atm_iv_of_snapshot(snap: pd.DataFrame) -> float | None:
     spot = float(snap["spot"].iloc[0])
-    idx = (snap["strike"] - spot).abs().idxmin()
+    # A snapshot may carry spot=NaN — the capture stored "spot unavailable"
+    # honestly instead of fabricating one. Without this guard the idxmin
+    # below raises on the all-NA distance series and one such day 500s
+    # every endpoint that walks the history.
+    if np.isnan(spot):
+        return None
+    dist = (snap["strike"] - spot).abs()
+    if dist.isna().all():
+        return None
+    idx = dist.idxmin()
     ivs = [v for v in (snap.loc[idx, "call_iv"], snap.loc[idx, "put_iv"])
            if v is not None and not np.isnan(v)]
     return float(np.mean(ivs)) if ivs else None

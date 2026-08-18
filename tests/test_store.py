@@ -167,6 +167,21 @@ def test_iv_rank_refuses_insufficient_history(tmp_path):
     assert "rank" not in rank  # no fabricated number, ever
 
 
+def test_iv_history_skips_nan_spot_snapshot(tmp_path):
+    """The 2026-08-10 live capture stored spot=NaN (spot unavailable, honestly
+    recorded). The reader must SKIP that day, not raise all-NA idxmin and 500
+    every endpoint that walks the history — which is what happened."""
+    _write_history_days(tmp_path, 4)
+    cs = ChainStore(root=tmp_path)
+    d = date.today() - timedelta(days=2)
+    path = cs._path("NIFTY", d)
+    df = pd.read_parquet(path)
+    df["spot"] = np.nan
+    df.to_parquet(path, index=False)
+    hist = atm_iv_history("NIFTY", root=tmp_path)
+    assert len(hist) == 3          # the NaN-spot day is absent, not fatal
+
+
 def test_iv_rank_with_sufficient_history(tmp_path):
     _write_history_days(tmp_path, MIN_IV_RANK_DAYS + 5)
     hist = atm_iv_history("NIFTY", root=tmp_path)
