@@ -344,6 +344,13 @@ def test_mcx_trade_without_spec_names_the_refusal(client):
     assert "no sourced economic multiplier" in r.json()["detail"]
 
 
+def test_candles_scan_contract(client):
+    d = client.get("/api/candles/scan").json()
+    assert "rows" in d and "scanned" in d and "note" in d
+    for r in d["rows"][:3]:
+        assert {"symbol", "pattern", "direction", "record"} <= set(r)
+
+
 def test_websocket_sub_routes_a_new_symbol(client):
     """The whole point of the bus: ask for a symbol outside the watchlist and
     its ticks start arriving on THIS connection."""

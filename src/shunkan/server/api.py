@@ -2062,6 +2062,96 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                 return _clean(j)
         return _clean(_compose_daily(sym, on_date))
 
+    _scan_cache: dict = {}
+
+    @app.get("/api/candles/scan")
+    def candles_scan():
+        """Today's patterns across the NIFTY50+BANKNIFTY universe plus the
+        two indices - the signal feed, except every row carries its measured
+        record instead of implying the pattern means something by existing.
+        Cached ~10 minutes: the answer changes once per session close."""
+        import time as _time
+
+        from shunkan.analytics.candles import detect_all, pattern_record
+        from shunkan.store.store import STORE_DIR
+
+        hit = _scan_cache.get("scan")
+        if hit and _time.monotonic() - hit[0] < 600:
+            return hit[1]
+
+        try:
+            from shunkan.data.constituents import universe
+
+            symbols = [c.symbol for c in universe()]
+        except Exception:
+            symbols = []
+        rows = []
+        scanned = 0
+        for sym in ["_NSEI", "_NSEBANK"] + symbols:
+            f = STORE_DIR / "history" / f"{sym}.parquet"
+            if not f.exists():
+                continue
+            try:
+                df = pd.read_parquet(f).sort_values("date")
+            except Exception:
+                continue
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date")
+            if len(df) < 60:
+                continue
+            scanned += 1
+            det = detect_all(df)
+            if det.empty:
+                continue
+            latest = df.index[-1]
+            todays = det[det.index == latest]
+            label = {"_NSEI": "NIFTY", "_NSEBANK": "BANKNIFTY"}.get(sym, sym)
+            for _, r in todays.iterrows():
+                rec = pattern_record(df, det, r["pattern"])
+                rows.append({
+                    "symbol": label,
+                    "date": latest.date().isoformat(),
+                    "close": float(df["close"].iloc[-1]),
+                    "chg_pct": float(df["close"].iloc[-1] / df["close"].iloc[-2] - 1) * 100,
+                    "pattern": r["pattern"], "direction": r["direction"],
+                    "record": rec,
+                })
+        rows.sort(key=lambda x: (x["direction"] == "neutral", -abs(x["chg_pct"])))
+        out = _clean({
+            "rows": rows, "scanned": scanned,
+            "note": ("patterns on the LATEST archived session per symbol; the "
+                     "record is that symbol's own history, overlapping windows "
+                     "stated in the engine doc; most symbols print nothing "
+                     "most days and are absent, not hidden"),
+        })
+        _scan_cache["scan"] = (_time.monotonic(), out)
+        return out
+
+    @app.get("/api/candles/{symbol}")
+    def candles_symbol(symbol: str):
+        """Recent candle patterns on one symbol, each with the archive's
+        verdict on what that pattern has historically been worth THERE."""
+        from shunkan.analytics.candles import analyze_candles
+        from shunkan.markets import INDEX_ALIASES
+        from shunkan.store.store import STORE_DIR
+
+        sym = symbol.upper()
+        cands = [sym]
+        alias = INDEX_ALIASES.get(sym)
+        if alias:
+            cands.append(alias.replace("^", "_").replace("=", "_"))
+        for c in cands:
+            f = STORE_DIR / "history" / f"{c}.parquet"
+            if f.exists():
+                df = pd.read_parquet(f).sort_values("date")
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.set_index("date")
+                out = analyze_candles(df)
+                out["symbol"] = sym
+                out["as_of"] = df.index[-1].date().isoformat()
+                return _clean(out)
+        raise HTTPException(404, f"no archived history for {sym}")
+
     @app.get("/api/analysis/intraday/{symbol}")
     def analysis_intraday(symbol: str):
         """Today's max-pain / wall migration from the day's captured
