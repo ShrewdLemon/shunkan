@@ -323,3 +323,49 @@ def straddle_path(symbol: str, root=None) -> dict:
         "note": ("ATM floats with spot; strangle is one strike either side; "
                  "gaps are snapshots whose legs had no usable price"),
     }
+
+
+def option_path(symbol: str, strike: float, root=None) -> dict:
+    """One strike's CE and PE premium through today's captures, front expiry.
+
+    The 'live options chart': stored mids when the era has them, last trades
+    otherwise, counted separately - and a leg with no usable price is a gap
+    in the line, never an interpolation."""
+    from shunkan.store.store import ChainStore
+
+    snaps = ChainStore(root).snapshots_today(symbol)
+    if snaps is None or snaps.empty:
+        return {"error": "no snapshots captured today"}
+    front_exp = snaps["expiry"].min()
+    front = snaps[snaps["expiry"] == front_exp]
+    avail = sorted(front["strike"].unique())
+    if strike not in avail:
+        near = min(avail, key=lambda k: abs(k - strike))
+        return {"error": f"strike {strike:g} not in the captured chain",
+                "nearest": float(near),
+                "strikes": [float(k) for k in avail]}
+    rows = []
+    used_mid = used_ltp = 0
+    for ts in sorted(front["ts"].unique()):
+        g = front[(front["ts"] == ts) & (front["strike"] == strike)]
+        if g.empty:
+            continue
+        r = g.iloc[0]
+
+        def px(side):
+            nonlocal used_mid, used_ltp
+            mid = r.get(f"{side}_mid")
+            if mid is not None and not pd.isna(mid):
+                used_mid += 1
+                return float(mid)
+            ltp = r.get(f"{side}_ltp")
+            if ltp is not None and not pd.isna(ltp) and ltp > 0:
+                used_ltp += 1
+                return float(ltp)
+            return None
+
+        rows.append({"ts": str(ts), "ce": px("call"), "pe": px("put"),
+                     "spot": None if pd.isna(r["spot"]) else float(r["spot"])})
+    return {"symbol": symbol.upper(), "expiry": str(front_exp),
+            "strike": float(strike), "path": rows,
+            "price_basis": f"{used_mid} mids, {used_ltp} last trades"}

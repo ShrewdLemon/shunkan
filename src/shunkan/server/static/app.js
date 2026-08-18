@@ -2525,7 +2525,9 @@ async function renderOICharts(view, params = {}) {
     title: `OI & STRADDLE — <span class="hl">${esc(sym)}</span> INTRADAY, FRONT EXPIRY`,
     id: "oic-panel", flush: true,
     meta: `<span class="controls"><input class="in" id="oic-sym" value="${esc(sym)}" size="9">
-           <button class="btn" id="oic-go">LOAD</button></span> <span id="oic-upd">…</span>`,
+           <button class="btn" id="oic-go">LOAD</button>
+           <input class="in" id="oic-strike" placeholder="strike" size="7" title="chart one contract's CE/PE premium path">
+           <button class="btn" id="oic-k">CONTRACT</button></span> <span id="oic-upd">…</span>`,
     body: loading("reading today's snapshots"),
   });
   $("#oic-go").onclick = () => show("oicharts", { symbol: $("#oic-sym").value });
@@ -2550,6 +2552,7 @@ async function renderOICharts(view, params = {}) {
         <div class="panel-title" style="padding:8px 12px 2px">CALL OI BY STRIKE <span class="faint">the ceiling</span></div>
         <div style="padding:2px 12px"><canvas class="plot" id="oic-calls"></canvas></div>
         <div id="oic-legend" class="empty" style="padding:4px 12px"></div>
+        <div id="oic-contract"></div>
         <div class="panel-title" style="padding:8px 12px 2px">ATM STRADDLE / STRANGLE PREMIUM</div>
         <div style="padding:2px 12px"><canvas class="plot" id="oic-strad"></canvas></div>
         <div class="empty" style="padding:4px 12px"><span class="faint">${esc(st.note || "")} · ${esc(st.price_basis || "")}</span></div>
@@ -2580,6 +2583,31 @@ async function renderOICharts(view, params = {}) {
       if (host) host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     }
   };
+  const drawContract = async () => {
+    const k = parseFloat($("#oic-strike").value);
+    if (!k) return;
+    const hostc = $("#oic-contract");
+    if (!hostc) return;
+    try {
+      const d = await getJSON(`/api/option_path/${encodeURIComponent(sym)}?strike=${k}`);
+      if (d.error) {
+        hostc.innerHTML = `<div class="empty" style="padding:6px 12px">${esc(d.error)}${
+          d.nearest ? ` — nearest captured: ${fmt.i(d.nearest)}` : ""}</div>`;
+        return;
+      }
+      hostc.innerHTML = `
+        <div class="panel-title" style="padding:8px 12px 2px">CONTRACT ${fmt.i(d.strike)} <span class="faint">CE amber · PE blue · ${esc(d.price_basis)}</span></div>
+        <div style="padding:2px 12px"><canvas class="plot" id="oic-kchart"></canvas></div>`;
+      linePlot($("#oic-kchart"), [
+        { points: d.path.filter((r) => r.ce != null).map((r) => ({ x: Date.parse(r.ts), y: r.ce })), color: "#f0a826", width: 1.5 },
+        { points: d.path.filter((r) => r.pe != null).map((r) => ({ x: Date.parse(r.ts), y: r.pe })), color: "#58a6ff", width: 1.5 },
+      ], { height: 140, fmtY: (v) => "₹" + fmt.n(v, 1), fmtX: (v) => fmt.ist(new Date(v)) });
+    } catch (e) {
+      hostc.innerHTML = `<div class="empty" style="padding:6px 12px">${esc(e.message)}</div>`;
+    }
+  };
+  $("#oic-k").onclick = drawContract;
+  $("#oic-strike").onkeydown = (e) => { if (e.key === "Enter") drawContract(); };
   draw();
   addTimer("oicharts:refresh", draw, 120000);
 }
