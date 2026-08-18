@@ -124,3 +124,44 @@ there, but from here the archive accumulates unbiased near-chain data with
 settlements in it.
 
 ---
+
+## 2026-08-18 — news-reaction study: first result from the archive, one artifact caught
+
+**Question (pre-registered in `research/news_reaction.py` before numbers were seen).**
+H1: down-shocks WITHOUT named news reverse (liquidity), down-shocks WITH negative
+news continue (information). H2: same-day sentiment sign predicts next days' sign.
+
+**Data.** 51 NIFTY50/BANKNIFTY constituents, 22k archived headlines (backfill
+channel, ~1yr window), 547 pooled ±2σ shock events on 185 distinct dates.
+Outcome: excess log return vs NIFTY at +1/+3/+5 closes.
+
+**Artifact caught before it became a finding.** First run showed BOTH no-news
+buckets positive at every horizon — down-shocks "reversed" AND up-shocks
+"continued". A directionless positive on the same bucket is not an asymmetry;
+it is bucket membership correlating with coverage, coverage with size, and size
+with the year's alpha vs cap-weighted NIFTY. Fix: subtract each symbol's mean
+daily excess drift over the window (symbol fixed effects). The tables shrank.
+
+**What survives demeaning.**
+- Down-shock + no indexed news: +0.36% next day (t=2.76 pooled, 123 events on
+  66 distinct dates → clustering haircut puts effective t nearer 2.0).
+- Down-shock + negative named news: flat at every horizon (+0.06/−0.03/−0.01).
+  The spread is H1's direction: news-backed drops stay repriced, no-news drops
+  partially bounce.
+- BUT up-shock + no news also drifts UP (+0.48% at +5d, t=1.89). A pure
+  liquidity-reversal mechanism predicts those revert. It doesn't fit; either
+  the down-side effect is forced-selling-specific (plausible, documented in
+  other markets) or the none bucket still carries a residual bias.
+- H2 is dead. The keyword sentiment buckets do not order outcomes anywhere.
+  No surprise: it counts words.
+
+**Tradeability math.** Buy-at-close on a no-news −2σ day, exit +1 close:
++36bp gross. Delivery costs on NSE large caps ≈ 25–30bp round trip (STT 0.1%
+both sides dominates; brokerage nil). Net ≈ +6–11bp on one year of data with
+effective t ≈ 2. That is a watchlist entry, not a trade.
+
+**Decision: NO TRADE.** Logged as the first candidate that survives its own
+robustness check but fails the cost bar. Re-run when the LIVE channel (unbiased,
+no Google-index attrition) has accumulated 6+ months — the stated bias of the
+backfill channel works AGAINST H1, so the live rerun is the honest test and
+could strengthen it.
