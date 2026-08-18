@@ -344,6 +344,16 @@ def test_mcx_trade_without_spec_names_the_refusal(client):
     assert "no sourced economic multiplier" in r.json()["detail"]
 
 
+def test_participants_history_contract(client):
+    r = client.get("/api/participants")
+    if r.status_code == 404:
+        assert "loop fills it" in r.json()["detail"]     # honest empty state
+    else:
+        d = r.json()
+        assert {"series", "latest", "caveat", "days_on_disk"} <= set(d)
+        assert "no next-day directional edge" in d["caveat"]
+
+
 def test_candles_scan_contract(client):
     d = client.get("/api/candles/scan").json()
     assert "rows" in d and "scanned" in d and "note" in d

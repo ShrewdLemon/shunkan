@@ -562,9 +562,28 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             while True:
                 if not is_offline():
                     try:
-                        r = await asyncio.to_thread(backfill, 7)
+                        from shunkan.data.participant import store_path
+
+                        # A shallow store deep-backfills itself once: the
+                        # archive serves years and the 4-year research pull
+                        # proved zero failed fetches, so every deployment
+                        # should inherit that depth automatically. The loop
+                        # is the store's only writer, which is what makes
+                        # this safe to do here and nowhere else.
+                        days = 7
+                        try:
+                            have = len(pd.read_parquet(
+                                store_path(), columns=["date"])["date"].unique())
+                        except Exception:
+                            have = 0
+                        if have < 400:
+                            days = 1500
+                            participant_status["deep_backfill"] = "running"
+                        r = await asyncio.to_thread(backfill, days)
                         participant_status.update(r)
                         participant_status["last_ok"] = _now_iso()
+                        if days == 1500:
+                            participant_status["deep_backfill"] = "done"
                     except Exception as exc:
                         participant_status["failed"] = (
                             participant_status.get("failed", 0) + 1)
@@ -2061,6 +2080,46 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                                     + j.get("_journal", {}).get("recorded_at", "?"))
                 return _clean(j)
         return _clean(_compose_daily(sym, on_date))
+
+    @app.get("/api/participants")
+    def participants_history(days: int = 250):
+        """Participant-wise positioning through time, for the FII/DII view.
+
+        Levels are structural (FII runs net short index futures as a hedge,
+        permanently); the CHANGE is what commentary reads. The 4-year screen
+        found no next-day directional signal in either - the view carries
+        that finding rather than implying the chart predicts something.
+        """
+        from shunkan.data.participant import latest_with_change, store_path
+
+        path = store_path()
+        if not path.exists():
+            raise HTTPException(404, "no participant data on disk yet - the "
+                                     "6-hourly loop fills it")
+        df = pd.read_parquet(path)
+        df["date"] = pd.to_datetime(df["date"])
+        all_days = sorted(df["date"].unique())
+        window = all_days[-max(2, min(days, len(all_days))):]
+        df = df[df["date"].isin(window)]
+        series: dict = {}
+        for who, grp in df.groupby("client_type"):
+            g = grp.sort_values("date")
+            series[who] = {
+                "dates": [pd.Timestamp(d).date().isoformat() for d in g["date"]],
+                "idx_fut_net": [int(x) for x in g["idx_fut_net"]],
+                "idx_opt_net": [int(x) for x in g["idx_opt_net"]],
+            }
+        return _clean({
+            "days_on_disk": len(all_days),
+            "window_days": len(window),
+            "as_of": pd.Timestamp(all_days[-1]).date().isoformat(),
+            "series": series,
+            "latest": latest_with_change(),
+            "caveat": ("levels are structural, the change is the read - and "
+                       "the 4-year screen (research/DECISIONS.md 2026-08-18) "
+                       "found no next-day directional edge in either; this is "
+                       "positioning fact, not a signal"),
+        })
 
     _scan_cache: dict = {}
 
