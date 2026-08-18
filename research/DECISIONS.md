@@ -235,3 +235,19 @@ The daily-horizon folklore is now dead at four years of depth, not one.
 Anything resurrected from this table later (weekly horizons, levels
 instead of changes, interactions with VIX regime) starts life owing DSR
 its full trial count, this screen included.
+
+## 2026-08-18 — dogfood session: Monday's plan graded, live stance unchanged
+
+Full write-up published as the desk-reports artifact. Short form: Monday
+evening's reconstruction (from the stores alone) called a range/pin regime
+(HELD — 0.39% full-day range), a pull to max pain 24,350 (FAILED — pain
+re-anchored to 24,200 by late morning and price never visited 24,350),
+24,300 put support (MIXED — broke at the open, then capped the day). The
+meta-lesson is structural: T−1 expiry maps die at the open; the tradeable
+object is intraday wall migration, which the capture records for the first
+time TODAY (76 snapshots; morning hole 09:15–11:45, token was dead).
+
+Live stance 13:10 IST: NO TRADE reaffirmed. Spot 24,188 vs pain 24,200,
+straddle ₹56 (±0.23%), puts +147L built at 24,150/24,200 = crowded short-put
+side, break of 24,150 is the asymmetric scenario. SABR on 25 Aug: ATM 9.25%
+vs rv21 9.4% — VRP flat at one week, the premium is not there to sell.
