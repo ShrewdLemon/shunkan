@@ -999,3 +999,14 @@ main { overflow-x: hidden; }
 .setup input:focus { outline: none; border-color: var(--amber); }
 .setup-note { font-size: 10px; color: var(--text-faint); }
 .setup-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+
+/* news sector blocks: NSE's Industry taxonomy as thin dividers */
+.news-sect {
+  padding: 7px 12px 3px;
+  color: var(--blue, #58a6ff);
+  font-size: 10px;
+  letter-spacing: .12em;
+  border-top: 1px solid var(--stroke-soft, #1b2634);
+  border-bottom: 1px solid var(--stroke-soft, #1b2634);
+  background: rgba(88, 166, 255, 0.04);
+}
