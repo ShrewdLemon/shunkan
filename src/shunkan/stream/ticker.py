@@ -38,35 +38,89 @@ class KiteTicker:
         self.access_token = access_token
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # The desired token set, owned by this object rather than by the
+        # connect call, because subscriptions now change at runtime (a view
+        # opens on a symbol outside the watchlist) and every reconnect must
+        # restore the FULL current set, not the set start() happened to see.
+        self._lock = threading.Lock()
+        self._tokens: set[int] = set()
+        self._mode = "quote"
+        self._loop = None            # the ticker thread's event loop, once running
+        self._ws = None              # current websocket, only touched on that loop
 
     def start(self, tokens: list[int], on_tick: OnTick, mode: str = "quote") -> None:
         self._stop.clear()
+        with self._lock:
+            self._tokens = set(tokens)
+            self._mode = mode
         self._thread = threading.Thread(
-            target=self._run_loop, args=(tokens, on_tick, mode), daemon=True
+            target=self._run_loop, args=(on_tick, mode), daemon=True
         )
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
 
-    # -- internals ---------------------------------------------------------
+    def subscribe(self, tokens: list[int]) -> None:
+        """Add tokens mid-session. Thread-safe; a no-op set change sends nothing."""
+        with self._lock:
+            fresh = [t for t in tokens if t not in self._tokens]
+            self._tokens.update(fresh)
+        if fresh:
+            self._send_op("subscribe", fresh)
 
-    def _run_loop(self, tokens: list[int], on_tick: OnTick, mode: str) -> None:
+    def unsubscribe(self, tokens: list[int]) -> None:
+        with self._lock:
+            gone = [t for t in tokens if t in self._tokens]
+            self._tokens.difference_update(gone)
+        if gone:
+            self._send_op("unsubscribe", gone)
+
+    def _send_op(self, op: str, tokens: list[int]) -> None:
+        """Marshal a subscribe/unsubscribe onto the ticker thread's loop.
+
+        If the socket is down or the loop not up yet, doing nothing is
+        correct: the reconnect path subscribes the full desired set."""
         import asyncio
 
-        asyncio.run(self._stream(tokens, on_tick, mode))
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+        asyncio.run_coroutine_threadsafe(self._do_send_op(op, tokens), loop)
 
-    async def _stream(self, tokens: list[int], on_tick: OnTick, mode: str) -> None:
+    async def _do_send_op(self, op: str, tokens: list[int]) -> None:
+        ws = self._ws
+        if ws is None:
+            return
+        try:
+            await ws.send(json.dumps({"a": op, "v": tokens}))
+            if op == "subscribe":
+                await ws.send(json.dumps({"a": "mode", "v": [self._mode, tokens]}))
+        except Exception:
+            pass  # socket died; reconnect will restore the desired set
+
+    # -- internals ---------------------------------------------------------
+
+    def _run_loop(self, on_tick: OnTick, mode: str) -> None:
+        import asyncio
+
+        asyncio.run(self._stream(on_tick, mode))
+
+    async def _stream(self, on_tick: OnTick, mode: str) -> None:
         import asyncio
 
         import websockets
 
+        self._loop = asyncio.get_running_loop()
         url = f"{self.WS_URL}?api_key={self.api_key}&access_token={self.access_token}"
         backoff = 1.0
         while not self._stop.is_set():
             try:
                 async with websockets.connect(url, max_size=2**20) as ws:
                     backoff = 1.0
+                    self._ws = ws
+                    with self._lock:
+                        tokens = sorted(self._tokens)
                     await ws.send(json.dumps({"a": "subscribe", "v": tokens}))
                     await ws.send(json.dumps({"a": "mode", "v": [mode, tokens]}))
                     while not self._stop.is_set():
@@ -83,6 +137,8 @@ class KiteTicker:
                     return
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2.0, 30.0)
+            finally:
+                self._ws = None
 
 
 class SyntheticTicker:
@@ -105,6 +161,30 @@ class SyntheticTicker:
                         for t, p in self._prices.items()}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+
+    def add_symbol(self, symbol: str) -> int:
+        """Register a new random walker at runtime, returning its token.
+
+        Demo mode has to honour dynamic subscriptions too, or the routing
+        layer would behave differently offline than live — the whole point
+        of the synthetic feed is exercising the same code path."""
+        with self._lock:
+            for t, s in self.tokens.items():
+                if s == symbol:
+                    return t
+            token = 1000 + len(self.tokens)
+            self.tokens[token] = symbol
+            price = 500.0 + float(self._rng.uniform(0, 20000))
+            self._prices[token] = price
+            self._closes[token] = price * (1 + float(self._rng.normal(0, 0.01)))
+            return token
+
+    def subscribe(self, tokens: list[int]) -> None:
+        pass  # emits every registered symbol; routing filters per client
+
+    def unsubscribe(self, tokens: list[int]) -> None:
+        pass
 
     def start(self, tokens: list[int] | None, on_tick: OnTick, mode: str = "quote") -> None:
         self._stop.clear()
@@ -115,10 +195,13 @@ class SyntheticTicker:
         self._stop.set()
 
     def _run(self, on_tick: OnTick) -> None:
-        vol = {t: 0 for t in self.tokens}
+        vol: dict[int, int] = {}
         while not self._stop.is_set():
             packets = []
-            for token in self.tokens:
+            with self._lock:
+                tokens = list(self.tokens)
+            for token in tokens:
+                vol.setdefault(token, 0)
                 drift = float(self._rng.normal(0, self._prices[token] * 4e-4))
                 self._prices[token] = max(self._prices[token] + drift, 1.0)
                 vol[token] += int(self._rng.integers(100, 5000))

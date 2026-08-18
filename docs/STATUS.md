@@ -175,6 +175,26 @@ Things with real test coverage that have been verified against a live broker.
   within ±1 day. Presence-of-news is now measurable; separating informative
   news from ambient coverage is the research this enables, not solves.
 
+## Tick bus (WS06, third piece)
+
+`/ws/ticks` is no longer a firehose. `shunkan/stream/bus.py` routes ticks
+per client: the watchlist is auto-subscribed on connect, and each view can
+`{"op":"sub","symbols":[...]}` its own symbol — opening a chart on something
+outside the watchlist starts its ticks, leaving the view stops them.
+Refcounts drive the exchange socket (Kite allows mid-session subscribe), so
+the feed streams exactly the union of what somebody is looking at. Slow
+clients get bounded queues with drop-oldest and a COUNTED drop figure in
+`/api/status` under `ticks` — backpressure loses frames visibly, never
+silently. Unknown symbols come back named in the ack, not swallowed.
+
+One race caught during real-socket verification that in-process tests
+missed: the hello used to be written straight to the socket while the drain
+task pumped the queue, and over a real network a tick outran the hello.
+Everything now rides the one queue; the drain task is the socket's only
+writer. Verified 3/3 ordered over the wire and end-to-end in the browser
+(WIPRO subscribed by opening its chart, prints on the tape, prints stop on
+leaving the view while the watchlist streams on).
+
 ## Research findings
 
 **News-reaction study (2026-08-18).** First study off the news archive, 51
