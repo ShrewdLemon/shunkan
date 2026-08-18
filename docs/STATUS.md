@@ -164,6 +164,15 @@ Things with real test coverage that have been verified against a live broker.
   with the table. NICKEL is 250 kg now, not the stale 1500. Names outside
   the table still refuse with the reason spelled out.
 
+- **First settlements recorded 2026-08-18 15:39 IST.** All 210 contracts of
+  the expiring NIFTY weekly harvested in the window between the close and
+  Kite's overnight delete; 1,259 contracts carry the day's session candle
+  after the full sweep. Spot-check: BANKNIFTY26AUG46000CE settled 11,442 =
+  index close minus strike, intrinsic to the rupee. Combined with the day's
+  200+ chain snapshots (solved IVs + mids, 60s) and futures bars, this is
+  the first complete expiry-day record — the 0-DTE decay study becomes
+  testable as these accumulate.
+
 ## News archive
 
 - **Headlines persist now.** `store/news/headlines.parquet`, fed by a 30-minute
