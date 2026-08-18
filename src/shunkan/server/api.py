@@ -34,6 +34,7 @@ from shunkan.data.provider import DataError, get_provider, is_offline
 from shunkan.markets import (
     GLOBAL_PULSE,
     INDIA_PULSE,
+    IST,
     denormalize_symbol,
     session_phase,
 )
@@ -2122,6 +2123,85 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         })
 
     _scan_cache: dict = {}
+
+    @app.get("/api/calendar")
+    def calendar():
+        """The expiry calendar, from the instruments dumps - real listings,
+        not a typed-in schedule. Holidays and earnings dates are REFUSED
+        with reasons: neither has a source wired yet, and a guessed calendar
+        is how someone holds a position into a settlement they mistimed."""
+        from shunkan.data.kite_fno import load_instruments
+
+        out_venues = {}
+        for venue in ("NFO", "BFO", "MCX", "CDS"):
+            try:
+                df = load_instruments(exchange=venue)
+                exp = df[df["expiry"].astype(str) != ""].copy()
+                exp["expiry"] = pd.to_datetime(exp["expiry"], errors="coerce")
+                exp = exp.dropna(subset=["expiry"])
+                exp = exp[exp["expiry"].dt.date >= datetime.now(IST).date()]
+                nxt = (exp.groupby(exp["expiry"].dt.date)
+                       .agg(contracts=("tradingsymbol", "count"),
+                            names=("name", lambda s: sorted(set(s))[:6]))
+                       .reset_index().sort_values("expiry").head(8))
+                out_venues[venue] = [
+                    {"date": str(r["expiry"]), "contracts": int(r["contracts"]),
+                     "names": list(r["names"])}
+                    for _, r in nxt.iterrows()
+                ]
+            except Exception as exc:
+                out_venues[venue] = {"error": str(exc)[:120]}
+        return _clean({
+            "venues": out_venues,
+            "holidays": {"error": "no sourced exchange holiday list wired yet - "
+                                  "refusing to guess one"},
+            "earnings": {"error": "no earnings-date source wired yet - "
+                                  "refusing to guess dates money depends on"},
+        })
+
+    @app.get("/api/heatmap")
+    def heatmap():
+        """NIFTY50+BANKNIFTY tiles grouped by NSE's sector taxonomy.
+
+        Equal tiles on purpose: sizing by market cap needs a cap source this
+        codebase does not carry, and a guessed weight is a fabricated number
+        wearing a layout. Colour is the day's move; the sector header carries
+        the sector's mean. Cached ~5 minutes."""
+        import time as _time
+
+        from shunkan.screener import run_screen
+
+        hit = _scan_cache.get("heatmap")
+        if hit and _time.monotonic() - hit[0] < 300:
+            return hit[1]
+        try:
+            from shunkan.data.constituents import industry_map, universe
+
+            uni = universe()
+            industry = industry_map(uni)
+            symbols = [c.symbol for c in uni]
+        except Exception as exc:
+            raise HTTPException(502, f"constituents unavailable: {str(exc)[:120]}") from exc
+        res = run_screen(provider, [f"{s}.NS" for s in symbols], [])
+        tiles = []
+        for sym_ns, row in res.table.iterrows():
+            sym = str(sym_ns).replace(".NS", "").upper()
+            r1d = row.get("ret_1d")
+            r1w = row.get("ret_1w")
+            tiles.append({
+                "symbol": sym,
+                "sector": industry.get(sym, "OTHER"),
+                "price": None if pd.isna(row.get("price")) else float(row["price"]),
+                "chg_pct": None if r1d is None or pd.isna(r1d) else float(r1d) * 100,
+                "ret_1w_pct": None if r1w is None or pd.isna(r1w) else float(r1w) * 100,
+            })
+        out = _clean({
+            "tiles": tiles, "n": len(tiles),
+            "note": ("equal tiles - market-cap weighting needs a cap source "
+                     "this codebase does not carry; colour is the day move"),
+        })
+        _scan_cache["heatmap"] = (_time.monotonic(), out)
+        return out
 
     @app.get("/api/oi/{symbol}")
     def oi_multistrike_endpoint(symbol: str):
