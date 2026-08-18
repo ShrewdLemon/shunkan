@@ -229,3 +229,97 @@ def vwap_today(symbol: str, root=None) -> tuple[float | None, str]:
         return None, "no locally captured bars today"
     return None, ("bars carry zero volume (index tape) and no front-future "
                   "tape is on disk yet for today")
+
+
+def oi_multistrike(symbol: str, n_strikes: int = 6, root=None) -> dict:
+    """Per-strike OI through today's captured snapshots, front expiry.
+
+    The strikes shown are the N largest by CURRENT total OI - the walls.
+    Coverage is the capture's, honestly: it starts when a session had a
+    live token, not at the open."""
+    from shunkan.store.store import ChainStore
+
+    snaps = ChainStore(root).snapshots_today(symbol)
+    if snaps is None or snaps.empty:
+        return {"error": "no snapshots captured today"}
+    front_exp = snaps["expiry"].min()
+    front = snaps[snaps["expiry"] == front_exp]
+    times = sorted(front["ts"].unique())
+    last = front[front["ts"] == times[-1]]
+    top = (last.assign(total=last["call_oi"] + last["put_oi"])
+           .nlargest(n_strikes, "total")["strike"].tolist())
+    series: dict = {str(int(k)): {"call_oi": [], "put_oi": []} for k in sorted(top)}
+    for ts in times:
+        g = front[front["ts"] == ts].set_index("strike")
+        for k in top:
+            row = g.loc[k] if k in g.index else None
+            series[str(int(k))]["call_oi"].append(
+                float(row["call_oi"]) if row is not None else None)
+            series[str(int(k))]["put_oi"].append(
+                float(row["put_oi"]) if row is not None else None)
+    return {
+        "symbol": symbol.upper(), "expiry": str(front_exp),
+        "times": [str(t) for t in times], "strikes": sorted(int(k) for k in top),
+        "series": series,
+        "note": (f"top {len(top)} strikes by current OI, front expiry, "
+                 "60s captures; the window starts at the day's first capture"),
+    }
+
+
+def straddle_path(symbol: str, root=None) -> dict:
+    """ATM straddle (and one-strike strangle) premium through today.
+
+    Prices are stored mids when the era has them, last trades otherwise -
+    per snapshot, per leg, never mixed silently: the source column says
+    which. The ATM strike floats with spot, so the path is 'the cost of
+    the at-the-money structure NOW', which is the number a desk watches
+    into expiry."""
+    import numpy as np
+
+    from shunkan.store.store import ChainStore
+
+    snaps = ChainStore(root).snapshots_today(symbol)
+    if snaps is None or snaps.empty:
+        return {"error": "no snapshots captured today"}
+    front_exp = snaps["expiry"].min()
+    front = snaps[snaps["expiry"] == front_exp]
+    times = sorted(front["ts"].unique())
+    rows = []
+    used_mid = used_ltp = 0
+    for ts in times:
+        g = front[front["ts"] == ts].sort_values("strike").reset_index()
+        spot = float(g["spot"].iloc[0])
+        if np.isnan(spot):
+            continue
+        i = int((g["strike"] - spot).abs().idxmin())
+
+        def leg(row, side):
+            nonlocal used_mid, used_ltp
+            mid = row.get(f"{side}_mid")
+            if mid is not None and not pd.isna(mid):
+                used_mid += 1
+                return float(mid)
+            ltp = row.get(f"{side}_ltp")
+            if ltp is not None and not pd.isna(ltp) and ltp > 0:
+                used_ltp += 1
+                return float(ltp)
+            return None
+
+        atm_c, atm_p = leg(g.iloc[i], "call"), leg(g.iloc[i], "put")
+        strangle = None
+        if 0 < i < len(g) - 1:
+            sc = leg(g.iloc[i + 1], "call")
+            sp = leg(g.iloc[i - 1], "put")
+            strangle = sc + sp if sc is not None and sp is not None else None
+        rows.append({
+            "ts": str(ts), "spot": spot, "atm_strike": float(g["strike"].iloc[i]),
+            "straddle": (atm_c + atm_p) if atm_c is not None and atm_p is not None else None,
+            "strangle": strangle,
+        })
+    return {
+        "symbol": symbol.upper(), "expiry": str(front_exp),
+        "path": rows,
+        "price_basis": f"{used_mid} legs from stored mids, {used_ltp} from last trades",
+        "note": ("ATM floats with spot; strangle is one strike either side; "
+                 "gaps are snapshots whose legs had no usable price"),
+    }
