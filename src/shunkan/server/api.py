@@ -2123,6 +2123,20 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
     _scan_cache: dict = {}
 
+    @app.get("/api/oi/{symbol}")
+    def oi_multistrike_endpoint(symbol: str):
+        """Per-strike OI through today's snapshots - the wall-watch chart."""
+        from shunkan.analytics.daily import oi_multistrike
+
+        return _clean(oi_multistrike(symbol.upper()))
+
+    @app.get("/api/straddle/{symbol}")
+    def straddle_endpoint(symbol: str):
+        """Today's ATM straddle/strangle premium path, front expiry."""
+        from shunkan.analytics.daily import straddle_path
+
+        return _clean(straddle_path(symbol.upper()))
+
     @app.get("/api/candles/scan")
     def candles_scan():
         """Today's patterns across the NIFTY50+BANKNIFTY universe plus the

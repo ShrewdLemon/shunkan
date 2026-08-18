@@ -378,6 +378,7 @@ const VIEWS = [
   { id: "screener",  code: "SCR", label: "Screen" },
   { id: "signals",   code: "SIG", label: "Signals" },
   { id: "fiidii",    code: "FII", label: "FII/DII" },
+  { id: "oicharts",  code: "OIC", label: "OI/Strad" },
   { id: "portfolio", code: "PRT", label: "Folio" },
   { id: "alerts",    code: "ALR", label: "Alerts" },
   { id: "datastore", code: "DTA", label: "Store" },
@@ -419,7 +420,7 @@ const SYM_RE = /^[\^A-Z0-9][A-Z0-9._&^-]{0,23}$/;
 // quietly set the global symbol as a side effect of a malformed link.
 const SYMBOL_VIEWS = new Set([
   "chart", "chain", "payoff", "iv", "volume", "news", "backtest",
-  "viz", "mlstudio", "brief",
+  "viz", "mlstudio", "brief", "oicharts",
 ]);
 
 let _routing = false;   // true while show() is being driven BY the hash
@@ -2358,6 +2359,80 @@ function drawTape() {
 
 /* ---------- SCREENER ---------- */
 
+/* ---------- OI & STRADDLE CHARTS (OIC) ----------
+   The wall-watch: per-strike OI through the day's captures, beside the ATM
+   straddle/strangle premium path. Both read the chain snapshot store, so
+   coverage is the capture's own - it starts when the session had a live
+   token, and the panel says exactly that instead of drawing from the open. */
+
+const OIC_COLORS = ["#f0a826", "#58a6ff", "#3fb950", "#f85149", "#bc8cff", "#d29922"];
+
+async function renderOICharts(view, params = {}) {
+  if (params.symbol) state.symbol = params.symbol.toUpperCase();
+  const sym = state.symbol;
+  view.innerHTML = panel({
+    title: `OI & STRADDLE — <span class="hl">${esc(sym)}</span> INTRADAY, FRONT EXPIRY`,
+    id: "oic-panel", flush: true,
+    meta: `<span class="controls"><input class="in" id="oic-sym" value="${esc(sym)}" size="9">
+           <button class="btn" id="oic-go">LOAD</button></span> <span id="oic-upd">…</span>`,
+    body: loading("reading today's snapshots"),
+  });
+  $("#oic-go").onclick = () => show("oicharts", { symbol: $("#oic-sym").value });
+  $("#oic-sym").onkeydown = (e) => { if (e.key === "Enter") $("#oic-go").click(); };
+  const draw = async () => {
+    try {
+      const [oi, st] = await Promise.all([
+        getJSON(`/api/oi/${encodeURIComponent(sym)}`),
+        getJSON(`/api/straddle/${encodeURIComponent(sym)}`),
+      ]);
+      const host = $("#oic-panel .panel-body");
+      if (!host) return;
+      if (oi.error && st.error) {
+        host.innerHTML = `<div class="empty">${esc(oi.error)}</div>`;
+        return;
+      }
+      $("#oic-upd").innerHTML = stamp(`EXP ${esc(oi.expiry || st.expiry)} · ${(oi.times || []).length} SNAPSHOTS`)
+        + " " + ageStamp((oi.times || []).length ? oi.times[oi.times.length - 1] : null);
+      host.innerHTML = `
+        <div class="panel-title" style="padding:8px 12px 2px">PUT OI BY STRIKE <span class="faint">the defense</span></div>
+        <div style="padding:2px 12px"><canvas class="plot" id="oic-puts"></canvas></div>
+        <div class="panel-title" style="padding:8px 12px 2px">CALL OI BY STRIKE <span class="faint">the ceiling</span></div>
+        <div style="padding:2px 12px"><canvas class="plot" id="oic-calls"></canvas></div>
+        <div id="oic-legend" class="empty" style="padding:4px 12px"></div>
+        <div class="panel-title" style="padding:8px 12px 2px">ATM STRADDLE / STRANGLE PREMIUM</div>
+        <div style="padding:2px 12px"><canvas class="plot" id="oic-strad"></canvas></div>
+        <div class="empty" style="padding:4px 12px"><span class="faint">${esc(st.note || "")} · ${esc(st.price_basis || "")}</span></div>
+        <div class="empty" style="padding:2px 12px"><span class="faint">${esc(oi.note || "")}</span></div>`;
+      if (!oi.error) {
+        const xs = oi.times.map((t) => Date.parse(t));
+        const mk = (side) => oi.strikes.map((k, i) => ({
+          points: xs.map((x, j) => ({ x, y: oi.series[String(k)][side][j] })),
+          color: OIC_COLORS[i % OIC_COLORS.length], width: 1.4,
+        }));
+        linePlot($("#oic-puts"), mk("put_oi"),
+          { height: 150, fmtY: (v) => fmt.compact(v), fmtX: (v) => fmt.ist(new Date(v)) });
+        linePlot($("#oic-calls"), mk("call_oi"),
+          { height: 150, fmtY: (v) => fmt.compact(v), fmtX: (v) => fmt.ist(new Date(v)) });
+        $("#oic-legend").innerHTML = oi.strikes.map((k, i) =>
+          `<span style="color:${OIC_COLORS[i % OIC_COLORS.length]}">■ ${fmt.i(k)}</span>`).join(" ");
+      }
+      if (!st.error) {
+        const pts = st.path.filter((r) => r.straddle != null);
+        linePlot($("#oic-strad"), [
+          { points: pts.map((r) => ({ x: Date.parse(r.ts), y: r.straddle })), color: "#f0a826", width: 1.6 },
+          { points: st.path.filter((r) => r.strangle != null)
+              .map((r) => ({ x: Date.parse(r.ts), y: r.strangle })), color: "#58a6ff", width: 1.2 },
+        ], { height: 150, fmtY: (v) => "₹" + fmt.n(v, 1), fmtX: (v) => fmt.ist(new Date(v)) });
+      }
+    } catch (e) {
+      const host = $("#oic-panel .panel-body");
+      if (host) host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  };
+  draw();
+  addTimer("oicharts:refresh", draw, 120000);
+}
+
 /* ---------- FII / DII (FII) ----------
    NSE's participant-wise positioning through time. Levels are structural
    (FII is net short index futures permanently - it hedges), the CHANGE is
@@ -4096,7 +4171,8 @@ const RENDER = {
   pulse: renderPulse, chart: renderChart, chain: renderChain, payoff: renderPayoff,
   iv: renderIV, volume: renderVolume, news: renderNews, backtest: renderBacktest,
   tape: renderTape, screener: renderScreener, signals: renderSignals,
-  fiidii: renderFiiDii, portfolio: renderPortfolio, alerts: renderAlerts,
+  fiidii: renderFiiDii, oicharts: renderOICharts,
+  portfolio: renderPortfolio, alerts: renderAlerts,
   datastore: renderDatastore, workspace: renderWorkspace, viz: renderViz,
   mlstudio: renderMLStudio, brief: renderBrief,
 };
