@@ -318,6 +318,11 @@ const state = {
   // Spot at the moment the book was last fully marked, so the delta P&L
   // between polls is measured from a known point rather than from nothing.
   markSpot: new Map(),
+  // Tick routing. The server auto-subscribes the watchlist (autoSubs, from
+  // the hello); on top of that the CURRENT view may subscribe its own symbol
+  // (viewSub). One extra symbol at a time, released on view switch, so the
+  // feed streams exactly what is being looked at.
+  autoSubs: new Set(), viewSub: null,
 };
 // Keyed and idempotent: re-registering the same key is a no-op, so a render
 // function that reschedules itself can no longer double the interval count
@@ -442,6 +447,24 @@ function syncHash() {
   history.replaceState(null, "", want);
 }
 
+/* The view's live subscription. Symbol views watching something outside the
+   watchlist ask the tick bus for it and give it back on leaving, so e.g. a
+   RELIANCE chart gets RELIANCE prints on the tape while it is open. Forced
+   on reconnect: the server forgot us, so equality with viewSub proves
+   nothing about what the new connection carries. */
+function syncViewSub(force = false) {
+  const want = SYMBOL_VIEWS.has(state.view) && state.symbol
+    && !state.autoSubs.has(state.symbol) ? state.symbol : null;
+  if (!force && want === state.viewSub) return;
+  if (ws && ws.readyState === 1) {
+    if (state.viewSub && state.viewSub !== want) {
+      ws.send(JSON.stringify({ op: "unsub", symbols: [state.viewSub] }));
+    }
+    if (want) ws.send(JSON.stringify({ op: "sub", symbols: [want] }));
+  }
+  state.viewSub = want;
+}
+
 function show(viewId, params = {}) {
   clearTimers();
   runTeardowns();
@@ -451,6 +474,7 @@ function show(viewId, params = {}) {
   if (params.symbol && SYM_RE.test(String(params.symbol).toUpperCase())) {
     state.symbol = String(params.symbol).toUpperCase();
   }
+  syncViewSub();
   document.querySelectorAll(".rail-btn").forEach((b) => b.classList.remove("active"));
   const btn = $(`#rail-${viewId}`);
   if (btn) btn.classList.add("active");
@@ -3823,8 +3847,18 @@ function connectWS() {
     if (msg.type === "hello") {
       state.feedClaim = msg.live ? "kite" : "demo";
       state.wsDown = false;
+      state.autoSubs = new Set(msg.symbols || []);
+      syncViewSub(true);   // reconnect: the new connection knows nothing
       paintFeed();
       updateStatusbar();
+    } else if (msg.type === "subs") {
+      if (msg.unknown && msg.unknown.length) {
+        // The feed cannot stream these (not on NSE, or no resolver). Saying
+        // so beats a tape that just never mentions them.
+        toast(`no live feed for ${msg.unknown.join(", ")}`, "alert");
+      }
+    } else if (msg.type === "error") {
+      console.warn("tick bus:", msg.message);
     } else if (msg.type === "ticks") {
       state.tickCount += msg.data.length;
       state.lastTickAt = Date.now();

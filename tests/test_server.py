@@ -311,6 +311,57 @@ def test_store_bars_endpoint_empty_is_honest(client):
     assert "no locally captured" in r["note"]
 
 
+def test_websocket_sub_routes_a_new_symbol(client):
+    """The whole point of the bus: ask for a symbol outside the watchlist and
+    its ticks start arriving on THIS connection."""
+    with client.websocket_connect("/ws/ticks") as ws:
+        assert ws.receive_json()["type"] == "hello"
+        ws.send_json({"op": "sub", "symbols": ["ZZZTEST"]})
+        seen_ack = seen_tick = False
+        for _ in range(40):                      # bounded: ~3 frames/sec demo
+            msg = ws.receive_json()
+            if msg["type"] == "subs":
+                assert "ZZZTEST" in msg["subscribed"]
+                assert msg["unknown"] == []      # demo resolves anything
+                seen_ack = True
+            elif msg["type"] == "ticks" and any(
+                    r["symbol"] == "ZZZTEST" for r in msg["data"]):
+                seen_tick = True
+                break
+        assert seen_ack and seen_tick
+
+
+def test_websocket_unsub_stops_routing(client):
+    with client.websocket_connect("/ws/ticks") as ws:
+        hello = ws.receive_json()
+        ws.send_json({"op": "unsub", "symbols": hello["symbols"]})
+        while True:                              # drain frames queued pre-unsub
+            msg = ws.receive_json()
+            if msg["type"] == "subs":
+                assert msg["subscribed"] == []
+                break
+        # After the ack nothing else can be enqueued for us but the pong.
+        ws.send_json({"op": "ping"})
+        assert ws.receive_json()["type"] == "pong"
+
+
+def test_websocket_bad_op_gets_a_named_error(client):
+    with client.websocket_connect("/ws/ticks") as ws:
+        ws.receive_json()
+        ws.send_json({"op": "dance"})
+        while True:
+            msg = ws.receive_json()
+            if msg["type"] == "error":
+                assert "dance" in msg["message"]
+                break
+
+
+def test_status_reports_tick_bus(client):
+    r = client.get("/api/status").json()
+    assert "ticks" in r
+    assert set(r["ticks"]) == {"clients", "symbols", "ticks", "dropped"}
+
+
 def test_websocket_ticks(client):
     with client.websocket_connect("/ws/ticks") as ws:
         hello = ws.receive_json()

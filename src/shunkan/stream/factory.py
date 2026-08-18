@@ -4,7 +4,12 @@ and the web server's tick bridge."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Callable
+
+
+def _no_resolver(symbol: str):
+    return None
 
 
 @dataclass
@@ -13,6 +18,10 @@ class Feed:
     tokens: list[int]
     names: dict[int, str]        # token -> display symbol
     live: bool                   # True = real exchange feed
+    # symbol -> (token, display name), or None when the feed cannot stream it.
+    # The tick bus uses this to honour runtime subscriptions; a feed without a
+    # resolver simply reports every extra symbol as unknown, honestly.
+    resolve: Callable[[str], tuple[int, str] | None] = field(default=_no_resolver)
 
 
 def build_feed(watchlist: list[str]) -> Feed:
@@ -52,19 +61,45 @@ def build_feed(watchlist: list[str]) -> Feed:
                         names[token] = name
                 if tokens:
                     creds = load_credentials()["zerodha"]
+
+                    def resolve_live(symbol: str, _nse=nse):
+                        """NSE cash symbols and the two index labels. A miss
+                        is a miss; the bus reports it rather than guessing."""
+                        name = symbol.upper().removesuffix(".NS")
+                        for label, idx in (("NIFTY", "NIFTY 50"),
+                                           ("BANKNIFTY", "NIFTY BANK")):
+                            if name == label:
+                                row = _nse[_nse["tradingsymbol"] == idx]
+                                if not row.empty:
+                                    return int(row["instrument_token"].iloc[0]), label
+                        m = _nse[(_nse["tradingsymbol"] == name)
+                                 & (_nse["segment"] != "INDICES")]
+                        if m.empty:
+                            return None
+                        return int(m["instrument_token"].iloc[0]), name
+
                     return Feed(
                         ticker=KiteTicker(creds["api_key"], creds["access_token"]),
                         tokens=tokens,
                         names=names,
                         live=True,
+                        resolve=resolve_live,
                     )
             except Exception:
                 pass  # instruments fetch failed — demo feed below
 
     ticker = SyntheticTicker(watchlist)
+
+    def resolve_demo(symbol: str):
+        # Demo can walk anything: register on demand so routing behaves the
+        # same offline as live.
+        name = symbol.upper().removesuffix(".NS")
+        return ticker.add_symbol(name), name
+
     return Feed(
         ticker=ticker,
         tokens=list(ticker.tokens),
         names=dict(ticker.tokens),
         live=False,
+        resolve=resolve_demo,
     )

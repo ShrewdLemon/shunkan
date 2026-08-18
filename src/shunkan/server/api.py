@@ -697,6 +697,9 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             "harvest": dict(harvest_status),
             "participant": dict(participant_status),
             "news_archive": dict(news_status),
+            # Who is streaming what, and whether backpressure is eating
+            # frames (drops are counted, never silent).
+            "ticks": hub.stats(),
             "server_time": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -2793,11 +2796,11 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             await ws.close(code=1008)
             return
         await ws.accept()
-        await hub.attach(ws)
+        client = await hub.attach(ws)
         try:
             while True:
-                # Keep the socket open; client never needs to send anything.
-                await ws.receive_text()
+                # Clients may send sub/unsub ops; silence is also fine.
+                hub.handle_op(client, await ws.receive_text())
         except WebSocketDisconnect:
             pass
         finally:
@@ -2882,82 +2885,122 @@ def _band(index, values) -> list[dict]:
 
 
 class TickHub:
-    """Bridges the threaded tick feed into asyncio websockets.
+    """Websocket adapter over the TickBus (see shunkan.stream.bus).
 
-    The feed starts lazily on the first client and stops when the last one
-    leaves. Tick callbacks land on the ticker thread; they're marshalled to
-    the event loop with call_soon_threadsafe — no locks, no polling."""
+    The hub owns feed lifecycle (lazy start on first client, stop on last)
+    and one DRAIN TASK per websocket — the only writer to that socket, so
+    tick frames and op acks never interleave mid-frame. Everything about who
+    receives which symbol lives in the bus, where it is unit-tested without
+    a server."""
 
     def __init__(self) -> None:
         from shunkan.store import BarBuilder
 
-        self.clients: set[WebSocket] = set()
-        self.feed = None
         self.loop: asyncio.AbstractEventLoop | None = None
-        self._tick_count = 0
-        self._started = 0.0
-        self.bars = BarBuilder()  # live ticks -> 1-min bars -> parquet
+        self.feed = None
+        self.bus = None
+        self._base: list[str] = []       # the watchlist as built, pre-dynamic
+        self._senders: dict = {}         # ws -> (BusClient, drain task)
+        self.bars = BarBuilder()         # live ticks -> 1-min bars -> parquet
 
-    async def attach(self, ws: WebSocket) -> None:
-        self.clients.add(ws)
+    async def attach(self, ws: WebSocket):
+        from shunkan.stream.bus import TickBus
+
         if self.feed is None:
             from shunkan.stream.factory import build_feed
 
             feed = await asyncio.to_thread(build_feed, load_watchlist())
             self.feed = feed
-            self._started = time.monotonic()
+            self._base = list(feed.names.values())
+            self.bus = TickBus(feed, self.loop)
             feed.ticker.start(feed.tokens, self._on_ticks, mode="quote")
-        await ws.send_text(json.dumps({
+        client = self.bus.add_client()
+        # Every client starts with the watchlist — the boards and the tape
+        # depend on it — and layers view subscriptions on top.
+        subscribed, _ = self.bus.subscribe(client, self._base)
+        # The hello rides the QUEUE, before the drain task exists. Sending it
+        # straight on the socket made attach a second writer, and over a real
+        # network a routed tick outran the hello. No await sits between
+        # subscribe and push, so no dispatch callback can interleave: hello
+        # is provably the first frame out.
+        client.push({
             "type": "hello",
             "live": self.feed.live,
-            "symbols": list(self.feed.names.values()),
-        }))
+            "symbols": subscribed,
+        })
+        self._senders[ws] = (client, asyncio.create_task(self._drain(ws, client)))
+        return client
+
+    async def _drain(self, ws: WebSocket, client) -> None:
+        """Sole writer to this websocket. A send that fails ends the task;
+        the endpoint's finally block detaches the client."""
+        try:
+            while True:
+                msg = await client.queue.get()
+                await ws.send_text(json.dumps(msg))
+                client.sent += 1
+        except Exception:
+            pass
+
+    def handle_op(self, client, text: str) -> None:
+        """Client protocol: {"op":"sub"|"unsub","symbols":[...]}.
+
+        Acks ride the client's own queue (single-writer rule). Unknown
+        symbols come back NAMED — a view that will stay dark should know."""
+        try:
+            msg = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            client.push({"type": "error", "message": "unparseable op"})
+            return
+        op = msg.get("op")
+        symbols = [str(x) for x in (msg.get("symbols") or [])]
+        if op == "sub" and symbols:
+            _, unknown = self.bus.subscribe(client, symbols)
+            client.push({"type": "subs", "subscribed": sorted(client.symbols),
+                         "unknown": unknown})
+        elif op == "unsub" and symbols:
+            self.bus.unsubscribe(client, symbols)
+            client.push({"type": "subs", "subscribed": sorted(client.symbols),
+                         "unknown": []})
+        elif op == "ping":
+            client.push({"type": "pong"})
+        else:
+            client.push({"type": "error", "message": f"unknown op {op!r}"})
 
     def detach(self, ws: WebSocket) -> None:
-        self.clients.discard(ws)
-        if not self.clients:
+        pair = self._senders.pop(ws, None)
+        if pair is not None:
+            client, task = pair
+            task.cancel()
+            if self.bus is not None:
+                self.bus.remove_client(client)
+        if not self._senders:
             self.stop()
 
     def stop(self) -> None:
         if self.feed is not None:
             self.feed.ticker.stop()
             self.feed = None
+            self.bus = None
 
     def _on_ticks(self, ticks) -> None:
-        if self.loop is None or self.feed is None:
+        """Ticker-thread callback: build bars, hand the frame to the bus."""
+        feed, bus = self.feed, self.bus
+        if feed is None or bus is None:
             return
-        names = self.feed.names
         # Bars are built from every tick (only persisted for the live feed —
         # demo random-walk data must never enter the store).
-        if self.feed.live:
+        if feed.live:
+            names = feed.names
             for t in ticks:
                 self.bars.on_tick(names.get(t.token, str(t.token)), t.ltp, float(t.volume))
-        if not self.clients:
-            return
-        payload = json.dumps({
-            "type": "ticks",
-            "live": self.feed.live,
-            "data": [
-                {"symbol": names.get(t.token, str(t.token)), "ltp": t.ltp,
-                 "change_pct": round(t.change_pct, 6), "volume": t.volume,
-                 "oi": t.oi, "high": t.high, "low": t.low}
-                for t in ticks
-            ],
-        })
-        self._tick_count += len(ticks)
-        self.loop.call_soon_threadsafe(
-            lambda: asyncio.ensure_future(self.broadcast_raw(payload))
-        )
-
-    async def broadcast_raw(self, payload: str) -> None:
-        dead = []
-        for ws in self.clients:
-            try:
-                await ws.send_text(payload)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.clients.discard(ws)
+        bus.publish_threadsafe(ticks)
 
     async def broadcast(self, message: dict) -> None:
-        await self.broadcast_raw(json.dumps(message))
+        if self.bus is not None:
+            self.bus.broadcast(message)
+
+    def stats(self) -> dict:
+        if self.bus is None:
+            return {"clients": 0, "symbols": [], "ticks": 0, "dropped": 0}
+        return self.bus.stats()
