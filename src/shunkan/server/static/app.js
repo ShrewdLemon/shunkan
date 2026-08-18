@@ -694,14 +694,17 @@ async function renderChart(view) {
     try { CHART_CAT = (await getJSON("/api/chart/catalog")).indicators; }
     catch { CHART_CAT = {}; }
   }
-  // Per-symbol saved config (best-effort) overrides session defaults.
+  // Per-symbol saved config (best-effort) overrides session defaults. A
+  // symbol WITHOUT a config opens on daily candles: the previous symbol's
+  // interval used to leak across (click S&P from the pulse after browsing
+  // NIFTY monthlies and you got a monthly S&P chart nobody asked for).
   try {
     const cfg = await getJSON(`/api/chart/config/${sym}`);
     if (cfg.type) state.chartType = cfg.type;
-    if (cfg.interval) state.chartInterval = cfg.interval;
+    state.chartInterval = cfg.interval || "1d";
     if (Array.isArray(cfg.indicators)) state.chartIndicators = cfg.indicators;
     state.chartDrawings = Array.isArray(cfg.drawings) ? cfg.drawings : [];
-  } catch { state.chartDrawings = []; }
+  } catch { state.chartDrawings = []; state.chartInterval = "1d"; }
   clampChartSpan();
 
   view.innerHTML = panel({
@@ -1726,8 +1729,10 @@ async function renderVolume(view) {
     $("#vol-panel .panel-body").innerHTML = `
       <div class="kv-strip">
         <div class="kv"><div class="k">LAST</div><div class="v">${fmt.n(r.last_close)}</div></div>
-        <div class="kv"><div class="k">VOL VS AVG</div><div class="v">${r.surge_ratio.toFixed(2)}×</div></div>
-        <div class="kv"><div class="k">Z-SCORE${iM((r.prov || {}).surge_z, "VOLUME Z-SCORE")}</div><div class="v ${cls(r.surge_z)}">${r.surge_z >= 0 ? "+" : ""}${r.surge_z.toFixed(2)}σ</div></div>
+        <div class="kv"><div class="k">VOL VS AVG</div><div class="v">${r.surge_ratio == null
+          ? `<span class="faint" title="${esc(r.volume_note || "")}">—</span>` : r.surge_ratio.toFixed(2) + "×"}</div></div>
+        <div class="kv"><div class="k">Z-SCORE${iM((r.prov || {}).surge_z, "VOLUME Z-SCORE")}</div><div class="v ${r.surge_z == null ? "faint" : cls(r.surge_z)}">${r.surge_z == null
+          ? "—" : (r.surge_z >= 0 ? "+" : "") + r.surge_z.toFixed(2) + "σ"}</div></div>
         <div class="kv"><div class="k">POC${iM((r.prov || {}).poc, "POINT OF CONTROL")}</div><div class="v amber">${fmt.i(r.poc)}</div></div>
         <div class="kv"><div class="k">VALUE AREA</div><div class="v sm">${fmt.i(r.value_area[0])}–${fmt.i(r.value_area[1])}</div></div>
         <div class="kv"><div class="k">DAY TYPE</div><div class="v sm">${r.day_type.split(" (")[0].toUpperCase()}</div></div>
