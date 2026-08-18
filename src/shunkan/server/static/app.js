@@ -376,6 +376,7 @@ const VIEWS = [
   { id: "mlstudio",  code: "MLS", label: "ML" },
   { id: "tape",      code: "TPE", label: "Tape" },
   { id: "screener",  code: "SCR", label: "Screen" },
+  { id: "signals",   code: "SIG", label: "Signals" },
   { id: "portfolio", code: "PRT", label: "Folio" },
   { id: "alerts",    code: "ALR", label: "Alerts" },
   { id: "datastore", code: "DTA", label: "Store" },
@@ -2356,6 +2357,73 @@ function drawTape() {
 
 /* ---------- SCREENER ---------- */
 
+/* ---------- TECHNICAL SIGNALS (SIG) ----------
+   The signal feed every charting site has, minus the part they all skip:
+   next to each pattern, that symbol's own measured record - n, forward
+   mean vs any-day baseline, hit rate. A pattern that has meant nothing
+   says so in the same row that names it. */
+
+let sigFilter = "all";
+
+async function renderSignals(view) {
+  view.innerHTML = panel({
+    title: "TECHNICAL SIGNALS — candle patterns with their measured record",
+    id: "sig-panel", flush: true,
+    meta: `<span class="controls">
+      <button class="btn sig-f" data-f="all">ALL</button>
+      <button class="btn sig-f" data-f="bullish">BULLISH</button>
+      <button class="btn sig-f" data-f="bearish">BEARISH</button>
+    </span> <span id="sig-upd">…</span>`,
+    body: loading("scanning the universe"),
+  });
+  const draw = async () => {
+    try {
+      const d = await getJSON("/api/candles/scan");
+      const host = $("#sig-panel .panel-body");
+      if (!host) return;
+      $("#sig-upd").innerHTML = stamp(`${d.rows.length} SIGNALS · ${d.scanned} SYMBOLS SCANNED`)
+        + " " + ageStamp(null);
+      const rows = d.rows.filter((r) => sigFilter === "all" || r.direction === sigFilter);
+      const rec1 = (r) => {
+        const h = r.record && r.record.horizons && r.record.horizons["1"];
+        if (!h) return '<span class="faint">no record</span>';
+        const edge = h.mean_pct - h.baseline_pct;
+        const cls_ = Math.abs(edge) < 0.05 || h.n < 20 ? "faint" : edge > 0 ? "up" : "down";
+        return `<span class="${cls_}">n=${h.n} · +1d ${h.mean_pct >= 0 ? "+" : ""}${h.mean_pct.toFixed(2)}%`
+          + ` vs ${h.baseline_pct >= 0 ? "+" : ""}${h.baseline_pct.toFixed(2)}% any-day`
+          + ` · hit ${(h.hit_rate * 100).toFixed(0)}%</span>`
+          + (h.n < 20 ? ' <span class="faint">(thin)</span>' : "");
+      };
+      host.innerHTML = `
+        <div class="feed-note">${esc(d.note)}</div>
+        ${rows.length ? `<table class="tbl"><thead><tr>
+          <th class="txt">DATE</th><th class="txt">SIGNAL</th><th class="txt">SYMBOL</th>
+          <th>LAST</th><th>CHG%</th><th class="txt">THE RECORD (THIS SYMBOL)</th>
+        </tr></thead><tbody>
+        ${rows.map((r) => `<tr data-sym="${esc(r.symbol)}" style="cursor:pointer">
+          <td class="txt faint">${esc(r.date)}</td>
+          <td class="txt ${r.direction === "bullish" ? "up" : r.direction === "bearish" ? "down" : "faint"}">${esc(r.pattern.toUpperCase())}</td>
+          <td class="txt sym">${esc(r.symbol)}</td>
+          <td>${fmt.n(r.close)}</td>
+          <td class="${cls(r.chg_pct)}">${fmt.pct(r.chg_pct / 100)}</td>
+          <td class="txt" style="font-size:10.5px">${rec1(r)}</td>
+        </tr>`).join("")}</tbody></table>`
+        : `<div class="empty">no defined pattern printed on the latest session under the current filter — most days most symbols print nothing, and that is the honest normal</div>`}`;
+      host.querySelectorAll("tr[data-sym]").forEach((tr) => {
+        tr.onclick = () => show("chart", { symbol: tr.dataset.sym });
+      });
+    } catch (e) {
+      const host = $("#sig-panel .panel-body");
+      if (host) host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  };
+  view.querySelectorAll(".sig-f").forEach((b) => {
+    b.onclick = () => { sigFilter = b.dataset.f; draw(); };
+  });
+  draw();
+  addTimer("signals:refresh", draw, 300000);
+}
+
 async function renderScreener(view) {
   view.innerHTML = panel({
     title: "SCREENER", id: "scr-panel", flush: true,
@@ -3684,10 +3752,11 @@ async function loadDaily() {
   if (!host) return;
   try {
     const on = $("#brf-on") && $("#brf-on").value ? `?on=${$("#brf-on").value}` : "";
-    const [d, mig] = await Promise.all([
+    const [d, mig, cnd] = await Promise.all([
       getJSON(`/api/analysis/daily/${encodeURIComponent(state.symbol)}${on}`),
       on ? Promise.resolve(null)
          : getJSON(`/api/analysis/intraday/${encodeURIComponent(state.symbol)}`).catch(() => null),
+      getJSON(`/api/candles/${encodeURIComponent(state.symbol)}`).catch(() => null),
     ]);
     const ch = d.chart || {}, vol = d.vol || {}, pos = d.positioning || {};
     const parts = d.participants || {}, ev = d.events || {}, news = d.news || {};
@@ -3798,6 +3867,20 @@ async function loadDaily() {
         <span class="faint">· ${esc(d.served_from || "live")} · root → derivatives · every section fails to a named reason, never a filled box</span></div>
       <div style="display:grid;gap:6px">
         ${sec("CHART — THE UNDERLYING", chartBody)}
+        ${cnd ? sec("CANDLE PATTERNS — SHAPES AND THEIR MEASURED RECORD", (() => {
+          if (!cnd.recent || !cnd.recent.length) {
+            return `<div class="empty" style="padding:8px 12px">no defined pattern in the last sessions — most days print none, honestly</div>`;
+          }
+          return cnd.recent.map((r) => {
+            const h = r.record && r.record.horizons && r.record.horizons["1"];
+            const rec = h
+              ? `n=${r.record.n} · +1d ${h.mean_pct >= 0 ? "+" : ""}${h.mean_pct.toFixed(2)}% vs ${h.baseline_pct >= 0 ? "+" : ""}${h.baseline_pct.toFixed(2)}% any-day · hit ${(h.hit_rate * 100).toFixed(0)}%${h.n < 20 ? " (thin)" : ""}`
+              : "no forward window yet";
+            return `<div class="empty" style="padding:5px 12px">
+              <b class="${r.direction === "bullish" ? "up" : r.direction === "bearish" ? "down" : "faint"}">${esc(r.pattern.toUpperCase())}</b>
+              <span class="faint">${esc(r.date)}</span> · <span style="font-size:10.5px">${rec}</span></div>`;
+          }).join("");
+        })()) : ""}
         ${sec("VOLATILITY", volBody)}
         ${sec("OPEN INTEREST & POSITIONING", posBody)}
         ${mig && !mig.error && pos.expiry_today ? sec("EXPIRY INTRADAY — PAIN & WALL MIGRATION", `
@@ -3935,7 +4018,8 @@ async function trainML() {
 const RENDER = {
   pulse: renderPulse, chart: renderChart, chain: renderChain, payoff: renderPayoff,
   iv: renderIV, volume: renderVolume, news: renderNews, backtest: renderBacktest,
-  tape: renderTape, screener: renderScreener, portfolio: renderPortfolio, alerts: renderAlerts,
+  tape: renderTape, screener: renderScreener, signals: renderSignals,
+  portfolio: renderPortfolio, alerts: renderAlerts,
   datastore: renderDatastore, workspace: renderWorkspace, viz: renderViz,
   mlstudio: renderMLStudio, brief: renderBrief,
 };
