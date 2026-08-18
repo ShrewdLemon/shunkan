@@ -1205,10 +1205,11 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             raise HTTPException(502, str(exc)) from exc
         prof = r.profile
         mids = 0.5 * (prof.bin_edges[:-1] + prof.bin_edges[1:])
-        # An index tape prints no volume; a surge ratio of 0.00x there reads
-        # as data when it is actually absence. Refuse the surge metrics with
-        # the reason and keep the price-structure parts that remain honest.
-        no_volume = float(hist["volume"].fillna(0).sum()) <= 0
+        # A 0.00x surge ratio is absence dressed as data: index tapes print
+        # no intraday volume (today's bar reads zero until EOD, if ever), so
+        # the ratio of today-to-average divides nothing by something. Refuse
+        # the surge metrics with the reason; the price structure stays.
+        no_volume = float(hist["volume"].fillna(0).iloc[-1]) <= 0
         last_bar = hist.index[-1]
         return _clean({
             "symbol": symbol.upper(),
@@ -1222,9 +1223,9 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                          else "no volume printed (index tape)"),
             "surge_z": None if no_volume else r.surge_z,
             "surge_ratio": None if no_volume else r.surge_ratio,
-            "volume_note": ("this instrument's tape prints no volume; surge "
-                            "and OBV need a real tape (trade the future's)"
-                            if no_volume else None),
+            "volume_note": ("the latest bar prints no volume (index tape, or "
+                            "the session's total lands at EOD); surge and OBV "
+                            "need a real tape" if no_volume else None),
             "obv_divergence": "none" if no_volume else r.obv_divergence,
             "poc": prof.poc, "value_area": [prof.value_area_low, prof.value_area_high],
             "profile": [
