@@ -105,6 +105,8 @@ HARVEST_INTERVAL_S = 6 * 3600.0
 harvest_status: dict = {"runs": 0, "failed": 0}
 participant_status: dict = {"failed": 0}
 news_status: dict = {"failed": 0}
+journal_status: dict = {"written": 0}
+keepalive_status: dict = {"active": False}
 
 
 def _now_iso() -> str:
@@ -433,6 +435,65 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                         harvest_status["last_error_at"] = _now_iso()
                 await asyncio.sleep(HARVEST_INTERVAL_S)
 
+        async def feed_keepalive_loop():
+            """Hold the tick feed open through market hours regardless of
+            websocket clients, so the bar archive records the session and
+            not just the stretches somebody happened to be watching."""
+            from shunkan.data.brokers import KiteProvider, get_broker
+
+            await asyncio.sleep(30.0)
+            while True:
+                try:
+                    live_possible = False
+                    if not is_offline() and session_phase().is_open:
+                        try:
+                            live_possible = isinstance(get_broker(), KiteProvider)
+                        except DataError:
+                            live_possible = False
+                    if live_possible:
+                        hub.keepalive = True
+                        keepalive_status["active"] = True
+                        await hub.ensure_feed()
+                    else:
+                        hub.keepalive = False
+                        keepalive_status["active"] = False
+                        if not hub._senders and hub.feed is not None:
+                            hub.stop()
+                except Exception as exc:
+                    keepalive_status["last_error"] = str(exc)[:160]
+                await asyncio.sleep(60.0)
+
+        async def analysis_journal_loop():
+            """Record what the terminal said at each close, once per day.
+
+            The journal is what makes "did yesterday's analysis hold up" a
+            query instead of an archaeology project: replay serves the
+            recorded JSON, not a recomputation through code that has since
+            changed. Waits for the history sync to roll today's candle so a
+            journal never records yesterday wearing today's date."""
+            from shunkan.analytics.daily import journal_path, write_journal
+            from shunkan.markets import now_ist
+
+            await asyncio.sleep(120.0)
+            while True:
+                try:
+                    now = now_ist()
+                    after_close = now.hour * 60 + now.minute >= 15 * 60 + 40
+                    if not is_offline() and now.weekday() < 5 and after_close:
+                        for jsym in ("NIFTY", "BANKNIFTY"):
+                            if journal_path(jsym, now.date()).exists():
+                                continue
+                            payload = await asyncio.to_thread(_compose_daily, jsym, None)
+                            if payload.get("as_of") != now.date().isoformat():
+                                continue    # today's candle not rolled yet; retry
+                            if write_journal(jsym, now.date(), _clean(payload)):
+                                journal_status["written"] = journal_status.get("written", 0) + 1
+                                journal_status[jsym] = now.date().isoformat()
+                                journal_status["last_ok"] = _now_iso()
+                except Exception as exc:
+                    journal_status["last_error"] = str(exc)[:160]
+                await asyncio.sleep(600.0)
+
         async def news_archive_loop():
             """Persist headlines so future event studies have something to
             join a move against.
@@ -521,7 +582,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         tasks = [asyncio.create_task(t()) for t in
                  (alert_loop, bar_flush_loop, chain_capture_loop, history_sync_loop,
                   instruments_archive_loop, harvest_loop, participant_loop,
-                  news_archive_loop)]
+                  news_archive_loop, feed_keepalive_loop, analysis_journal_loop)]
         yield
         for t in tasks:
             t.cancel()
@@ -703,6 +764,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             # Who is streaming what, and whether backpressure is eating
             # frames (drops are counted, never silent).
             "ticks": hub.stats(),
+            "feed_keepalive": dict(keepalive_status),
+            "analysis_journal": dict(journal_status),
             "server_time": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -1718,27 +1781,30 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             },
         })
 
-    @app.get("/api/analysis/daily/{symbol}")
-    def analysis_daily(symbol: str):
-        """The daily analysis, root first: what the underlying did, then vol,
-        then derivatives positioning, then who moved (participants), then the
-        historical base rates for a day like today, then news.
+    def _compose_daily(sym: str, on_date=None) -> dict:
+        """The daily analysis composition, shared by the live route, the
+        ?on= replay, and the close-of-day journal writer.
 
-        Modelled on the shape of a desk's end-of-day note, with one deliberate
-        difference: it ends at the facts. No verdict and no trade call, because
-        the one strategy this codebase has fully validated so far was the
-        decision not to trade. Every section degrades to a named reason rather
-        than a blank, and nothing here is invented to fill a box.
+        Live (on_date None): archive + live chain + live news. Replay: every
+        section rebuilt from what the stores held ON that day - positioning
+        from the day's last captured snapshot, never a re-fetch wearing an
+        old date. Facts and base rates only, no verdict by design.
         """
         import numpy as np
 
+        from shunkan.analytics.daily import (
+            participants_asof,
+            positioning_from_snapshot,
+            vwap_today,
+        )
         from shunkan.analytics.events import classify_today, event_study
         from shunkan.data.participant import latest_with_change
         from shunkan.markets import INDEX_ALIASES
-        from shunkan.store.store import STORE_DIR
+        from shunkan.store.store import ChainStore, STORE_DIR
 
-        sym = symbol.upper()
-        out: dict = {"symbol": sym}
+        out: dict = {"symbol": sym,
+                     "served_from": "live" if on_date is None
+                     else "reconstructed from archives"}
 
         # ---- root: the underlying, from the local archive -------------------
         def archive_frame():
@@ -1756,6 +1822,11 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
         try:
             hist = archive_frame()
+            if on_date is not None:
+                hist = hist[hist["date"] <= pd.Timestamp(on_date)]
+                if hist.empty or hist.iloc[-1]["date"].date() != on_date:
+                    raise DataError(f"no {sym} session on {on_date} in the archive "
+                                    "(weekend, holiday, or before coverage)")
             row, prev = hist.iloc[-1], hist.iloc[-2]
             close = hist.set_index("date")["close"]
             r = np.log(close).diff()
@@ -1783,6 +1854,11 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                 "rv5": float(r.tail(5).std() * np.sqrt(252) * 100),
                 "rv21": float(r.tail(21).std() * np.sqrt(252) * 100),
             }
+            if on_date is None:
+                # day-structure read from the locally captured tape
+                vwap, vwap_note = vwap_today(sym)
+                out["chart"]["vwap"] = vwap
+                out["chart"]["vwap_note"] = vwap_note
             # base rates for a day like today, and the standard studies either way
             out["events"] = {
                 "today": classify_today(close),
@@ -1797,6 +1873,11 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         try:
             vix = pd.read_parquet(STORE_DIR / "history" / "_INDIAVIX.parquet")
             vix = vix.sort_values("date")
+            vix["date"] = pd.to_datetime(vix["date"])
+            if on_date is not None:
+                vix = vix[vix["date"] <= pd.Timestamp(on_date)]
+            if vix.empty:
+                raise DataError("VIX series empty for that date")
             v = float(vix["close"].iloc[-1])
             out["vol"] = {
                 "vix": v,
@@ -1806,66 +1887,141 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         except Exception as exc:
             out["vol"] = {"error": f"VIX series unavailable: {str(exc)[:120]}"}
 
-        # ---- derivatives: the live chain, when a source will give us one ----
-        try:
-            from shunkan.data.chains import get_chain
-            from shunkan.derivatives.chain import analyze_chain
+        # ---- derivatives positioning ---------------------------------------
+        if on_date is None:
+            try:
+                from shunkan.data.chains import get_chain
+                from shunkan.derivatives.chain import analyze_chain
+                from shunkan.markets import today_ist
 
-            c = get_chain(sym if sym in INDEX_ALIASES or sym in ("NIFTY", "BANKNIFTY")
-                          else sym)
-            a = analyze_chain(c)
-            out["positioning"] = {
-                "expiry": str(c.expiry), "source": c.source, "is_model": c.is_model,
-                "spot": c.spot, "pcr_oi": a.pcr_oi, "max_pain": a.max_pain,
-                "dist_to_max_pain_pct": (a.max_pain / c.spot - 1) * 100 if c.spot else None,
-                "support": a.support, "resistance": a.resistance,
-                "atm_iv_pct": a.atm_iv * 100 if a.atm_iv else None,
-                "straddle": a.straddle_price,
-                "implied_move_pct": a.expected_move_pct * 100,
-            }
-        except (DataError, ValueError) as exc:
-            out["positioning"] = {"error": str(exc)[:200],
-                                  "source_trail": list(getattr(exc, "source_trail", []))}
+                c = get_chain(sym)
+                a = analyze_chain(c)
+                out["positioning"] = {
+                    "expiry": str(c.expiry), "source": c.source, "is_model": c.is_model,
+                    "spot": c.spot, "pcr_oi": a.pcr_oi, "max_pain": a.max_pain,
+                    "dist_to_max_pain_pct": (a.max_pain / c.spot - 1) * 100 if c.spot else None,
+                    "support": a.support, "resistance": a.resistance,
+                    "atm_iv_pct": a.atm_iv * 100 if a.atm_iv else None,
+                    "straddle": a.straddle_price,
+                    "implied_move_pct": a.expected_move_pct * 100,
+                }
+                if str(c.expiry) == today_ist().isoformat():
+                    # Measured 2026-08-18: Monday's max pain 24,350 re-anchored
+                    # to 24,200 within the first hours and price never visited
+                    # the old level. Say it where the numbers are shown.
+                    out["positioning"]["expiry_today"] = True
+                    out["positioning"]["staleness_warning"] = (
+                        "expiry day: overnight OI maps expire at the open - "
+                        "walls re-form intraday; read the migration, not "
+                        "yesterday's levels")
+            except (DataError, ValueError) as exc:
+                out["positioning"] = {"error": str(exc)[:200],
+                                      "source_trail": list(getattr(exc, "source_trail", []))}
+        else:
+            try:
+                snap = ChainStore().last_snapshot_of_day(sym, on_date)
+                if snap is None or snap.empty:
+                    raise DataError(f"no chain snapshot captured on {on_date}")
+                front = snap[snap["expiry"] == snap["expiry"].min()]
+                out["positioning"] = positioning_from_snapshot(front)
+            except (DataError, ValueError) as exc:
+                out["positioning"] = {"error": str(exc)[:200]}
 
         # ---- participants: NSE's own who-did-what table ---------------------
         try:
-            part = latest_with_change()
+            part = (latest_with_change() if on_date is None
+                    else participants_asof(on_date))
             out["participants"] = part if part else {
-                "error": "fewer than two days captured; the change needs two "
-                         "observations and inventing one is not an option"}
+                "error": "fewer than two participant days on file for that date"}
         except Exception as exc:
             out["participants"] = {"error": str(exc)[:160]}
 
-        # ---- news: the existing intel layer, best effort --------------------
-        try:
-            from shunkan.intel import aggregate_bias
-            from shunkan.intel.feeds import fetch_news
+        # ---- news -----------------------------------------------------------
+        if on_date is None:
+            try:
+                from shunkan.intel import aggregate_bias
+                from shunkan.intel.feeds import fetch_news
 
-            items = fetch_news(limit=8)
-            bias = aggregate_bias(items)
-            out["news"] = {
-                "bias_score": getattr(bias, "score", None),
-                "bias_label": getattr(bias, "label", None),
-                "n_items": getattr(bias, "n_items", 0),
-                "headlines": [{"title": i.title, "source": getattr(i, "source", "")}
-                              for i in items[:5]],
-            }
-        except Exception as exc:
-            out["news"] = {"error": f"news unavailable: {str(exc)[:120]}"}
+                items = fetch_news(limit=8)
+                bias = aggregate_bias(items)
+                out["news"] = {
+                    "bias_score": getattr(bias, "score", None),
+                    "bias_label": getattr(bias, "label", None),
+                    "n_items": getattr(bias, "n_items", 0),
+                    "headlines": [{"title": i.title, "source": getattr(i, "source", "")}
+                                  for i in items[:5]],
+                }
+            except Exception as exc:
+                out["news"] = {"error": f"news unavailable: {str(exc)[:120]}"}
+        else:
+            try:
+                from shunkan.data.newsstore import _read_all
+
+                arch = _read_all()
+                if arch.empty:
+                    raise DataError("news archive empty")
+                arch["ts"] = pd.to_datetime(arch["ts"], utc=True, errors="coerce")
+                day_rows = arch[arch["ts"].dt.date == on_date]
+                out["news"] = {
+                    "bias_score": (float(day_rows["sentiment"].mean())
+                                   if len(day_rows) else None),
+                    "n_items": int(len(day_rows)),
+                    "headlines": [{"title": t, "source": s} for t, s in
+                                  zip(day_rows["title"].head(5), day_rows["source"].head(5))],
+                    "source": "news archive (as stored that day)",
+                }
+            except Exception as exc:
+                out["news"] = {"error": f"archive news unavailable: {str(exc)[:120]}"}
 
         out["prov"] = prov(
             "daily analysis",
-            {"sections": ", ".join(k for k in out if k not in ("symbol", "prov"))},
-            "local archive + live chain + NSE participant archive",
+            {"sections": ", ".join(k for k in out if k not in ("symbol", "prov")),
+             "mode": "live" if on_date is None else f"replay of {on_date}"},
+            "local archive + chain store + NSE participant archive",
             method="root first: underlying from the daily archive, VIX percentile "
-                   "from the 2008+ series, chain analytics from the live source, "
-                   "participant nets from NSE's published file, event base rates "
-                   "from non-overlapping shock studies with baselines",
-            caveat="facts and base rates only, no verdict by design - the base "
-                   "rates are unconditional history, not a forecast, and every "
+                   "from the 2008+ series, chain analytics from the live source "
+                   "(live) or the day's last captured snapshot (replay), "
+                   "participant nets from NSE's published file",
+            caveat="facts and base rates only, no verdict by design - every "
                    "section fails to a named reason rather than a filled box",
         )
-        return _clean(out)
+        return out
+
+    @app.get("/api/analysis/daily/{symbol}")
+    def analysis_daily(symbol: str, on: str | None = None):
+        """The daily analysis. `?on=YYYY-MM-DD` replays a past day: the
+        close-of-day JOURNAL when one was recorded (what the terminal
+        actually said), else a reconstruction from the stores, labelled.
+        """
+        from shunkan.analytics.daily import read_journal
+        from shunkan.markets import today_ist
+
+        sym = symbol.upper()
+        on_date = None
+        if on:
+            try:
+                on_date = datetime.strptime(on, "%Y-%m-%d").date()
+            except ValueError as exc:
+                raise HTTPException(400, f"on must be YYYY-MM-DD, got {on!r}") from exc
+            if on_date > today_ist():
+                raise HTTPException(400, f"{on_date} has not happened yet")
+            if on_date == today_ist():
+                on_date = None      # today = the live composition
+        if on_date is not None:
+            j = read_journal(sym, on_date)
+            if j is not None:
+                j["served_from"] = ("journal recorded "
+                                    + j.get("_journal", {}).get("recorded_at", "?"))
+                return _clean(j)
+        return _clean(_compose_daily(sym, on_date))
+
+    @app.get("/api/analysis/intraday/{symbol}")
+    def analysis_intraday(symbol: str):
+        """Today's max-pain / wall migration from the day's captured
+        snapshots. The T-1 map dies at the open; this is what replaces it."""
+        from shunkan.analytics.daily import intraday_migration
+
+        return _clean(intraday_migration(symbol.upper()))
 
     @app.get("/api/brief/{symbol}")
     def brief(symbol: str):
@@ -2935,18 +3091,26 @@ class TickHub:
         self._base: list[str] = []       # the watchlist as built, pre-dynamic
         self._senders: dict = {}         # ws -> (BusClient, drain task)
         self.bars = BarBuilder()         # live ticks -> 1-min bars -> parquet
+        # While True, the feed outlives its websocket clients: the keepalive
+        # loop holds it open through market hours so the 1-minute bar archive
+        # does not depend on somebody keeping a browser tab open. The
+        # recorder should not need an audience.
+        self.keepalive = False
+
+    async def ensure_feed(self) -> None:
+        if self.feed is not None:
+            return
+        from shunkan.stream.bus import TickBus
+        from shunkan.stream.factory import build_feed
+
+        feed = await asyncio.to_thread(build_feed, load_watchlist())
+        self.feed = feed
+        self._base = list(feed.names.values())
+        self.bus = TickBus(feed, self.loop)
+        feed.ticker.start(feed.tokens, self._on_ticks, mode="quote")
 
     async def attach(self, ws: WebSocket):
-        from shunkan.stream.bus import TickBus
-
-        if self.feed is None:
-            from shunkan.stream.factory import build_feed
-
-            feed = await asyncio.to_thread(build_feed, load_watchlist())
-            self.feed = feed
-            self._base = list(feed.names.values())
-            self.bus = TickBus(feed, self.loop)
-            feed.ticker.start(feed.tokens, self._on_ticks, mode="quote")
+        await self.ensure_feed()
         client = self.bus.add_client()
         # Every client starts with the watchlist — the boards and the tape
         # depend on it — and layers view subscriptions on top.
@@ -3007,7 +3171,7 @@ class TickHub:
             task.cancel()
             if self.bus is not None:
                 self.bus.remove_client(client)
-        if not self._senders:
+        if not self._senders and not self.keepalive:
             self.stop()
 
     def stop(self) -> None:
