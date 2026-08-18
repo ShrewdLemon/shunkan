@@ -1276,16 +1276,38 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             items = symbol_news(symbol, limit) if symbol else fetch_news(limit=limit)
         except Exception as exc:
             raise HTTPException(502, f"News fetch failed: {exc}") from exc
+        # Newest first, always. Google returns RELEVANCE order, and rendering
+        # it raw made the ages jump 28m -> 6h -> 2h down the page.
+        items = sorted(items, key=lambda i: (i.published is None,
+                                             -(i.published.timestamp() if i.published else 0)))
+        # Sector tags from NSE's own Industry column; a failed fetch degrades
+        # to untagged headlines, never to a broken news screen.
+        try:
+            from shunkan.data.constituents import (alias_table, industry_map,
+                                                   map_title, universe)
+
+            _uni = universe()
+            _aliases = alias_table(_uni)
+            _industry = industry_map(_uni)
+        except Exception:
+            _aliases, _industry = [], {}
         out = []
         for item in items:
             call = assess_impact(item)
             summary = summarize(item.description or "", max_sentences=1)
             detail = score_sentiment_detailed(f"{item.title}. {item.description}")
             comp = call.components
+            syms = map_title(item.title, _aliases) if _aliases else []
+            sectors = sorted({_industry[s] for s in syms if s in _industry})
             out.append(_clean({
                 "title": item.title, "source": item.source, "link": item.link,
                 "published": item.published.isoformat() if item.published else None,
                 "age_minutes": round(item.age_hours * 60.0, 1),
+                "symbols": syms,
+                # one sector per row: the first matched company's industry;
+                # cross-sector stories land under the first and name the rest
+                "sector": sectors[0] if sectors else "",
+                "sectors_all": sectors,
                 "sentiment": item.sentiment,
                 "sentiment_label": sentiment_label(item.sentiment),
                 "summary": summary,

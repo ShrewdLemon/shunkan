@@ -72,6 +72,7 @@ class Constituent:
     symbol: str
     name: str            # full name as NSE publishes it
     indices: tuple[str, ...]
+    industry: str = ""   # NSE's own Industry column; sector grouping for news
 
 
 def _clean_name(name: str) -> str:
@@ -87,7 +88,10 @@ def parse_constituents_csv(text: str, index_name: str) -> list[Constituent]:
         raise DataError(f"constituent CSV for {index_name} missing {need - set(df.columns)}")
     return [Constituent(symbol=str(r["Symbol"]).strip().upper(),
                         name=str(r["Company Name"]).strip(),
-                        indices=(index_name,))
+                        indices=(index_name,),
+                        industry=(str(r["Industry"]).strip()
+                                  if "Industry" in df.columns
+                                  and not pd.isna(r.get("Industry")) else ""))
             for _, r in df.iterrows()]
 
 
@@ -121,7 +125,8 @@ def universe(indices: tuple[str, ...] = ("NIFTY50", "BANKNIFTY")) -> list[Consti
         for c in fetch_constituents(idx):
             prev = by_sym.get(c.symbol)
             merged = tuple(sorted(set((prev.indices if prev else ()) + c.indices)))
-            by_sym[c.symbol] = Constituent(c.symbol, c.name, merged)
+            industry = c.industry or (prev.industry if prev else "")
+            by_sym[c.symbol] = Constituent(c.symbol, c.name, merged, industry)
     return sorted(by_sym.values(), key=lambda c: c.symbol)
 
 
@@ -159,3 +164,8 @@ def map_title(title: str, aliases: list[tuple[str, str]]) -> list[str]:
         if re.search(pat, low):
             hits.append(sym)
     return hits
+
+
+def industry_map(constituents: list[Constituent]) -> dict[str, str]:
+    """symbol -> NSE Industry, for grouping tagged headlines by sector."""
+    return {c.symbol: c.industry for c in constituents if c.industry}

@@ -66,9 +66,10 @@ const fmt = {
   },
   age: (mins) => {
     if (mins === null || mins === undefined) return "";
-    if (mins < 60) return `${Math.round(mins)}m`;
-    if (mins < 60 * 24) return `${(mins / 60).toFixed(1)}h`;
-    return `${Math.round(mins / 1440)}d`;
+    const m = Math.round(mins);
+    if (m < 60) return `${m}m`;
+    if (m < 60 * 24) return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+    return `${Math.floor(m / 1440)}d${Math.floor((m % 1440) / 60)}h`;
   },
   // Accepts a Date or an epoch millis. lastTickAt is a number so that
   // staleness is a plain subtraction; every other caller passes a Date.
@@ -1797,10 +1798,37 @@ async function renderNews(view, params) {
           <span class="faint" style="font-size:10px">${b.n_items} items · recency-decayed (6h half-life)</span>
           ${b.gap_call ? `<span class="badge amb">${b.gap_call.toUpperCase()}</span>` : ""}
         </div>
-        ${n.items.map((it) => {
-          const sb = it.sentiment_label.includes("bullish") ? "bull" :
-                     it.sentiment_label.includes("bearish") ? "bear" : "";
-          return `<div class="news-row">
+        ${(() => {
+          // Sector blocks, NSE's own Industry taxonomy. Sections rank by
+          // their freshest item; untagged macro/market stories lead as
+          // MARKETS / MACRO. Inside a section, time descending — the whole
+          // payload is already newest-first from the server.
+          const groups = new Map();
+          for (const it of n.items) {
+            const key = it.sector || "MARKETS / MACRO";
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(it);
+          }
+          const freshest = (g) => Math.min(...g.map((x) => x.age_minutes ?? 1e9));
+          return [...groups.entries()]
+            .sort((a, b) => freshest(a[1]) - freshest(b[1]))
+            .map(([sect, rows]) => `
+              <div class="news-sect">${esc(sect.toUpperCase())} <span class="faint">· ${rows.length}</span></div>
+              ${rows.map((it) => newsRow(it)).join("")}`).join("");
+        })()}`;
+    } catch (e) {
+      const host = $("#news-panel .panel-body");
+      if (host) host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  };
+  draw();
+  addTimer("news:refresh", draw, 60000);
+}
+
+function newsRow(it) {
+  const sb = it.sentiment_label.includes("bullish") ? "bull" :
+             it.sentiment_label.includes("bearish") ? "bear" : "";
+  return `<div class="news-row">
             <div class="n-line1">
               <span class="n-age">${fmt.age(it.age_minutes)}</span>
               <span class="n-title">${it.link ? `<a href="${it.link}" target="_blank" rel="noopener">${it.title}</a>` : it.title}</span>
@@ -1814,14 +1842,6 @@ async function renderNews(view, params) {
               ${(it.impact.confidence * 100).toFixed(0)}% conf${iM((it.prov || {}).confidence, "IMPACT CONFIDENCE")} · ${it.impact.magnitude} · ${it.impact.horizon} · ${it.impact.segment}
               ${it.summary ? `<span class="why"> — ${it.summary}</span>` : ""}</div>
           </div>`;
-        }).join("")}`;
-    } catch (e) {
-      const host = $("#news-panel .panel-body");
-      if (host) host.innerHTML = `<div class="empty">${e.message}</div>`;
-    }
-  };
-  draw();
-  addTimer("news:draw", draw, 60000);
 }
 
 /* ---------- BACKTEST LAB ---------- */
