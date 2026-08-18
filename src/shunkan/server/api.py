@@ -2210,6 +2210,14 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
         return _clean(oi_multistrike(symbol.upper()))
 
+    @app.get("/api/option_path/{symbol}")
+    def option_path_endpoint(symbol: str, strike: float):
+        """One strike's CE/PE premium path through today - the live options
+        chart, from the snapshot store."""
+        from shunkan.analytics.daily import option_path
+
+        return _clean(option_path(symbol.upper(), strike))
+
     @app.get("/api/straddle/{symbol}")
     def straddle_endpoint(symbol: str):
         """Today's ATM straddle/strangle premium path, front expiry."""
