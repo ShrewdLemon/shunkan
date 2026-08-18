@@ -454,6 +454,20 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                         hub.keepalive = True
                         keepalive_status["active"] = True
                         await hub.ensure_feed()
+                        # Self-healing: a startup race can build the feed
+                        # without its front futures; repair every cycle and
+                        # say the outcome where /api/status can see it.
+                        try:
+                            from shunkan.stream.factory import ensure_front_futures
+
+                            labels = await asyncio.to_thread(
+                                ensure_front_futures, hub.feed)
+                            for lab in labels:
+                                if lab not in hub._base:
+                                    hub._base.append(lab)
+                            keepalive_status["futures"] = ",".join(labels) or "none"
+                        except Exception as exc:
+                            keepalive_status["futures"] = f"repair failed: {str(exc)[:120]}"
                     else:
                         hub.keepalive = False
                         keepalive_status["active"] = False

@@ -944,7 +944,9 @@ async function loadChart() {
   if (!host) return;
   const sym = state.symbol;
   const q = `period=${state.chartPeriod}&interval=${state.chartInterval}`;
-  host.innerHTML = loading("candles");
+  // Named, because a typo'd symbol spins for ~5s before the provider gives
+  // up - the wait should at least say what it is waiting for.
+  host.innerHTML = loading(`${esc(sym)} ${state.chartInterval} candles`);
   try {
     const specs = state.chartIndicators.join(",");
     const [data, ind] = await Promise.all([
@@ -3670,9 +3672,15 @@ async function loadDaily() {
     const ch = d.chart || {}, vol = d.vol || {}, pos = d.positioning || {};
     const parts = d.participants || {}, ev = d.events || {}, news = d.news || {};
 
+    const sessionLive = d.as_of
+      && Date.parse(d.as_of + "T15:30:00+05:30") > Date.now()
+      && (d.served_from || "live") === "live";
     const chartBody = ch.error ? secErr(ch) : `
       ${metricsStrip([
-        ["CLOSE", fmt.n(ch.close), ""],
+        // While the session runs this number is the LAST print of an
+        // evolving candle; calling it CLOSE would claim a bell that has
+        // not rung.
+        [sessionLive ? "LAST" : "CLOSE", fmt.n(ch.close), ""],
         ["DAY", fmt.pct(ch.chg_pct / 100), cls(ch.chg_pct)],
         ["GAP", fmt.pct(ch.gap_pct / 100), cls(ch.gap_pct)],
         ["INTRADAY", fmt.pct(ch.intraday_pct / 100), cls(ch.intraday_pct)],

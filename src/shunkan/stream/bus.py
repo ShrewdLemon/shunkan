@@ -135,6 +135,14 @@ class TickBus:
     def _resolve(self, sym: str) -> int | None:
         if sym in self._token_of:
             return self._token_of[sym]
+        # A symbol the feed already streams resolves by identity - the front
+        # futures ride in feed.names without existing in the cash resolver,
+        # and asking the resolver about them marked them unknown while their
+        # ticks flowed past unrouted.
+        for token, name in self.feed.names.items():
+            if name == sym:
+                self._token_of[sym] = token
+                return token
         hit = self.feed.resolve(sym)
         if hit is None:
             return None

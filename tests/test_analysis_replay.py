@@ -149,3 +149,24 @@ def client():
 
     with TestClient(create_app()) as c:
         yield c
+
+
+def test_vwap_falls_back_to_the_front_future_and_says_so(tmp_path):
+    from shunkan.store import BarBuilder, TickStore
+
+    bb = BarBuilder()
+    t0 = 1_700_000_000
+    # the index prints no volume...
+    bb.on_tick("NIFTY", 24200.0, 0.0, ts=t0)
+    bb.on_tick("NIFTY", 24210.0, 0.0, ts=t0 + 61)
+    bb.on_tick("NIFTY", 24205.0, 0.0, ts=t0 + 122)
+    # ...but its front future does
+    bb.on_tick("NIFTYFUT", 24250.0, 1000.0, ts=t0)
+    bb.on_tick("NIFTYFUT", 24260.0, 5000.0, ts=t0 + 30)
+    bb.on_tick("NIFTYFUT", 24255.0, 6000.0, ts=t0 + 61)
+    bb.on_tick("NIFTYFUT", 24270.0, 7000.0, ts=t0 + 90)
+    bb.on_tick("NIFTYFUT", 24280.0, 8000.0, ts=t0 + 122)
+    TickStore(root=tmp_path).write_bars(bb.drain())
+    val, note = vwap_today("NIFTY", root=tmp_path)
+    assert val is not None
+    assert "front future" in note and "NIFTYFUT" in note

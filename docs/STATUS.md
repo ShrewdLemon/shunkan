@@ -218,6 +218,18 @@ smile got poisoned once already. Related: one 2026-08-10 snapshot with an
 honestly-recorded NaN spot was crashing every reader that walked the
 history (all-NA idxmin); readers now skip such days by design.
 
+## Front-future tape (2026-08-18 afternoon)
+
+The watchlist feed now streams the front NIFTY/BANKNIFTY futures beside the
+cash names. Their tape carries the volume the index never prints, which is
+what makes VWAP and any day-structure read real: the daily analysis reports
+the front future's VWAP with a note saying whose number it is. The feed
+self-heals: a startup race once built a feed without its futures and nothing
+said so - the keepalive loop now repairs every cycle and reports the outcome
+in /api/status under feed_keepalive.futures. Bus routing resolves symbols
+the feed already streams by identity, so NIFTYFUT is subscribable even
+though no cash resolver knows it.
+
 ## Research findings
 
 **News-reaction study (2026-08-18).** First study off the news archive, 51
