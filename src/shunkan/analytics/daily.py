@@ -196,20 +196,36 @@ def participants_asof(on: date, root=None) -> dict | None:
 # ---- VWAP ------------------------------------------------------------------
 
 
-def vwap_today(symbol: str, root=None) -> tuple[float | None, str]:
-    """Volume-weighted average of today's locally captured 1-min bars.
-
-    Indices print no volume, so their VWAP is refused with the reason - the
-    honest read there needs the future's tape, which is not streamed yet."""
-    from shunkan.store import TickStore
-
-    df = TickStore(root=root).read_bars(symbol.upper()) if root else \
-        TickStore().read_bars(symbol.upper())
-    if df is None or df.empty:
-        return None, "no locally captured bars today"
+def _vwap_of_bars(df) -> float | None:
     vol = df["volume"].to_numpy(dtype=float)
     px = df["close"].to_numpy(dtype=float)
     if vol.sum() <= 0:
-        return None, ("bars carry zero volume (index tape); VWAP needs the "
-                      "future's prints, which are not streamed yet")
-    return float((px * vol).sum() / vol.sum()), f"{len(df)} one-minute bars"
+        return None
+    return float((px * vol).sum() / vol.sum())
+
+
+def vwap_today(symbol: str, root=None) -> tuple[float | None, str]:
+    """Volume-weighted average of today's locally captured 1-min bars.
+
+    Indices print no volume tick by tick, so for them the read falls back to
+    the FRONT FUTURE's tape (streamed as e.g. NIFTYFUT), and the note says
+    exactly whose VWAP it is. No usable tape anywhere: refused by name."""
+    from shunkan.store import TickStore
+
+    store = TickStore(root=root) if root else TickStore()
+    sym = symbol.upper()
+    df = store.read_bars(sym)
+    if df is not None and not df.empty:
+        v = _vwap_of_bars(df)
+        if v is not None:
+            return v, f"{len(df)} one-minute bars"
+    fut = store.read_bars(f"{sym}FUT")
+    if fut is not None and not fut.empty:
+        v = _vwap_of_bars(fut)
+        if v is not None:
+            return v, (f"front future ({sym}FUT), {len(fut)} one-minute bars - "
+                       "the index itself prints no volume")
+    if df is None or df.empty:
+        return None, "no locally captured bars today"
+    return None, ("bars carry zero volume (index tape) and no front-future "
+                  "tape is on disk yet for today")

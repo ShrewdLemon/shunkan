@@ -105,3 +105,65 @@ def test_kite_ticker_bookkeeping_without_network():
     assert k._tokens == {10, 11, 12}
     k.unsubscribe([11, 99])       # 99 never subscribed: harmless
     assert k._tokens == {10, 12}
+
+
+def test_front_future_rows_picks_nearest_unexpired():
+    import pandas as pd
+
+    from datetime import date
+    from shunkan.stream.factory import front_future_rows
+
+    nfo = pd.DataFrame({
+        "name": ["NIFTY", "NIFTY", "NIFTY", "BANKNIFTY", "FINNIFTY"],
+        "instrument_type": ["FUT", "FUT", "CE", "FUT", "FUT"],
+        "expiry": ["2026-08-25", "2026-09-29", "2026-08-25", "2026-08-25", "2026-08-25"],
+        "instrument_token": [111, 222, 333, 444, 555],
+    })
+    rows = front_future_rows(nfo, ("NIFTY", "BANKNIFTY"), date(2026, 8, 18))
+    assert rows == [(111, "NIFTYFUT"), (444, "BANKNIFTYFUT")]
+    # after the August future expires, September takes over - no dead token
+    rows = front_future_rows(nfo, ("NIFTY",), date(2026, 8, 26))
+    assert rows == [(222, "NIFTYFUT")]
+
+
+def test_ensure_front_futures_repairs_a_running_feed(monkeypatch):
+    import pandas as pd
+
+    from shunkan.stream import factory as F
+
+    tk = FakeTicker()
+    feed = F.Feed(ticker=tk, tokens=[1], names={1: "NIFTY"}, live=True)
+    nfo = pd.DataFrame({
+        "name": ["NIFTY", "BANKNIFTY"], "instrument_type": ["FUT", "FUT"],
+        "expiry": ["2099-01-27", "2099-01-27"],
+        "instrument_token": [111, 222],
+    })
+    monkeypatch.setattr("shunkan.data.brokers.get_broker", lambda: object())
+    monkeypatch.setattr("shunkan.data.kite_fno.load_instruments",
+                        lambda broker, ex: nfo)
+    labels = F.ensure_front_futures(feed)
+    assert sorted(labels) == ["BANKNIFTYFUT", "NIFTYFUT"]
+    assert tk.subs == [[111, 222]]              # subscribed onto the RUNNING ticker
+    assert feed.names[111] == "NIFTYFUT"
+    # second call: nothing to do, nothing re-subscribed
+    assert sorted(F.ensure_front_futures(feed)) == ["BANKNIFTYFUT", "NIFTYFUT"]
+    assert tk.subs == [[111, 222]]
+    # a demo feed is left alone
+    demo = F.Feed(ticker=FakeTicker(), tokens=[], names={}, live=False)
+    assert F.ensure_front_futures(demo) == []
+
+
+def test_symbols_already_in_the_feed_resolve_by_identity():
+    async def main():
+        tk = FakeTicker()
+        # NIFTYFUT streams (in names) but the resolver knows nothing of it
+        feed = Feed(ticker=tk, tokens=[1, 9], names={1: "NIFTY", 9: "NIFTYFUT"},
+                    live=True, resolve=lambda s: KNOWN.get(s))
+        bus = TickBus(feed, asyncio.get_running_loop())
+        c = bus.add_client()
+        ok, unknown = bus.subscribe(c, ["NIFTYFUT"])
+        assert ok == ["NIFTYFUT"] and unknown == []
+        bus.dispatch([FakeTick(9, 24250.0)])
+        assert [r["symbol"] for r in c.queue.get_nowait()["data"]] == ["NIFTYFUT"]
+
+    run(main())
