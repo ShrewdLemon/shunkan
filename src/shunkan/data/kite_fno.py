@@ -20,6 +20,7 @@ import pandas as pd
 from shunkan.config import CACHE_DIR, ensure_dirs
 from shunkan.data.brokers import KiteProvider
 from shunkan.data.memcache import ttl_cache
+from shunkan.data.contract_specs import kite_order_quantity
 from shunkan.data.provider import DataError, is_offline
 from shunkan.derivatives.chain import OptionChain
 from shunkan.derivatives.synthetic import STRIKE_STEPS
@@ -508,6 +509,15 @@ def basket_margin(kite: KiteProvider, legs: list[dict]) -> dict:
         if ts is None:
             unpriceable.append(inst.label)
             continue
+        # The book stores ECONOMIC units everywhere so rupee math is uniform;
+        # Kite wants units on NFO/BFO but LOTS on MCX/CDS. This boundary is
+        # where the convention flips back, or the SPAN quantity would be
+        # wrong by the contract multiplier on commodity/currency legs.
+        try:
+            qty = kite_order_quantity(inst, leg["quantity"])
+        except ValueError as exc:
+            unpriceable.append(f"{inst.label} ({exc})")
+            continue
         orders.append({
             "exchange": inst.exchange,
             "tradingsymbol": ts,
@@ -515,7 +525,7 @@ def basket_margin(kite: KiteProvider, legs: list[dict]) -> dict:
             "variety": "regular",
             "product": "NRML" if inst.derivative else "CNC",
             "order_type": "MARKET",
-            "quantity": int(abs(leg["quantity"])),
+            "quantity": qty,
         })
     if not orders:
         raise DataError(f"nothing priceable in the basket ({', '.join(unpriceable) or 'empty'})")

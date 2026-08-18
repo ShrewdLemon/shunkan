@@ -60,9 +60,14 @@ Things with real test coverage that have been verified against a live broker.
   book goes flat, and the journal row carries the settlement flag.
 - **Screener auto refresh.** Verified in a browser: query runs, 20 rows, the
   keyed 5-minute timer registers, header says AUTO 5m.
-- **MCX, BFO, CDS.** The instrument model and margin lookup are venue aware and
-  unit tested, but only NFO has been exercised against the live API. Commodity
-  and BSE paths are code correct and unproven.
+- **MCX, BFO, CDS.** All venues exercised against the live API. BFO verified
+  earlier (SPAN 169,620 for 1 lot short SENSEX CE). MCX/CDS rupee math went
+  live 2026-08-18: economic multipliers sourced per contract
+  (`shunkan/data/contract_specs.py`), each verified against Kite's SPAN
+  calculator (GOLD 1 lot = 9.28% of the 1.55 crore contract value; the
+  big/mini contract pairs agree to basis points, which is the multiplier
+  proof). The book stores economic units everywhere; the Kite boundary
+  converts back to lots for order-in-lots venues.
 
 ## Known rough edges
 
@@ -153,9 +158,11 @@ Things with real test coverage that have been verified against a live broker.
   must treat the store as read-only while the container runs; anything that
   calls get_chain from the host writes through _capture and races the 60s
   loop. Live-verified MCX/BFO/CDS this session; found lot_size=1 on MCX/CDS
-  (Kite's order-in-lots convention, not the economic multiplier), so rupee
-  math on those venues is blocked until multipliers are sourced. BFO is fully
-  verified including SPAN margin (169,620 for 1 lot short SENSEX CE).
+  (Kite's order-in-lots convention, not the economic multiplier). UNBLOCKED
+  2026-08-18: multipliers sourced and SPAN-verified for 14 MCX + 4 CDS
+  contracts — see contract_specs.py, which carries the verification numbers
+  with the table. NICKEL is 250 kg now, not the stale 1500. Names outside
+  the table still refuse with the reason spelled out.
 
 ## News archive
 
