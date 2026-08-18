@@ -2,6 +2,8 @@
 
 from datetime import date, timedelta
 
+import time
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -165,6 +167,22 @@ def test_iv_rank_refuses_insufficient_history(tmp_path):
     assert rank["days_captured"] == 5
     assert rank["days_required"] == MIN_IV_RANK_DAYS
     assert "rank" not in rank  # no fabricated number, ever
+
+
+def test_atm_iv_intraday_one_point_per_snapshot(tmp_path):
+    """Multiple captures in a day become a path; a NaN-spot capture is
+    absent from it, never interpolated."""
+    from shunkan.store.store import atm_iv_intraday
+
+    cs = ChainStore(root=tmp_path)
+    c = _real_chain()
+    cs.snapshot(c)
+    time.sleep(1.1)          # ts has second resolution; force a distinct one
+    cs.snapshot(c)
+    pts = atm_iv_intraday("NIFTY", root=tmp_path)
+    assert len(pts) == 2
+    assert all(p["iv"] > 0 for p in pts)
+    assert pts[0]["ts"] < pts[1]["ts"]
 
 
 def test_iv_history_skips_nan_spot_snapshot(tmp_path):

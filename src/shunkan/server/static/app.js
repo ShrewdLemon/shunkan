@@ -1635,7 +1635,13 @@ async function renderIV(view) {
         <div class="kv"><div class="k">IV RANK LOCAL${iM(pv.iv_rank_local, "IV RANK (LOCAL)")}</div>${rankCell}</div>
       </div>
       <div class="row cols-main-side" style="padding:10px 12px">
-        <div><canvas class="plot" id="iv-canvas"></canvas></div>
+        <div>
+          <canvas class="plot" id="iv-canvas"></canvas>
+          <div class="panel-title" style="margin:9px 0 5px">ATM IV TODAY <span class="faint">CAPTURED 60s</span></div>
+          ${r.intraday && r.intraday.length > 1
+            ? `<canvas class="plot" id="iv-intraday" style="height:90px"></canvas>`
+            : `<div class="empty" style="padding:4px 2px">no captured IV path yet today — the 60s capture fills this while a session is open with a live token</div>`}
+        </div>
         <div>
           <div class="panel-title" style="margin-bottom:7px">EXPECTED MOVE ±1σ/±2σ${iM(pv.cone, "EXPECTED-MOVE CONE")}</div>
           <table class="tbl"><thead><tr><th>HORIZON</th><th>-2σ</th><th>-1σ</th><th>+1σ</th><th>+2σ</th></tr></thead>
@@ -1657,6 +1663,13 @@ async function renderIV(view) {
           return { what, why: why.join(" — ") };
         }),
       ])}`;
+    if (r.intraday && r.intraday.length > 1) {
+      linePlot($("#iv-intraday"), [
+        { points: r.intraday.map((p) => ({ x: Date.parse(p.ts), y: p.iv * 100 })),
+          color: "#f0a826", width: 1.4 },
+      ], { height: 90, fmtY: (v) => v.toFixed(1) + "%",
+           fmtX: (v) => fmt.ist(new Date(v)) });
+    }
     linePlot($("#iv-canvas"), [
       { points: r.smile.map((s) => ({ x: s.strike, y: s.call_iv ? s.call_iv * 100 : null })), color: "#58a6ff", width: 1.6 },
       { points: r.smile.map((s) => ({ x: s.strike, y: s.put_iv ? s.put_iv * 100 : null })), color: "#f0a826", width: 1.6 },
