@@ -656,7 +656,19 @@ async function renderPulse(view) {
 
 let CHART_CAT = null;            // /api/chart/catalog, fetched once
 const CHART_INTERVALS = ["1m", "5m", "15m", "1h", "1d"];
-const CHART_PERIODS = ["1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"];
+const CHART_PERIODS = ["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"];
+// Providers cap how far back each intraday interval reaches (Yahoo: ~7d of
+// 1m, ~60d of 5m/15m, ~2y of 1h). A restored 5m config next to a 6mo period
+// asked for data nobody serves and the chart opened onto an error. Clamp the
+// period to the interval's reach instead of letting the combo fail.
+const INTERVAL_MAX_PERIOD = { "1m": "5d", "5m": "1mo", "15m": "1mo", "1h": "1y" };
+function clampChartSpan() {
+  const cap = INTERVAL_MAX_PERIOD[state.chartInterval];
+  if (!cap) return;
+  if (CHART_PERIODS.indexOf(state.chartPeriod) > CHART_PERIODS.indexOf(cap)) {
+    state.chartPeriod = cap;
+  }
+}
 
 function _dropChart(ch) {
   if (!ch) return;
@@ -683,6 +695,7 @@ async function renderChart(view) {
     if (Array.isArray(cfg.indicators)) state.chartIndicators = cfg.indicators;
     state.chartDrawings = Array.isArray(cfg.drawings) ? cfg.drawings : [];
   } catch { state.chartDrawings = []; }
+  clampChartSpan();
 
   view.innerHTML = panel({
     title: `CHART — <span class="hl">${sym}</span>`, id: "chart-panel", flush: true,
@@ -846,7 +859,11 @@ function wireChartControls() {
   };
   $("#chart-sym").onkeydown = (e) => { if (e.key === "Enter") $("#chart-go").click(); };
   $("#chart-interval").onchange = () => {
-    state.chartInterval = $("#chart-interval").value; saveChartConfig(); loadChart();
+    state.chartInterval = $("#chart-interval").value;
+    clampChartSpan();
+    const per = $("#chart-period");
+    if (per && per.value !== state.chartPeriod) per.value = state.chartPeriod;
+    saveChartConfig(); loadChart();
   };
   $("#chart-period").onchange = () => {
     state.chartPeriod = $("#chart-period").value; loadChart();
@@ -3717,7 +3734,13 @@ async function loadDaily() {
 
     const sec = (title, body) => panel({ title, flush: true, meta: "", body });
     host.innerHTML = `
-      <div class="empty" style="padding:4px 2px">${ageStamp(d.as_of ? d.as_of + "T15:30:00+05:30" : null)}
+      <div class="empty" style="padding:4px 2px">${(() => {
+        if (!d.as_of) return ageStamp(null);
+        const close = d.as_of + "T15:30:00+05:30";
+        return Date.parse(close) > Date.now()
+          ? `<span class="age" title="today's session has not closed; sections read live and archive data">AS OF ${d.as_of} · SESSION LIVE</span>`
+          : ageStamp(close);
+      })()}
         <span class="faint">· root → derivatives · every section fails to a named reason, never a filled box</span></div>
       <div style="display:grid;gap:6px">
         ${sec("CHART — THE UNDERLYING", chartBody)}
