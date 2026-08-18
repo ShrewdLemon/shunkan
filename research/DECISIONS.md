@@ -199,3 +199,28 @@ settling-series harvest after the close plus the day's 60s chain capture.
 infrastructure is to let it record. Every future expiry gets a settlement
 row; when there are ~10, the 0-DTE decay question becomes testable
 instead of folklore.
+
+## 2026-08-18 — participant-positioning screen: the folklore is dead (1yr)
+
+Pre-registered in `research/participant_signal.py`: does day t's change in
+FII/Client/DII/Pro direction-sign net exposure (futures and options
+separately, 8 series) predict NIFTY traded honestly at the next open
+(open t+1 → open t+2)? 255 published days, 2025-08 → 2026-08.
+
+Result: nothing. Every sign-read spread |t| ≤ 1.3; no quartile
+monotonicity anywhere (zigzags, not gradients); the FII futures sign
+points the WRONG way for the folklore (−9.1bp after "FII added bullish").
+"FII bought index futures today" carried zero next-day information this
+year at daily horizon. Every market wrap implying otherwise is narrating
+noise — which is what it looked like from the start, but now it is a
+number in a log and not an opinion.
+
+Depth check queued: the NSE archive serves years back; a 4-year pull into
+a research-local root (single-writer rule: the container owns the live
+participant store) will either make this negative definitive or resurrect
+a subtler read. Screen counted ~16 looks; anything later built from a
+"survivor" here owes DSR that number.
+
+**Decision: NO TRADE, and stop treating participant CHANGE as a daily
+directional input in the analysis panel's verdict — it stays displayed as
+positioning fact, which is what it is.**
