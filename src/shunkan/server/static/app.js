@@ -655,7 +655,7 @@ async function renderPulse(view) {
 /* ---------- CHART ---------- */
 
 let CHART_CAT = null;            // /api/chart/catalog, fetched once
-const CHART_INTERVALS = ["1m", "5m", "15m", "1h", "1d"];
+const CHART_INTERVALS = ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"];
 const CHART_PERIODS = ["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"];
 // Providers cap how far back each intraday interval reaches (Yahoo: ~7d of
 // 1m, ~60d of 5m/15m, ~2y of 1h). A restored 5m config next to a 6mo period
@@ -663,6 +663,13 @@ const CHART_PERIODS = ["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"];
 // period to the interval's reach instead of letting the combo fail.
 const INTERVAL_MAX_PERIOD = { "1m": "5d", "5m": "1mo", "15m": "1mo", "1h": "1y" };
 function clampChartSpan() {
+  // Coarse candles with a short window is a handful of bars pretending to
+  // be a chart: floor weekly at 1y and monthly at 5y.
+  const FLOOR = { "1wk": "1y", "1mo": "5y" };
+  const floor = FLOOR[state.chartInterval];
+  if (floor && CHART_PERIODS.indexOf(state.chartPeriod) < CHART_PERIODS.indexOf(floor)) {
+    state.chartPeriod = floor;
+  }
   const cap = INTERVAL_MAX_PERIOD[state.chartInterval];
   if (!cap) return;
   if (CHART_PERIODS.indexOf(state.chartPeriod) > CHART_PERIODS.indexOf(cap)) {
