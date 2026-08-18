@@ -377,6 +377,7 @@ const VIEWS = [
   { id: "tape",      code: "TPE", label: "Tape" },
   { id: "screener",  code: "SCR", label: "Screen" },
   { id: "signals",   code: "SIG", label: "Signals" },
+  { id: "fiidii",    code: "FII", label: "FII/DII" },
   { id: "portfolio", code: "PRT", label: "Folio" },
   { id: "alerts",    code: "ALR", label: "Alerts" },
   { id: "datastore", code: "DTA", label: "Store" },
@@ -2357,6 +2358,82 @@ function drawTape() {
 
 /* ---------- SCREENER ---------- */
 
+/* ---------- FII / DII (FII) ----------
+   NSE's participant-wise positioning through time. Levels are structural
+   (FII is net short index futures permanently - it hedges), the CHANGE is
+   the read, and the 4-year screen found no next-day edge in either. This
+   screen shows who is positioned where; it does not pretend to predict. */
+
+const FII_COLORS = { FII: "#f0a826", Client: "#58a6ff", DII: "#3fb950", Pro: "#bc8cff" };
+let fiiMode = "idx_fut_net";
+let fiiWho = { FII: true, Client: true, DII: false, Pro: false };
+
+async function renderFiiDii(view) {
+  view.innerHTML = panel({
+    title: "FII / DII — PARTICIPANT-WISE POSITIONING (NSE'S OWN FILE)",
+    id: "fii-panel", flush: true,
+    meta: `<span class="controls">
+      <button class="btn fii-m" data-m="idx_fut_net">INDEX FUTURES</button>
+      <button class="btn fii-m" data-m="idx_opt_net">INDEX OPTIONS</button>
+      ${Object.keys(FII_COLORS).map((w) =>
+        `<button class="btn fii-w" data-w="${w}" style="border-color:${FII_COLORS[w]}">${w}</button>`).join("")}
+    </span> <span id="fii-upd">…</span>`,
+    body: loading("reading the archive"),
+  });
+  const draw = async () => {
+    try {
+      const d = await getJSON("/api/participants?days=750");
+      const host = $("#fii-panel .panel-body");
+      if (!host) return;
+      $("#fii-upd").innerHTML = stamp(`${d.days_on_disk} DAYS ON DISK`)
+        + " " + ageStamp(d.as_of + "T18:00:00+05:30");
+      const latest = d.latest || {};
+      host.innerHTML = `
+        <div style="padding:10px 12px"><canvas class="plot" id="fii-chart"></canvas></div>
+        <div class="empty" style="padding:2px 12px">net contracts, direction-sign convention (long calls + short puts = bullish) ·
+          window ${d.window_days} sessions</div>
+        <table class="tbl"><thead><tr><th class="txt">WHO</th>
+          <th>IDX FUT NET</th><th>Δ1D</th><th>IDX OPT NET</th><th>Δ1D</th><th class="txt">READ</th>
+        </tr></thead><tbody>
+          ${Object.entries(latest.by_participant || {}).map(([who, r]) => `<tr>
+            <td class="txt sym" style="color:${FII_COLORS[who] || "inherit"}">${esc(who)}</td>
+            <td class="${cls(r.idx_fut_net)}">${fmt.n(r.idx_fut_net, 0)}</td>
+            <td class="${cls(r.idx_fut_net_chg)}">${r.idx_fut_net_chg == null ? "—" : fmt.n(r.idx_fut_net_chg, 0)}</td>
+            <td class="${cls(r.idx_opt_net)}">${fmt.n(r.idx_opt_net, 0)}</td>
+            <td class="${cls(r.idx_opt_net_chg)}">${r.idx_opt_net_chg == null ? "—" : fmt.n(r.idx_opt_net_chg, 0)}</td>
+            <td class="txt ${r.read === "added bullish exposure" ? "up" : r.read === "added bearish exposure" ? "down" : "faint"}">${esc(r.read || "")}</td>
+          </tr>`).join("")}
+        </tbody></table>
+        <div class="empty" style="padding:6px 12px"><span class="faint">${esc(d.caveat)}</span></div>`;
+      const seriesList = Object.entries(d.series)
+        .filter(([who]) => fiiWho[who])
+        .map(([who, sr]) => ({
+          points: sr.dates.map((dt, i) => ({ x: Date.parse(dt), y: sr[fiiMode][i] })),
+          color: FII_COLORS[who] || "#8b949e", width: 1.5,
+        }));
+      if (seriesList.length) {
+        linePlot($("#fii-chart"), seriesList, {
+          height: 240, fmtY: (v) => fmt.compact(v),
+          fmtX: (v) => new Date(v).toISOString().slice(5, 10),
+        });
+      }
+      view.querySelectorAll(".fii-m").forEach((b) => {
+        b.classList.toggle("active", b.dataset.m === fiiMode);
+        b.onclick = () => { fiiMode = b.dataset.m; draw(); };
+      });
+      view.querySelectorAll(".fii-w").forEach((b) => {
+        b.style.opacity = fiiWho[b.dataset.w] ? "1" : "0.4";
+        b.onclick = () => { fiiWho[b.dataset.w] = !fiiWho[b.dataset.w]; draw(); };
+      });
+    } catch (e) {
+      const host = $("#fii-panel .panel-body");
+      if (host) host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  };
+  draw();
+  addTimer("fiidii:refresh", draw, 600000);
+}
+
 /* ---------- TECHNICAL SIGNALS (SIG) ----------
    The signal feed every charting site has, minus the part they all skip:
    next to each pattern, that symbol's own measured record - n, forward
@@ -4019,7 +4096,7 @@ const RENDER = {
   pulse: renderPulse, chart: renderChart, chain: renderChain, payoff: renderPayoff,
   iv: renderIV, volume: renderVolume, news: renderNews, backtest: renderBacktest,
   tape: renderTape, screener: renderScreener, signals: renderSignals,
-  portfolio: renderPortfolio, alerts: renderAlerts,
+  fiidii: renderFiiDii, portfolio: renderPortfolio, alerts: renderAlerts,
   datastore: renderDatastore, workspace: renderWorkspace, viz: renderViz,
   mlstudio: renderMLStudio, brief: renderBrief,
 };
