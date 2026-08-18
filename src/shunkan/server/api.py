@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import math
 import time
@@ -27,6 +28,8 @@ from pydantic import BaseModel
 from shunkan import __version__
 from shunkan.alerts import AlertBook, desktop_notify, parse_alert
 from shunkan.config import load_watchlist, save_watchlist
+from shunkan.data.contract_specs import (ORDER_IN_LOTS_VENUES,
+                                          economic_lot_size)
 from shunkan.data.provider import DataError, get_provider, is_offline
 from shunkan.markets import (
     GLOBAL_PULSE,
@@ -2599,12 +2602,28 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
+        # Order-in-lots venues: the economic multiplier comes from the sourced
+        # spec table, never from the request — Kite's dump says 1 there, and a
+        # client repeating that 1 as if it were a lot would book a 1-crore
+        # gold contract as one lakh. A client sending a DIFFERENT number gets
+        # a refusal naming both, not a silent override.
+        lot_src = ""
+        if inst.exchange in ORDER_IN_LOTS_VENUES:
+            lot, lot_src = economic_lot_size(inst.exchange, inst.symbol, None)
+            if req.lot_size not in (None, 1, lot):
+                raise HTTPException(400, (
+                    f"lot_size {req.lot_size} conflicts with the sourced "
+                    f"{inst.exchange} multiplier for {inst.symbol}: {lot} "
+                    f"({lot_src})"))
+            inst = dataclasses.replace(inst, lot_size=lot)
+
         # Size: lots when the contract's lot is known, else explicit units.
         if req.lots is not None:
             if not inst.lot_size:
                 raise HTTPException(400, (
                     f"No lot size for {inst.label} — cannot size in lots. "
-                    "Send an explicit quantity, or reconnect a source that names the lot."))
+                    + (lot_src or "Send an explicit quantity, or reconnect "
+                       "a source that names the lot.")))
             quantity = req.lots * inst.lot_size
         elif req.quantity is not None:
             quantity = req.quantity

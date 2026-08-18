@@ -311,6 +311,39 @@ def test_store_bars_endpoint_empty_is_honest(client):
     assert "no locally captured" in r["note"]
 
 
+def test_mcx_trade_books_economic_units(client):
+    """1 lot of GOLD at 155,000/10g is a 1.55 crore contract. The endpoint
+    must resolve the sourced multiplier itself and never trust the request."""
+    r = client.post("/api/portfolio/trade", json={
+        "symbol": "GOLD", "kind": "FUT", "expiry": "2099-10-05",
+        "exchange": "MCX", "lots": 1, "price": 155367.0, "side": "BUY"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["quantity"] == 100                      # economic units
+    # flatten so later tests see a clean book
+    r2 = client.post("/api/portfolio/trade", json={
+        "symbol": "GOLD", "kind": "FUT", "expiry": "2099-10-05",
+        "exchange": "MCX", "lots": 1, "price": 155367.0, "side": "SELL"})
+    assert r2.status_code == 200
+
+
+def test_mcx_trade_refuses_conflicting_lot_size(client):
+    r = client.post("/api/portfolio/trade", json={
+        "symbol": "GOLD", "kind": "FUT", "expiry": "2099-10-05",
+        "exchange": "MCX", "lots": 1, "price": 155367.0, "side": "BUY",
+        "lot_size": 50})
+    assert r.status_code == 400
+    assert "conflicts with the sourced" in r.json()["detail"]
+
+
+def test_mcx_trade_without_spec_names_the_refusal(client):
+    r = client.post("/api/portfolio/trade", json={
+        "symbol": "COTTONCNDY", "kind": "FUT", "expiry": "2099-10-05",
+        "exchange": "MCX", "lots": 1, "price": 500.0, "side": "BUY"})
+    assert r.status_code == 400
+    assert "no sourced economic multiplier" in r.json()["detail"]
+
+
 def test_websocket_sub_routes_a_new_symbol(client):
     """The whole point of the bus: ask for a symbol outside the watchlist and
     its ticks start arriving on THIS connection."""
