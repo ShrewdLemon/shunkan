@@ -224,3 +224,14 @@ a subtler read. Screen counted ~16 looks; anything later built from a
 **Decision: NO TRADE, and stop treating participant CHANGE as a daily
 directional input in the analysis panel's verdict — it stays displayed as
 positioning fact, which is what it is.**
+
+**Addendum, same day — the 4-year verdict.** Deep backfill landed: 1,011
+published days (2022-07 → 2026-08, zero failed fetches), 989 aligned with
+prices. Same pre-registered screen, same tradeable next-open path: best
+|t| across all 8 series and both reads is 1.63 (Pro futures) — exactly the
+best-of-16-looks noise draw. FII index futures, the series every evening
+wrap narrates, sits at t = −0.74 with a mildly inverted quartile ladder.
+The daily-horizon folklore is now dead at four years of depth, not one.
+Anything resurrected from this table later (weekly horizons, levels
+instead of changes, interactions with VIX regime) starts life owing DSR
+its full trial count, this screen included.

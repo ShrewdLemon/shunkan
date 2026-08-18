@@ -30,6 +30,7 @@ Design and honest limits:
 from __future__ import annotations
 
 import math
+import pathlib
 
 import numpy as np
 import pandas as pd
@@ -46,8 +47,14 @@ def t_stat(x):
     return float(x.mean() / (sd / math.sqrt(n))) if sd > 1e-12 else None
 
 
+DEEP_ROOT = pathlib.Path("research/data")
+
+
 def main() -> None:
-    part = pd.read_parquet(store_path())
+    # The deep host-owned backfill (4y) when present, else the live store's
+    # year. Same code path either way; only the window changes.
+    src = store_path(DEEP_ROOT) if (DEEP_ROOT / "participant").exists() else store_path()
+    part = pd.read_parquet(src)
     nifty = (pd.read_parquet(STORE_DIR / "history" / "_NSEI.parquet")
              .sort_values("date").set_index("date"))
     nifty.index = pd.DatetimeIndex(nifty.index).tz_localize(None)
@@ -96,8 +103,8 @@ def main() -> None:
         print(f"{name:22s} {len(df):>4} {up.mean() * 1e4:>+16.1f}bp {dn.mean() * 1e4:>+8.1f}bp "
               f"{t_spr if t_spr is None else format(t_spr, '+.2f'):>9}   {' '.join(qm)}")
 
-    print("\nread with: one year, ~16 looks; |t| < 2.5 is noise here. NIFTY fut")
-    print("round trip ~2-3bp. Publication ~18:00 IST day t; entry next open.")
+    print(f"\nread with: {len(days)} days, ~16 looks; |t| < 2.5 is noise here.")
+    print("NIFTY fut round trip ~2-3bp. Publication ~18:00 IST; entry next open.")
 
 
 if __name__ == "__main__":
