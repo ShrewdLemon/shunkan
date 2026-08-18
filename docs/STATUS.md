@@ -202,6 +202,22 @@ writer. Verified 3/3 ordered over the wire and end-to-end in the browser
 (WIPRO subscribed by opening its chart, prints on the tape, prints stop on
 leaving the view while the watchlist streams on).
 
+## Capture bug caught 2026-08-18: chains stored zero IVs
+
+Found while adding data-age stamps: every captured chain snapshot had 0/25
+strikes with an IV. The chain was built with `call_iv = NaN, solved from
+prices on demand` — and no demand ever came from the snapshot path, so the
+20-day local IV-rank promise could never fill, silently. IVs are now solved
+AT FETCH (`kite_fno._solve_chain_ivs`) from the same mid-else-LTP price
+`quote_price()` uses, so the UI, SABR and the archive see identical numbers,
+and snapshots store the mids so the IVs stay re-derivable. First real
+`atm_iv_history` observation landed 2026-08-18 (0.1695): day 1 of 20.
+Old snapshots keep their NaN IVs — re-solving history from stored LTPs would
+mix stale-LTP solutions into a mid-solved series, which is how the SABR
+smile got poisoned once already. Related: one 2026-08-10 snapshot with an
+honestly-recorded NaN spot was crashing every reader that walked the
+history (all-NA idxmin); readers now skip such days by design.
+
 ## Research findings
 
 **News-reaction study (2026-08-18).** First study off the news archive, 51

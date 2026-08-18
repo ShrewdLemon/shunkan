@@ -1624,7 +1624,7 @@ async function renderIV(view) {
     const rankCell = rank.available
       ? `<div class="v amber">${(rank.rank * 100).toFixed(0)}%</div>`
       : `<div class="v sm faint">${rank.days_captured ?? 0}d/${rank.days_required ?? 20}d</div>`;
-    $("#iv-panel .panel-meta").innerHTML = stamp(`EXP ${r.expiry}`);
+    $("#iv-panel .panel-meta").innerHTML = stamp(`EXP ${r.expiry}`) + " " + ageStamp(r.as_of);
     $("#iv-panel .panel-body").innerHTML = `
       <div class="kv-strip">
         <div class="kv"><div class="k">ATM IV</div><div class="v">${(r.atm_iv * 100).toFixed(1)}%</div></div>
@@ -1685,7 +1685,7 @@ async function renderVolume(view) {
     const r = await getJSON(`/api/volume/${sym}`);
     const maxV = Math.max(...r.profile.map((p) => p.volume), 1);
     const pocVol = Math.max(...r.profile.map((p) => p.volume));
-    $("#vol-panel .panel-meta").innerHTML = stamp("120 BARS PROFILE");
+    $("#vol-panel .panel-meta").innerHTML = stamp("120 BARS PROFILE") + " " + ageStamp(r.as_of);
     $("#vol-panel .panel-body").innerHTML = `
       <div class="kv-strip">
         <div class="kv"><div class="k">LAST</div><div class="v">${fmt.n(r.last_close)}</div></div>
@@ -1741,7 +1741,8 @@ async function renderNews(view, params) {
       const b = n.bias;
       const host = $("#news-panel .panel-body");
       if (!host) return;
-      $("#news-panel .panel-meta").innerHTML = stamp("AUTO 60s · SOURCE LAG 5–15M");
+      $("#news-panel .panel-meta").innerHTML =
+        stamp("AUTO 60s · SOURCE LAG 5–15M") + " " + ageStamp(null);
       const biasCls = b.label.includes("bullish") ? "up" : b.label.includes("bearish") ? "down" : "dim";
       host.innerHTML = `
         <div class="feed-note">SOURCE: GOOGLE NEWS RSS (IN) — aggregator runs 5–15 min behind the original wire.
@@ -2323,7 +2324,8 @@ async function renderScreener(view) {
       if (!document.body.contains(view)) return;  // view switched mid-flight
       query = q;
       $("#scr-upd").innerHTML = stamp(
-        `${r.rows.length}/${r.universe_size} PASS${r.errors ? ` · ${r.errors} ERRORS` : ""} · AUTO 5m`);
+        `${r.rows.length}/${r.universe_size} PASS${r.errors ? ` · ${r.errors} ERRORS` : ""} · AUTO 5m`)
+        + " " + ageStamp(null);
       body.innerHTML = `
         <table class="tbl"><thead><tr><th>SYMBOL</th><th>PRICE</th><th>1W</th><th>1M</th><th>3M</th>
         <th>RSI</th><th>VOL ANN</th><th>OFF HIGH</th><th>SMA50</th><th>SMA200</th></tr></thead>

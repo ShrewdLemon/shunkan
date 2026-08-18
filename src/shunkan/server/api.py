@@ -1067,6 +1067,9 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         hist_src = "Yahoo daily closes" if not is_offline() else "synthetic (offline)"
         return _clean({
             "symbol": r.symbol, "spot": r.spot, "expiry": str(c.expiry),
+            # The chain's own exchange timestamp — the age the panel shows is
+            # the age of the QUOTES, not of the render.
+            "as_of": c.as_of.isoformat() if c.as_of else None,
             "atm_iv": r.atm_iv, "rv_cc_21": r.rv_cc_21, "rv_park_21": r.rv_park_21,
             "iv_premium": r.iv_premium, "rv_percentile": r.rv_percentile,
             "iv_rank_local": rank,
@@ -1134,8 +1137,14 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             raise HTTPException(502, str(exc)) from exc
         prof = r.profile
         mids = 0.5 * (prof.bin_edges[:-1] + prof.bin_edges[1:])
+        last_bar = hist.index[-1]
         return _clean({
             "symbol": symbol.upper(),
+            # Daily bars: the analysis is true as of the last bar's session
+            # close, which on a live day is today and after hours is
+            # yesterday — the stamp shows which, instead of implying "now".
+            "as_of": (last_bar.isoformat() if hasattr(last_bar, "isoformat")
+                      else str(last_bar)),
             "last_close": float(hist["close"].iloc[-1]),
             "day_type": r.day_type, "surge_z": r.surge_z,
             "surge_ratio": r.surge_ratio, "obv_divergence": r.obv_divergence,
