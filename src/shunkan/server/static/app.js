@@ -3636,6 +3636,8 @@ async function renderBrief(view, params = {}) {
   view.innerHTML = `
     <div class="viz-bar">
       <input id="brf-sym" class="viz-sym" value="${esc(state.symbol)}" spellcheck="false">
+      <input type="date" id="brf-on" class="viz-sym" style="width:140px"
+             title="replay a past day: the close-of-day journal when recorded, else reconstructed from the stores">
       <span class="faint" style="font-size:10.5px">DAILY ANALYSIS — root to derivatives · facts and base rates, no verdict by design</span>
       <button class="viz-mini run" id="brf-run">REFRESH ⟳</button>
     </div>
@@ -3644,6 +3646,7 @@ async function renderBrief(view, params = {}) {
     if (e.key === "Enter") { state.symbol = e.target.value.toUpperCase().trim(); loadDaily(); }
   });
   $("#brf-run").onclick = loadDaily;
+  $("#brf-on").onchange = loadDaily;
   loadDaily();
 }
 
@@ -3653,7 +3656,12 @@ async function loadDaily() {
   const host = $("#brf-body");
   if (!host) return;
   try {
-    const d = await getJSON(`/api/analysis/daily/${encodeURIComponent(state.symbol)}`);
+    const on = $("#brf-on") && $("#brf-on").value ? `?on=${$("#brf-on").value}` : "";
+    const [d, mig] = await Promise.all([
+      getJSON(`/api/analysis/daily/${encodeURIComponent(state.symbol)}${on}`),
+      on ? Promise.resolve(null)
+         : getJSON(`/api/analysis/intraday/${encodeURIComponent(state.symbol)}`).catch(() => null),
+    ]);
     const ch = d.chart || {}, vol = d.vol || {}, pos = d.positioning || {};
     const parts = d.participants || {}, ev = d.events || {}, news = d.news || {};
 
@@ -3670,7 +3678,10 @@ async function loadDaily() {
       ])}
       <div class="empty" style="padding:6px 12px">closed at ${
         ch.range_pos_pct == null ? "—" : fmt.n(ch.range_pos_pct, 0) + "% of the day range"} ·
-        realised vol ${fmt.n(ch.rv5, 1)}% (5d) / ${fmt.n(ch.rv21, 1)}% (21d)</div>`;
+        realised vol ${fmt.n(ch.rv5, 1)}% (5d) / ${fmt.n(ch.rv21, 1)}% (21d)${
+        ch.vwap !== undefined ? ` · VWAP ${ch.vwap == null
+          ? `— <span class="faint" title="${esc(ch.vwap_note || "")}">(${esc(ch.vwap_note || "unavailable")})</span>`
+          : `${fmt.n(ch.vwap)} <span class="faint">(${esc(ch.vwap_note || "")})</span>`}` : ""}</div>`;
 
     const volBody = vol.error ? secErr(vol) : `
       ${metricsStrip([
@@ -3692,7 +3703,10 @@ async function loadDaily() {
           ["OI RESIST", fmt.i(pos.resistance), "down"],
         ])}
         <div class="empty" style="padding:6px 12px">${esc(pos.source || "")} · expiry ${esc(pos.expiry || "—")}${
-          pos.is_model ? ' · <span class="warn">MODELLED — positioning here is not market data</span>' : ""}</div>`;
+          pos.is_model ? ' · <span class="warn">MODELLED — positioning here is not market data</span>' : ""}${
+          pos.vol_note ? ` · <span class="faint">${esc(pos.vol_note)}</span>` : ""}</div>${
+        pos.staleness_warning
+          ? `<div class="empty" style="padding:2px 12px"><span class="warn">⚠ ${esc(pos.staleness_warning)}</span></div>` : ""}`;
 
     const partBody = parts.error ? secErr(parts) : `
       <table class="tbl"><thead><tr><th class="txt">WHO</th>
@@ -3748,15 +3762,27 @@ async function loadDaily() {
           ? `<span class="age" title="today's session has not closed; sections read live and archive data">AS OF ${d.as_of} · SESSION LIVE</span>`
           : ageStamp(close);
       })()}
-        <span class="faint">· root → derivatives · every section fails to a named reason, never a filled box</span></div>
+        <span class="faint">· ${esc(d.served_from || "live")} · root → derivatives · every section fails to a named reason, never a filled box</span></div>
       <div style="display:grid;gap:6px">
         ${sec("CHART — THE UNDERLYING", chartBody)}
         ${sec("VOLATILITY", volBody)}
         ${sec("OPEN INTEREST & POSITIONING", posBody)}
+        ${mig && !mig.error && pos.expiry_today ? sec("EXPIRY INTRADAY — PAIN & WALL MIGRATION", `
+          <div style="padding:8px 12px"><canvas class="plot" id="brf-mig" style="height:120px"></canvas></div>
+          <div class="empty" style="padding:2px 12px">walls built since first capture (${esc((mig.window || [""])[0].slice(11, 19))} UTC):
+            calls ${(mig.walls_built.calls || []).map(([k, v]) => `${fmt.i(k)} <span class="down">+${fmt.compact(v)}</span>`).join(" · ")} ·
+            puts ${(mig.walls_built.puts || []).map(([k, v]) => `${fmt.i(k)} <span class="up">+${fmt.compact(v)}</span>`).join(" · ")}</div>
+          <div class="empty" style="padding:2px 12px"><span class="faint">${esc(mig.note || "")} · ${mig.n_snapshots} snapshots</span></div>`) : ""}
         ${sec("PARTICIPANTS — WHO MOVED (FII / DII / CLIENT / PRO)", partBody)}
         ${sec("EVENT BASE RATES — WHAT HISTORY SAYS ABOUT A DAY LIKE TODAY", evBody)}
         ${sec("NEWS", newsBody)}
       </div>`;
+    if (mig && !mig.error && pos.expiry_today && $("#brf-mig")) {
+      linePlot($("#brf-mig"), [
+        { points: mig.path.map((r) => ({ x: Date.parse(r.ts), y: r.spot })), color: "#58a6ff", width: 1.4 },
+        { points: mig.path.map((r) => ({ x: Date.parse(r.ts), y: r.max_pain })), color: "#f0a826", width: 1.4 },
+      ], { height: 120, fmtY: (v) => fmt.i(v), fmtX: (v) => fmt.ist(new Date(v)) });
+    }
   } catch (e) {
     host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
