@@ -165,3 +165,37 @@ robustness check but fails the cost bar. Re-run when the LIVE channel (unbiased,
 no Google-index attrition) has accumulated 6+ months — the stated bias of the
 backfill channel works AGAINST H1, so the live rerun is the honest test and
 could strengthen it.
+
+**Addendum, same day (backfill completed to 59/59 symbols).** Rerun at full
+width: 630 events, 194 distinct dates. Down+none +1d: +0.35% (t=2.99, 140
+events / 68 dates) — unchanged from the 51-symbol run. Down+neg stays flat.
+The up+none upward drift also persists (+0.52% at +5d, t=2.09), so the
+asymmetry puzzle is stable, not a small-sample wobble. Verdict unchanged:
+direction real, size below costs, revisit on the live channel.
+
+## 2026-08-18 — expiry-day session read (weekly NIFTY settles today)
+
+Live snapshot ~12:05 IST, all real (token restored mid-morning; capture
+clean since):
+
+- NIFTY 24,210 (−0.32%), red day, z = −0.45: ordinary, no event.
+- VIX 11.65 = 6th percentile of the 2008+ series. rv21 9.3%.
+- Expiry board: spot 24,200.05 vs max pain 24,200 — ON the pin. PCR 0.645,
+  ATM IV 17.2% (0-DTE annualisation, read the straddle instead): ₹66.95,
+  0.28% implied to settlement.
+- Participants (17 Aug file): Client and DII both added bullish exposure,
+  FII stayed net short index futures. News bias mildly bullish on 8 items.
+
+The tempting trade is the one every expiry-day thread sells: the pin
+straddle. The framework says no, twice over. First, VIX in its bottom
+quartile is where measured VRP is thinnest (+1.66 pts in Q1 vs +4.90 in
+Q4), and the unconditional straddle short already failed the 0.927
+IV/VIX haircut. Second, we have never backtested intraday 0-DTE decay
+against settlement prints, because until TONIGHT the store has zero
+settlements — that dataset starts existing today, with the first
+settling-series harvest after the close plus the day's 60s chain capture.
+
+**Decision: NO TRADE.** The correct expiry-day move with this
+infrastructure is to let it record. Every future expiry gets a settlement
+row; when there are ~10, the 0-DTE decay question becomes testable
+instead of folklore.
