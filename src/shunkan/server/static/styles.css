@@ -1010,3 +1010,23 @@ main { overflow-x: hidden; }
   border-bottom: 1px solid var(--stroke-soft, #1b2634);
   background: rgba(88, 166, 255, 0.04);
 }
+
+/* heatmap tiles */
+.map-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 2px; padding: 4px 12px 10px; }
+.map-tile { border: 1px solid var(--stroke-soft, #1b2634); padding: 6px 7px;
+  cursor: pointer; text-align: left; }
+.map-tile:hover { border-color: var(--blue, #58a6ff); }
+.mt-sym { font-size: 10px; letter-spacing: .04em; color: var(--fg, #c9d1d9); }
+.mt-chg { font-size: 12px; margin-top: 2px; }
+
+/* analyse hub cards */
+.anl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px; padding: 10px 12px; }
+.anl-card { background: transparent; border: 1px solid var(--stroke-soft, #1b2634);
+  padding: 9px 11px; text-align: left; cursor: pointer; display: grid; gap: 3px;
+  font: inherit; color: inherit; }
+.anl-card:hover { border-color: var(--amber, #f0a826); }
+.anl-code { color: var(--amber, #f0a826); font-size: 10px; letter-spacing: .14em; }
+.anl-name { font-size: 12.5px; font-weight: 700; }
+.anl-desc { font-size: 10.5px; color: var(--dim, #8b949e); line-height: 1.45; }

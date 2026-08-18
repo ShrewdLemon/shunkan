@@ -51,6 +51,7 @@ UNIVERSES: dict[str, list[str]] = {
 # metric name -> (description, higher_is_better) — used for table ordering hints
 METRICS = {
     "price": "Last close",
+    "ret_1d": "1-day return",
     "ret_1w": "1-week return",
     "ret_1mo": "1-month return",
     "ret_3mo": "3-month return",
@@ -89,6 +90,7 @@ def compute_metrics(hist: pd.DataFrame) -> dict[str, float]:
     high_6mo = float(close.tail(126).max()) if len(close) else np.nan
     return {
         "price": price,
+        "ret_1d": price / float(close.iloc[-2]) - 1.0 if len(close) > 2 else np.nan,
         "ret_1w": price / float(close.iloc[-6]) - 1.0 if len(close) > 6 else np.nan,
         "ret_1mo": price / float(close.iloc[-22]) - 1.0 if len(close) > 22 else np.nan,
         "ret_3mo": price / float(close.iloc[-64]) - 1.0 if len(close) > 64 else np.nan,

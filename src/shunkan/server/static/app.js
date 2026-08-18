@@ -379,6 +379,9 @@ const VIEWS = [
   { id: "signals",   code: "SIG", label: "Signals" },
   { id: "fiidii",    code: "FII", label: "FII/DII" },
   { id: "oicharts",  code: "OIC", label: "OI/Strad" },
+  { id: "heatmap",   code: "MAP", label: "Heatmap" },
+  { id: "calendar",  code: "CAL", label: "Calendar" },
+  { id: "analyse",   code: "ANL", label: "Analyse" },
   { id: "portfolio", code: "PRT", label: "Folio" },
   { id: "alerts",    code: "ALR", label: "Alerts" },
   { id: "datastore", code: "DTA", label: "Store" },
@@ -2359,6 +2362,154 @@ function drawTape() {
 
 /* ---------- SCREENER ---------- */
 
+/* ---------- HEATMAP (MAP) ----------
+   Equal tiles grouped by NSE's sector taxonomy, coloured by the day move.
+   Equal ON PURPOSE: cap-weighted tiles need a cap source this codebase
+   does not carry, and a guessed weight is a fabricated number as a layout. */
+
+async function renderHeatmap(view) {
+  view.innerHTML = panel({
+    title: "HEATMAP — NIFTY 50 + BANKNIFTY BY SECTOR",
+    id: "map-panel", flush: true, meta: `<span id="map-upd">…</span>`,
+    body: loading("pricing the universe"),
+  });
+  try {
+    const d = await getJSON("/api/heatmap");
+    const host = $("#map-panel .panel-body");
+    if (!host) return;
+    $("#map-upd").innerHTML = stamp(`${d.n} NAMES`) + " " + ageStamp(null);
+    const bySector = new Map();
+    d.tiles.forEach((t) => {
+      if (!bySector.has(t.sector)) bySector.set(t.sector, []);
+      bySector.get(t.sector).push(t);
+    });
+    const secMean = (rows) => {
+      const v = rows.map((r) => r.chg_pct).filter((x) => x != null);
+      return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+    };
+    host.innerHTML = `
+      <div class="feed-note">${esc(d.note)}</div>
+      ${[...bySector.entries()]
+        .sort((a, b) => (secMean(b[1]) ?? -99) - (secMean(a[1]) ?? -99))
+        .map(([sect, rows]) => {
+          const m = secMean(rows);
+          return `<div class="news-sect">${esc(sect.toUpperCase())}
+            <span class="${cls(m)}">${m == null ? "—" : fmt.pct(m / 100)}</span>
+            <span class="faint">· ${rows.length}</span></div>
+          <div class="map-grid">
+            ${rows.sort((a, b) => (b.chg_pct ?? -99) - (a.chg_pct ?? -99)).map((t) => {
+              const c = t.chg_pct;
+              const mag = c == null ? 0 : Math.min(Math.abs(c) / 2.5, 1);
+              const bg = c == null ? "transparent"
+                : c >= 0 ? `rgba(63,185,80,${0.08 + 0.30 * mag})`
+                         : `rgba(248,81,73,${0.08 + 0.30 * mag})`;
+              return `<div class="map-tile" data-sym="${esc(t.symbol)}" style="background:${bg}">
+                <div class="mt-sym">${esc(t.symbol)}</div>
+                <div class="mt-chg ${cls(c)}">${c == null ? "—" : fmt.pct(c / 100)}</div>
+              </div>`;
+            }).join("")}
+          </div>`;
+        }).join("")}`;
+    host.querySelectorAll(".map-tile").forEach((el) => {
+      el.onclick = () => show("chart", { symbol: el.dataset.sym });
+    });
+  } catch (e) {
+    const host = $("#map-panel .panel-body");
+    if (host) host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+  addTimer("heatmap:refresh", () => show("heatmap"), 300000);
+}
+
+/* ---------- CALENDAR (CAL) ----------
+   Expiries from the instruments dumps: real listings, per venue. Holidays
+   and earnings REFUSE with reasons until a source is wired - a guessed
+   calendar is how positions get held into mistimed settlements. */
+
+async function renderCalendar(view) {
+  view.innerHTML = panel({
+    title: "CALENDAR — EXPIRIES FROM THE CONTRACT MASTER",
+    id: "cal-panel", flush: true, meta: `<span id="cal-upd">…</span>`,
+    body: loading("reading instrument dumps"),
+  });
+  try {
+    const d = await getJSON("/api/calendar");
+    const host = $("#cal-panel .panel-body");
+    if (!host) return;
+    $("#cal-upd").innerHTML = ageStamp(null);
+    host.innerHTML = `
+      ${Object.entries(d.venues).map(([venue, rows]) => `
+        <div class="news-sect">${esc(venue)}</div>
+        ${Array.isArray(rows) ? `<table class="tbl"><thead><tr>
+            <th class="txt">EXPIRY</th><th>CONTRACTS</th><th class="txt">UNDERLYINGS</th>
+          </tr></thead><tbody>
+          ${rows.map((r) => `<tr>
+            <td class="txt sym">${esc(r.date)}</td>
+            <td>${fmt.i(r.contracts)}</td>
+            <td class="txt faint">${r.names.map(esc).join(", ")}${r.contracts > r.names.length ? "…" : ""}</td>
+          </tr>`).join("")}</tbody></table>`
+          : `<div class="empty" style="padding:6px 12px">${esc(rows.error)}</div>`}`).join("")}
+      <div class="news-sect">HOLIDAYS</div>
+      <div class="empty" style="padding:6px 12px">${esc(d.holidays.error)}</div>
+      <div class="news-sect">EARNINGS</div>
+      <div class="empty" style="padding:6px 12px">${esc(d.earnings.error)}</div>`;
+  } catch (e) {
+    const host = $("#cal-panel .panel-body");
+    if (host) host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+/* ---------- ANALYSE HUB (ANL) ----------
+   One screen that arranges the analysis tools by INTENT, the way a desk
+   asks questions - not a menu of implementation names. Every card says
+   plainly what the tool can and cannot claim. */
+
+const ANL_GROUPS = [
+  ["READ DIRECTION & POSITIONING", [
+    ["chain", "OPT", "Option chain", "live book, OI build vs real basis, order ticket"],
+    ["oicharts", "OIC", "OI & straddle intraday", "per-strike walls through the day; ATM premium path"],
+    ["fiidii", "FII", "FII / DII positioning", "NSE's own file through time; fact, not signal — the 4y screen found no edge"],
+    ["brief", "BRF", "Daily analysis", "root to derivatives; facts and base rates, no verdict by design"],
+    ["iv", "VOL", "Volatility", "smile, cone, local IV rank (real days only), intraday ATM path"],
+    ["signals", "SIG", "Technical signals", "candle patterns WITH their measured record — most mean nothing, shown"],
+  ]],
+  ["FIND & TEST TRADES", [
+    ["screener", "SCR", "Screener", "rule-based scan over real dailies"],
+    ["heatmap", "MAP", "Heatmap", "sector-grouped day moves; equal tiles, no fake cap weights"],
+    ["payoff", "PAY", "Payoff builder", "strategy P&L at expiry, real lots"],
+    ["backtest", "BTL", "Strategy lab", "walk-forward + validators that can and do say no"],
+    ["viz", "QNT", "Quant lab", "surfaces, Monte Carlo on real returns, Heston, VaR"],
+    ["mlstudio", "MLS", "ML studio", "chronological split, baseline always shown"],
+  ]],
+  ["CONTEXT & OPERATIONS", [
+    ["news", "NWS", "News intelligence", "sector-grouped wires with sentiment provenance"],
+    ["calendar", "CAL", "Calendar", "expiries from the contract master; refusals where no source exists"],
+    ["tape", "TPE", "Live tape", "routed ticks incl. front futures"],
+    ["portfolio", "PRT", "Book", "paper book, exchange-priced margin, live greeks"],
+    ["alerts", "ALR", "Alerts", "price/RSI/volume rules, 60s check"],
+    ["datastore", "DTA", "Data store", "what is on disk, honestly labelled"],
+  ]],
+];
+
+function renderAnalyse(view) {
+  view.innerHTML = `
+    <div style="display:grid;gap:12px">
+      ${ANL_GROUPS.map(([title, items]) => panel({
+        title, flush: true,
+        body: `<div class="anl-grid">
+          ${items.map(([id, code, name, desc]) => `
+            <button class="anl-card" data-view="${id}">
+              <span class="anl-code">${code}</span>
+              <span class="anl-name">${esc(name)}</span>
+              <span class="anl-desc">${esc(desc)}</span>
+            </button>`).join("")}
+        </div>`,
+      })).join("")}
+    </div>`;
+  view.querySelectorAll(".anl-card").forEach((b) => {
+    b.onclick = () => show(b.dataset.view);
+  });
+}
+
 /* ---------- OI & STRADDLE CHARTS (OIC) ----------
    The wall-watch: per-strike OI through the day's captures, beside the ATM
    straddle/strangle premium path. Both read the chain snapshot store, so
@@ -4171,7 +4322,8 @@ const RENDER = {
   pulse: renderPulse, chart: renderChart, chain: renderChain, payoff: renderPayoff,
   iv: renderIV, volume: renderVolume, news: renderNews, backtest: renderBacktest,
   tape: renderTape, screener: renderScreener, signals: renderSignals,
-  fiidii: renderFiiDii, oicharts: renderOICharts,
+  fiidii: renderFiiDii, oicharts: renderOICharts, heatmap: renderHeatmap,
+  calendar: renderCalendar, analyse: renderAnalyse,
   portfolio: renderPortfolio, alerts: renderAlerts,
   datastore: renderDatastore, workspace: renderWorkspace, viz: renderViz,
   mlstudio: renderMLStudio, brief: renderBrief,
