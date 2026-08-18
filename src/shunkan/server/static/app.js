@@ -362,26 +362,14 @@ function onView(target, type, handler, opts) {
 }
 
 const VIEWS = [
+  // Core workflow only. Every analysis tool lives behind ANL - the rail
+  // used to list 22 screens with the hub duplicating half of them, which
+  // is two navigations disagreeing about the same product.
   { id: "pulse",     code: "PLS", label: "Pulse" },
-  { id: "brief",     code: "BRF", label: "Daily" },
-  { id: "workspace", code: "WSP", label: "Work" },
+  { id: "analyse",   code: "ANL", label: "Analyse" },
   { id: "chart",     code: "CHT", label: "Chart" },
   { id: "chain",     code: "OPT", label: "Chain" },
-  { id: "payoff",    code: "PAY", label: "Payoff" },
-  { id: "iv",        code: "VOL", label: "Volty" },
-  { id: "volume",    code: "FLW", label: "Flow" },
-  { id: "news",      code: "NWS", label: "News" },
-  { id: "backtest",  code: "BTL", label: "Lab" },
-  { id: "viz",       code: "QNT", label: "Quant" },
-  { id: "mlstudio",  code: "MLS", label: "ML" },
   { id: "tape",      code: "TPE", label: "Tape" },
-  { id: "screener",  code: "SCR", label: "Screen" },
-  { id: "signals",   code: "SIG", label: "Signals" },
-  { id: "fiidii",    code: "FII", label: "FII/DII" },
-  { id: "oicharts",  code: "OIC", label: "OI/Strad" },
-  { id: "heatmap",   code: "MAP", label: "Heatmap" },
-  { id: "calendar",  code: "CAL", label: "Calendar" },
-  { id: "analyse",   code: "ANL", label: "Analyse" },
   { id: "portfolio", code: "PRT", label: "Folio" },
   { id: "alerts",    code: "ALR", label: "Alerts" },
   { id: "datastore", code: "DTA", label: "Store" },
@@ -483,7 +471,9 @@ function show(viewId, params = {}) {
   }
   syncViewSub();
   document.querySelectorAll(".rail-btn").forEach((b) => b.classList.remove("active"));
-  const btn = $(`#rail-${viewId}`);
+  // A view without its own rail button belongs to the Analyse hub: light
+  // ANL so the rail still says where you are.
+  const btn = $(`#rail-${viewId}`) || (ANL_VIEWS.has(viewId) ? $("#rail-analyse") : null);
   if (btn) btn.classList.add("active");
   const main = $("#main");
   main.innerHTML = "";
@@ -2465,11 +2455,11 @@ async function renderCalendar(view) {
 
 const ANL_GROUPS = [
   ["READ DIRECTION & POSITIONING", [
-    ["chain", "OPT", "Option chain", "live book, OI build vs real basis, order ticket"],
-    ["oicharts", "OIC", "OI & straddle intraday", "per-strike walls through the day; ATM premium path"],
-    ["fiidii", "FII", "FII / DII positioning", "NSE's own file through time; fact, not signal — the 4y screen found no edge"],
     ["brief", "BRF", "Daily analysis", "root to derivatives; facts and base rates, no verdict by design"],
     ["iv", "VOL", "Volatility", "smile, cone, local IV rank (real days only), intraday ATM path"],
+    ["volume", "FLW", "Volume & flow", "profile, surge, OBV — refuses zero-volume tapes by name"],
+    ["oicharts", "OIC", "OI & straddle intraday", "per-strike walls through the day; ATM premium path; any contract's path"],
+    ["fiidii", "FII", "FII / DII positioning", "NSE's own file through time; fact, not signal — the 4y screen found no edge"],
     ["signals", "SIG", "Technical signals", "candle patterns WITH their measured record — most mean nothing, shown"],
   ]],
   ["FIND & TEST TRADES", [
@@ -2480,15 +2470,13 @@ const ANL_GROUPS = [
     ["viz", "QNT", "Quant lab", "surfaces, Monte Carlo on real returns, Heston, VaR"],
     ["mlstudio", "MLS", "ML studio", "chronological split, baseline always shown"],
   ]],
-  ["CONTEXT & OPERATIONS", [
-    ["news", "NWS", "News intelligence", "sector-grouped wires with sentiment provenance"],
+  ["CONTEXT", [
+    ["news", "NWS", "News intelligence", "time-sorted, sector-grouped wires with sentiment provenance"],
     ["calendar", "CAL", "Calendar", "expiries from the contract master; refusals where no source exists"],
-    ["tape", "TPE", "Live tape", "routed ticks incl. front futures"],
-    ["portfolio", "PRT", "Book", "paper book, exchange-priced margin, live greeks"],
-    ["alerts", "ALR", "Alerts", "price/RSI/volume rules, 60s check"],
-    ["datastore", "DTA", "Data store", "what is on disk, honestly labelled"],
+    ["workspace", "WSP", "Workspace", "saved layouts and notes"],
   ]],
 ];
+const ANL_VIEWS = new Set(ANL_GROUPS.flatMap(([, items]) => items.map(([id]) => id)));
 
 function renderAnalyse(view) {
   view.innerHTML = `
