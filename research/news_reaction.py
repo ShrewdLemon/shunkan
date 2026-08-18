@@ -20,6 +20,11 @@ Design, and its honest limits:
 - Sentiment: the keyword scorer on titles. Crude, deterministic, stated.
 - Outcome: EXCESS log return vs NIFTY at +1, +3, +5 closes, so a stock that
   merely fell with the market and bounced with it shows nothing.
+- Symbol fixed effects: each symbol's mean daily excess drift over the news
+  window is subtracted, because bucket membership correlates with coverage,
+  coverage with size, and size with the year's alpha. Added after the first
+  run showed both no-news buckets positive at every horizon regardless of
+  shock direction, which is that artifact, not a finding.
 - Pooled across companies for n. Shocks cluster on market-wide days and
   sector co-movement survives the excess adjustment, so pooled t-stats are
   overstated to that extent; the count of DISTINCT event dates is printed
@@ -37,7 +42,7 @@ import numpy as np
 import pandas as pd
 
 from shunkan.analytics.events import shock_days
-from shunkan.data.newsstore import store_file
+from shunkan.data.newsstore import _read_all
 from shunkan.store.store import STORE_DIR
 
 HORIZONS = (1, 3, 5)
@@ -54,7 +59,7 @@ def t_stat(x: np.ndarray) -> float | None:
 
 
 def main() -> None:
-    news = pd.read_parquet(store_file())
+    news = _read_all()
     news = news[news.symbols != ""].copy()
     news["ts"] = pd.to_datetime(news["ts"], utc=True, errors="coerce")
     news["day"] = news["ts"].dt.date
@@ -75,7 +80,8 @@ def main() -> None:
         close = (pd.read_parquet(f).sort_values("date")
                  .set_index("date")["close"])
         close.index = pd.DatetimeIndex(close.index)
-        joint = pd.concat({"s": np.log(close), "b": lbench}, axis=1).dropna()
+        close = close[close > 0]          # a zero close is a bad row, not a price
+        joint = pd.concat({"s": np.log(close), "b": lbench}, axis=1, sort=False).dropna()
         if len(joint) < 260:
             continue
         used_symbols += 1
@@ -93,6 +99,17 @@ def main() -> None:
             if last is None or i - last > REFRACTORY:
                 kept.append(d)
                 last = i
+        # Symbol fixed effect: this symbol's mean daily excess drift over the
+        # news window. Without it, every bucket inherits whatever alpha the
+        # symbol had this year, and bucket membership correlates with company
+        # coverage, which correlates with size: the first run showed BOTH
+        # no-news buckets positive at every horizon regardless of shock
+        # direction, which is a size/coverage artifact wearing a result's
+        # clothes, not an asymmetry.
+        exdiff = (joint["s"] - joint["b"]).diff()
+        exdiff = exdiff[exdiff.index >= lo.tz_localize(None)]
+        mu = float(exdiff.mean()) if len(exdiff) > 40 else 0.0
+
         for d in kept:
             i = pos_of[d]
             if i + max(HORIZONS) >= len(joint):
@@ -109,7 +126,8 @@ def main() -> None:
                    else "pos" if sent > SENT_EPS else "neutral"}
             for h in HORIZONS:
                 ex = ((joint["s"].iloc[i + h] - joint["s"].iloc[i])
-                      - (joint["b"].iloc[i + h] - joint["b"].iloc[i]))
+                      - (joint["b"].iloc[i + h] - joint["b"].iloc[i])
+                      - h * mu)
                 row[f"ex{h}"] = float(ex) * 100
             rows.append(row)
 

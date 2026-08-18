@@ -177,6 +177,15 @@ Things with real test coverage that have been verified against a live broker.
 
 ## Research findings
 
+**News-reaction study (2026-08-18).** First study off the news archive, 51
+symbols, 547 shock events. Survives its own artifact check (symbol fixed
+effects added after the raw run showed a coverage/size bias wearing a result's
+clothes): no-news −2σ days bounce +36bp next day while negative-news drops stay
+flat. Fails the cost bar (~25–30bp round trip) on one year of data. No trade;
+rerun on the live channel when it has depth. Sentiment-sign prediction (H2):
+dead. Details in `research/DECISIONS.md`.
+
+
 Reproducible: `.venv/bin/python research/vrp_regime.py`, reads only the local
 archive.
 
