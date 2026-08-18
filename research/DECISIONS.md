@@ -251,3 +251,22 @@ Live stance 13:10 IST: NO TRADE reaffirmed. Spot 24,188 vs pain 24,200,
 straddle ₹56 (±0.23%), puts +147L built at 24,150/24,200 = crowded short-put
 side, break of 24,150 is the asymmetric scenario. SABR on 25 Aug: ATM 9.25%
 vs rv21 9.4% — VRP flat at one week, the premium is not there to sell.
+
+## 2026-08-18 evening — seven days of the analysis, graded systematically
+
+`research/grade_analysis.py` runs the manual plan-vs-outcome exercise for a
+window: each day D's analysis via the app's own replay endpoint, claims
+scored against D+1's archive. Week of 08-07 → 08-18:
+
+- **Regime call 7/7.** Ordinary day + VIX < 25th pctile → next move < 1σ,
+  every time (with the stated base-rate tailwind of quiet begetting quiet).
+- **Pain pull 1/5 — inverted.** Four of five days closed FARTHER from T-1
+  max pain (worst: 62→195 pts into expiry). The magnet story is dead on
+  this tape; the level is a trailing artifact.
+- **Walls 11/12.** OI support/resist respected as RANGE BOUNDS every day
+  except the expiry-morning break of 24,300. Levels yes, direction no.
+
+Desk rule extracted: trust wide OI walls as bounds, ignore pain pull as
+direction, and trust neither on expiry mornings until the migration
+re-forms them. One week, small n, stated. Today's journal entry is the
+first graded against a RECORD instead of a reconstruction - tomorrow.
