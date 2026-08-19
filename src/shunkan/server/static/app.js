@@ -4558,6 +4558,7 @@ const RENDER = {
 
 let ws = null;
 function bootChrome() {
+  wireCmdline();
   // Raw intervals on purpose: addTimer timers die on every view switch,
   // and the header outlives views.
   paintPnlChip(); paintCommodities();
@@ -4778,6 +4779,38 @@ function openPalette() {
 }
 function closePalette() { $("#palette-backdrop").hidden = true; }
 window.closePalette = closePalette;
+
+/* V3 command line: the palette's parser, always one keystroke away.
+   Bare rail mnemonics (OPT/PRT/…) map onto the same handlers, so the
+   muscle memory from the rail carries straight into the prompt. */
+const CODE_ALIAS = { OPT: "oc", PRT: "portfolio", PLS: "pulse", ANL: "analyse",
+                     CHT: "c", TPE: "tape", ALR: "alerts", DTA: "datastore",
+                     ANA: "brief", BRF: "brief", QNT: "qnt", SCR: "screener",
+                     SIG: "signals", FII: "fiidii", OIC: "oicharts",
+                     MAP: "heatmap", CAL: "calendar", WSP: "workspace",
+                     VOL: "iv", FLW: "volume", NWS: "news", BTL: "backtest",
+                     MLS: "mlstudio", PAY: "payoff" };
+
+function wireCmdline() {
+  const inp = $("#cl-input");
+  if (!inp) return;
+  inp.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const v = inp.value.trim();
+    if (!v) return;
+    const tok = v.split(/\s+/);
+    const alias = CODE_ALIAS[tok[0].toUpperCase()];
+    runCommand(alias ? [alias, ...tok.slice(1)].join(" ") : v);
+    inp.value = "";
+    inp.blur();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "/" && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName || "")) {
+      e.preventDefault();
+      inp.focus();
+    }
+  });
+}
 
 function runCommand(line) {
   const tok = line.trim().split(/\s+/);
