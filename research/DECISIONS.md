@@ -270,3 +270,26 @@ Desk rule extracted: trust wide OI walls as bounds, ignore pain pull as
 direction, and trust neither on expiry mornings until the migration
 re-forms them. One week, small n, stated. Today's journal entry is the
 first graded against a RECORD instead of a reconstruction - tomorrow.
+
+## 2026-08-19 ~11:15 IST — pre-registration: first live forward test of the
+## no-news shock bounce (PAPER)
+
+Context: seventh straight red session; catalyst is macro (crude surge +
+bond-yield spike per the morning wires); NIFTY broke the old 24,150 wall at
+10:04 (the armed alert fired at 24,051); VIX 11.5 = 4.8th pctile; EIGHT
+constituent shocks <= -2sigma by 11:05 (ASIANPAINT -4.6z, SBILIFE, ITC,
+TMPV, SUNPHARMA, COALINDIA, CIPLA, ULTRACEMCO) with NO title-tagged news -
+one clustered macro event, which the study's caveats anticipate.
+
+THE RULES, fixed before the close:
+- At 15:05 IST, re-qualify: intraday return still <= -2 trailing-63d sigma
+  AND still no company-named headline in the archive (title-tag).
+- Enter AT CLOSE (paper book, cash equity, 1 unit each, equal rupees
+  ~1 lakh notional total across qualifiers). Exit at tomorrow's close.
+- Expected per the study: +35bp mean gross, ~55% hit; costs on paper are
+  recorded at the delivery stack from costs.py for honesty.
+- This is ONE clustered event = effectively ONE draw, not N independent
+  trades. It tests execution mechanics and the signal's live behaviour; it
+  proves nothing statistically on its own and will not be graded as if it
+  did.
+- NO index trade, NO vol trade: nothing validated, VRP at the thin end.
