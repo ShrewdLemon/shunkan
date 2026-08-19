@@ -1215,3 +1215,6 @@ main { padding: 0; }
 .pb-ta { width: 100%; font-family: var(--mono); font-size: 11px; line-height: 1.5;
   background: var(--bg-panel-2, #101010); color: var(--text, #e6e1d6);
   border: 1px solid var(--stroke, #23262b); padding: 6px 8px; resize: vertical; }
+
+/* PRT trade form */
+.trade-form { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; align-items: baseline; }

@@ -3017,9 +3017,38 @@ function marginLine(p) {
     <span>${esc(m.source || "")}</span>${btn}</div>`;
 }
 
+let prtBasket = [];   // staged legs, view-independent so a mis-click keeps them
+
 async function renderPortfolio(view) {
-  view.innerHTML = panel({ title: "BOOK", id: "pf-panel", flush: true, meta: "—",
-    body: loading("valuing") });
+  view.innerHTML = `
+    ${panel({ title: "BOOK", id: "pf-panel", flush: true, meta: "—",
+      body: loading("valuing") })}
+    <div class="row" style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+    ${panel({ title: "NEW TRADE — PAPER", id: "pf-trade", flush: true,
+      meta: `<span class="faint">books instantly at your price; blank price = live quote (cash only)</span>`, body: `
+      <div class="trade-form">
+        <input class="in" id="tf-sym" placeholder="SYMBOL" size="9" spellcheck="false">
+        <select class="in" id="tf-kind"><option>EQ</option><option>FUT</option><option>CE</option><option>PE</option></select>
+        <input class="in" id="tf-exp" placeholder="YYYY-MM-DD" size="10">
+        <input class="in" id="tf-strike" placeholder="strike" size="7">
+        <select class="in" id="tf-side"><option>BUY</option><option>SELL</option></select>
+        <input class="in" id="tf-lots" placeholder="lots" size="5">
+        <input class="in" id="tf-qty" placeholder="or qty" size="7">
+        <input class="in" id="tf-px" placeholder="price" size="8">
+        <button class="btn" id="tf-go">BOOK</button>
+        <button class="btn ghost" id="tf-stage">➕ BASKET</button>
+      </div>
+      <div class="empty" style="padding:2px 12px"><span class="faint">derivatives need expiry (+strike for CE/PE) and a price — the chain row carries it; EQ needs qty</span></div>` })}
+    ${panel({ title: "BASKET — STAGED", id: "pf-basket", flush: true,
+      meta: `<span id="bk-meta">empty</span>`, body: `
+      <div id="bk-legs"><div class="empty" style="padding:8px 12px">stage legs from NEW TRADE (➕ BASKET) or the chain — price the whole idea before any of it becomes a position</div></div>
+      <div class="trade-form" style="border-top:1px solid var(--stroke-soft)">
+        <button class="btn" id="bk-margin">PRICE MARGIN (SPAN)</button>
+        <button class="btn" id="bk-exec">EXECUTE ALL</button>
+        <button class="btn ghost" id="bk-clear">CLEAR</button>
+        <span id="bk-span" class="faint"></span>
+      </div>` })}
+    </div>`;
 
   const gk = (v, d = 0) => (v === null || v === undefined ? "—" : fmt.n(v, d));
   // The same identity margin is priced against server-side — position key AND
@@ -3207,6 +3236,85 @@ async function renderPortfolio(view) {
   });
   draw();
   addTimer("portfolio:draw", draw, 30000);
+
+  // ---- NEW TRADE + BASKET wiring ----
+  const legFromForm = () => {
+    const sym = $("#tf-sym").value.trim().toUpperCase();
+    if (!sym) { toast("symbol?", "err"); return null; }
+    const kind = $("#tf-kind").value;
+    const leg = {
+      symbol: sym, kind, side: $("#tf-side").value,
+      expiry: $("#tf-exp").value.trim() || undefined,
+      strike: parseFloat($("#tf-strike").value) || undefined,
+      lots: parseInt($("#tf-lots").value, 10) || undefined,
+      quantity: parseFloat($("#tf-qty").value) || undefined,
+      price: parseFloat($("#tf-px").value) || undefined,
+    };
+    if (kind !== "EQ" && !leg.expiry) { toast("derivatives need an expiry", "err"); return null; }
+    if ((kind === "CE" || kind === "PE") && !leg.strike) { toast("options need a strike", "err"); return null; }
+    if (!leg.lots && !leg.quantity) { toast("lots or qty?", "err"); return null; }
+    return leg;
+  };
+  const paintBasket = () => {
+    const host = $("#bk-legs");
+    if (!host) return;
+    $("#bk-meta").textContent = prtBasket.length ? `${prtBasket.length} legs` : "empty";
+    if (!prtBasket.length) {
+      host.innerHTML = `<div class="empty" style="padding:8px 12px">stage legs from NEW TRADE (➕ BASKET) — price the whole idea before any of it becomes a position</div>`;
+      return;
+    }
+    host.innerHTML = `<table class="tbl"><tbody>${prtBasket.map((l, i) => `
+      <tr><td class="txt ${l.side === "BUY" ? "up" : "down"}">${l.side}</td>
+        <td class="txt sym">${esc(l.symbol)} ${esc(l.kind)}${l.strike ? " " + fmt.i(l.strike) : ""}${l.expiry ? ` <span class="faint">${esc(l.expiry)}</span>` : ""}</td>
+        <td>${l.lots ? l.lots + " lot" : fmt.n(l.quantity, 0)}</td>
+        <td>${l.price ? "@ " + fmt.n(l.price) : "@ live"}</td>
+        <td><span class="w-close" data-i="${i}" style="cursor:pointer">×</span></td></tr>`).join("")}
+    </tbody></table>`;
+    host.querySelectorAll(".w-close").forEach((x) => {
+      x.onclick = () => { prtBasket.splice(+x.dataset.i, 1); paintBasket(); };
+    });
+  };
+  $("#tf-go").onclick = async () => {
+    const leg = legFromForm();
+    if (!leg) return;
+    try {
+      const r = await postJSON("/api/portfolio/trade", leg);
+      toast(`booked ${leg.side} ${r.quantity} ${leg.symbol} @ ${fmt.n(r.price)}`, "ok");
+      draw();
+    } catch (e) { toast(e.message, "err"); }
+  };
+  $("#tf-stage").onclick = () => {
+    const leg = legFromForm();
+    if (!leg) return;
+    prtBasket.push(leg);
+    paintBasket();
+  };
+  $("#bk-clear").onclick = () => { prtBasket = []; paintBasket(); };
+  $("#bk-margin").onclick = async () => {
+    if (!prtBasket.length) return;
+    $("#bk-span").textContent = "asking the exchange…";
+    try {
+      const m = await postJSON("/api/basket/margin", { legs: prtBasket });
+      const f = m.final || m.initial || {};
+      $("#bk-span").innerHTML = `SPAN+EXP <b class="amber">₹${fmt.n(f.total ?? 0, 0)}</b>`
+        + (m.initial && m.final ? ` <span class="faint">(legs alone ₹${fmt.n(m.initial.total, 0)} — hedge benefit ₹${fmt.n(m.initial.total - m.final.total, 0)})</span>` : "");
+    } catch (e) { $("#bk-span").textContent = ""; toast(e.message, "err"); }
+  };
+  $("#bk-exec").onclick = async () => {
+    if (!prtBasket.length) return;
+    let done = 0;
+    for (const leg of [...prtBasket]) {
+      try {
+        await postJSON("/api/portfolio/trade", leg);
+        done++;
+        prtBasket.shift();
+      } catch (e) { toast(`${leg.symbol}: ${e.message}`, "err"); break; }
+    }
+    toast(`basket: ${done} legs booked`, done ? "ok" : "err");
+    paintBasket();
+    draw();
+  };
+  paintBasket();
 }
 
 /* ---------- ALERTS ---------- */
