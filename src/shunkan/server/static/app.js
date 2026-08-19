@@ -542,7 +542,8 @@ async function renderPulse(view) {
                   body: `<div class="chart-host mini" id="pulse-chart"></div>` })}
         ${panel({ title: "NEWS BIAS", id: "p-bias", body: loading("scoring headlines") })}
         ${panel({ title: "WORLD SESSIONS", id: "p-globe", flush: true, meta: "—",
-                  body: `<div class="globe-host" id="globe-host">${loading("spinning up")}</div>` })}
+                  body: `<div class="globe-host" id="globe-host">${loading("spinning up")}</div>
+                         <div class="globe-strip" id="globe-strip"></div>` })}
       </div>
     </div>`;
 
@@ -555,10 +556,36 @@ async function renderPulse(view) {
       if (!gp) return;
       gp.querySelector(".panel-meta").innerHTML =
         stamp(`${open.length ? "OPEN: " + open.join(" · ") : "ALL CLOSED"} · HOLIDAYS NOT MODELED`);
-      if (!globeHandle && window.Viz3D && $("#globe-host")) {
-        globeHandle = Viz3D.mountGlobe($("#globe-host"), s.exchanges);
-      } else if (globeHandle) {
-        globeHandle.update(s.exchanges);
+      // viz3d.js loads after app.js, so the first pass used to lose the
+      // race and the globe sat on "spinning up" until the NEXT 30s tick.
+      // Retry the mount on a short fuse until the script lands.
+      const tryMount = (tries = 0) => {
+        if (globeHandle || !$("#globe-host")) return;
+        if (window.Viz3D) {
+          globeHandle = Viz3D.mountGlobe($("#globe-host"), s.exchanges);
+        } else if (tries < 25) {
+          setTimeout(() => tryMount(tries + 1), 400);
+        }
+      };
+      if (!globeHandle) tryMount();
+      else globeHandle.update(s.exchanges);
+      // The 24h strip: every session window on one UTC axis, now-line in
+      // amber. This is the information the globe only gestures at.
+      const strip = $("#globe-strip");
+      if (strip) {
+        const now = new Date();
+        const nowH = now.getUTCHours() + now.getUTCMinutes() / 60;
+        strip.innerHTML = s.exchanges.map((ex) => `
+          <div class="gs-row">
+            <span class="gs-code ${ex.open ? "up" : ex.state === "lunch" ? "warn" : "faint"}">${esc(ex.code)}</span>
+            <div class="gs-track">
+              ${(ex.utc_windows || []).map(([a, b]) => `
+                <div class="gs-win${ex.open ? " on" : ""}" style="left:${(a / 24) * 100}%;width:${((b - a) / 24) * 100}%"></div>`).join("")}
+              <div class="gs-now" style="left:${(nowH / 24) * 100}%"></div>
+            </div>
+            <span class="gs-time faint">${esc(ex.local_time)}</span>
+          </div>`).join("")
+          + `<div class="gs-axis"><span>00 UTC</span><span>06</span><span>12</span><span>18</span><span>24</span></div>`;
       }
     } catch { /* globe is a bonus — pulse tables stay primary */ }
   };

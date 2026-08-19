@@ -1196,3 +1196,16 @@ main { padding: 0; }
   .chain-desk { grid-template-columns: 1fr; }
   .desk-right { border-left: none; }
 }
+
+/* world sessions: the 24h UTC strip under the globe */
+.globe-strip { border-top: 1px solid var(--stroke-soft); padding: 4px 10px 6px; }
+.gs-row { display: grid; grid-template-columns: 44px 1fr 40px; gap: 8px; align-items: center; height: 15px; }
+.gs-code { font-size: 9.5px; letter-spacing: 0.08em; }
+.gs-code.warn { color: var(--amber); }
+.gs-track { position: relative; height: 5px; background: var(--bg-panel-2); }
+.gs-win { position: absolute; top: 0; bottom: 0; background: rgba(93, 100, 112, 0.5); }
+.gs-win.on { background: rgba(46, 189, 133, 0.65); }
+.gs-now { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--amber); }
+.gs-time { font-size: 9px; text-align: right; }
+.gs-axis { display: flex; justify-content: space-between; color: var(--text-faint);
+  font-size: 8.5px; padding-top: 2px; }

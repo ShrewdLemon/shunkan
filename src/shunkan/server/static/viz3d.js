@@ -523,73 +523,186 @@ function latLonToVec(lat, lon, r) {
     -r * Math.cos(la) * Math.sin(lo));
 }
 
+/* Coarse landmass as lat/lon boxes — a dot-matrix earth. Deliberately
+   approximate (it is scenery, not data): enough geography that the eye
+   reads "globe" instantly, small enough to live in source. */
+const LAND_BOXES = [
+  // North America
+  [50, 72, -166, -60], [40, 50, -125, -60], [30, 40, -120, -78],
+  [23, 30, -106, -80], [15, 23, -105, -86], [58, 70, -50, -30], // +Greenland
+  // Central bridge + Caribbean
+  [8, 15, -92, -77],
+  // South America
+  [0, 10, -80, -50], [-10, 0, -80, -35], [-25, -10, -71, -40],
+  [-40, -25, -73, -53], [-55, -40, -74, -64],
+  // Europe
+  [48, 60, -10, 30], [36, 48, -10, 28], [60, 71, 4, 32], [50, 60, 30, 60],
+  // Africa
+  [20, 36, -17, 33], [5, 20, -17, 40], [-12, 5, 8, 42], [-35, -12, 12, 36],
+  [-26, -12, 43, 50], // Madagascar
+  // Middle East + Central Asia
+  [12, 32, 34, 60], [36, 55, 60, 90],
+  // Russia / North Asia
+  [55, 72, 32, 178], [50, 55, 80, 140],
+  // East Asia
+  [30, 50, 100, 125], [20, 30, 98, 122], [30, 45, 125, 145], // +Japan
+  // South Asia
+  [24, 36, 60, 92], [8, 24, 68, 90],
+  // SE Asia + Indonesia
+  [8, 24, 92, 110], [-10, 8, 95, 141],
+  // Australia + NZ
+  [-20, -11, 113, 145], [-35, -20, 114, 152], [-47, -34, 166, 178],
+  // Antarctica rim
+  [-78, -70, -180, 180],
+];
+
+function isLand(lat, lon) {
+  for (const [s_, n, w, e] of LAND_BOXES) {
+    if (lat >= s_ && lat <= n && lon >= w && lon <= e) return true;
+  }
+  return false;
+}
+
+/* Subsolar point from the clock: declination by day of year, longitude by
+   UTC time. Good to a degree or two, which is exactly what a terminator
+   needs — it is a shading, not an ephemeris. */
+function subsolar(now = new Date()) {
+  const start = Date.UTC(now.getUTCFullYear(), 0, 0);
+  const doy = (now.getTime() - start) / 86400000;
+  const decl = 23.44 * Math.sin((2 * Math.PI * (doy - 81)) / 365.25);
+  const utcH = now.getUTCHours() + now.getUTCMinutes() / 60;
+  const lon = (12 - utcH) * 15;
+  return { lat: decl, lon };
+}
+
 function mountGlobe(host, exchanges) {
   host.innerHTML = "";
   const s3 = new Scene3D(host);
-  s3.scene.clear();                        // no floor grid on the globe
+  s3.scene.clear();
   s3.scene.add(new THREE.AmbientLight(0xffffff, 1.0));
-  s3.camera.position.set(0, 0.55, 2.35);
+  s3.camera.position.set(0, 0.5, 2.3);
   s3.controls.target.set(0, 0, 0);
   s3.controls.minDistance = 1.5;
   s3.controls.maxDistance = 5;
 
   const globe = new THREE.Group();
   s3.scene.add(globe);
-
-  // graticule: latitude rings + meridians, hairline
-  const mat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16 });
   const R = 1.0;
+
+  // base sphere: deep blue-black ocean
+  globe.add(new THREE.Mesh(
+    new THREE.SphereGeometry(R * 0.992, 48, 32),
+    new THREE.MeshBasicMaterial({ color: 0x0a0e15 })));
+
+  // graticule, fainter than before — the land carries the shape now
+  const gmat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.07 });
   for (let lat = -60; lat <= 60; lat += 30) {
     const pts = [];
     for (let lon = 0; lon <= 360; lon += 5) pts.push(latLonToVec(lat, lon, R));
-    globe.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+    globe.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), gmat));
   }
   for (let lon = 0; lon < 360; lon += 30) {
     const pts = [];
     for (let lat = -90; lat <= 90; lat += 5) pts.push(latLonToVec(lat, lon, R));
-    globe.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+    globe.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), gmat));
   }
-  // faint solid sphere for depth
+
+  // dot-matrix continents
+  const landPts = [];
+  for (let lat = -80; lat <= 80; lat += 2.6) {
+    // constant surface density: thin the longitudinal step near the poles
+    const step = 2.6 / Math.max(Math.cos((lat * Math.PI) / 180), 0.3);
+    for (let lon = -180; lon < 180; lon += step) {
+      if (isLand(lat, lon)) landPts.push(latLonToVec(lat, lon, R * 1.001));
+    }
+  }
+  const landGeo = new THREE.BufferGeometry().setFromPoints(landPts);
+  globe.add(new THREE.Points(landGeo, new THREE.PointsMaterial({
+    color: 0x51606f, size: 0.016, sizeAttenuation: true,
+    transparent: true, opacity: 0.95, depthWrite: false })));
+
+  // night hemisphere, fixed in the EARTH frame so it stays true to the land
+  // while the decorative spin turns the whole assembly
+  const night = new THREE.Mesh(
+    new THREE.SphereGeometry(R * 1.006, 48, 32, 0, Math.PI),
+    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true,
+                                  opacity: 0.48, depthWrite: false, side: THREE.DoubleSide }));
+  globe.add(night);
+  // The half-shell's intrinsic outward axis, measured from its own
+  // vertices instead of guessed from geometry conventions - a wrong guess
+  // here shades the wrong continents and no one notices for a season.
+  const shellAxis = (() => {
+    const pos = night.geometry.getAttribute("position");
+    const c = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      c.x += pos.getX(i); c.y += pos.getY(i); c.z += pos.getZ(i);
+    }
+    return c.normalize();
+  })();
+  const aimNight = () => {
+    const sun = subsolar();
+    const anti = latLonToVec(-sun.lat, sun.lon + 180, 1).normalize();
+    night.quaternion.setFromUnitVectors(shellAxis, anti);
+  };
+  aimNight();
+
+  // atmosphere: a whisper of blue on the limb
   globe.add(new THREE.Mesh(
-    new THREE.SphereGeometry(R * 0.995, 48, 32),
-    new THREE.MeshBasicMaterial({ color: 0x0d1017, transparent: true, opacity: 0.85 })));
+    new THREE.SphereGeometry(R * 1.045, 48, 32),
+    new THREE.MeshBasicMaterial({ color: 0x3a6ea8, transparent: true,
+                                  opacity: 0.05, side: THREE.BackSide, depthWrite: false })));
 
   const markers = new Map();
   for (const ex of exchanges) {
-    const pos = latLonToVec(ex.lat, ex.lon, R * 1.01);
+    const surface = latLonToVec(ex.lat, ex.lon, R * 1.004);
+    const anchor = latLonToVec(ex.lat, ex.lon, R * 1.10);
     const dot = new THREE.Mesh(
-      new THREE.SphereGeometry(0.034, 12, 12),
+      new THREE.SphereGeometry(0.02, 12, 12),
       new THREE.MeshBasicMaterial({ color: STATE_COLOR[ex.state] ?? STATE_COLOR.closed }));
-    dot.position.copy(pos);
+    dot.position.copy(surface);
     const halo = new THREE.Mesh(
-      new THREE.SphereGeometry(ex.open ? 0.065 : 0.05, 12, 12),
+      new THREE.SphereGeometry(0.042, 12, 12),
       new THREE.MeshBasicMaterial({ color: STATE_COLOR[ex.state] ?? STATE_COLOR.closed,
-                                    transparent: true, opacity: ex.open ? 0.32 : 0.18 }));
-    halo.position.copy(pos);
+                                    transparent: true, opacity: ex.open ? 0.30 : 0.12,
+                                    depthWrite: false }));
+    halo.position.copy(surface);
+    const leader = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([surface, anchor]),
+      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.22 }));
     const label = textSprite(`${ex.code} ${ex.local_time}`, {
       color: ex.open ? "#2ebd85" : (ex.state === "lunch" ? "#f0a826" : "#5d6470"),
-      scale: 0.00062, depthTest: true,
+      scale: 0.00054, depthTest: true,
     });
-    label.position.copy(latLonToVec(ex.lat, ex.lon, R * 1.16));
-    globe.add(dot, halo, label);
-    markers.set(ex.code, { dot, halo, label });
+    label.position.copy(latLonToVec(ex.lat, ex.lon, R * 1.15));
+    globe.add(dot, halo, leader, label);
+    markers.set(ex.code, { dot, halo, label, open: ex.open });
   }
 
-  s3.onTick(() => { globe.rotation.y += 0.0016; });
+  let t = 0;
+  s3.onTick(() => {
+    globe.rotation.y += 0.0014;
+    t += 0.05;
+    const pulse = 1 + 0.18 * Math.sin(t);
+    for (const m of markers.values()) {
+      if (m.open) m.halo.scale.setScalar(pulse);
+    }
+  });
 
   return {
     dispose: () => s3.dispose(),
     update(rows) {
+      aimNight();                       // the terminator drifts 15°/hour
       for (const ex of rows) {
         const m = markers.get(ex.code);
         if (!m) continue;
         const col = STATE_COLOR[ex.state] ?? STATE_COLOR.closed;
         m.dot.material.color.setHex(col);
         m.halo.material.color.setHex(col);
-        // redraw the time label
+        m.halo.material.opacity = ex.open ? 0.30 : 0.12;
+        m.open = ex.open;
         const fresh = textSprite(`${ex.code} ${ex.local_time}`, {
           color: ex.open ? "#2ebd85" : (ex.state === "lunch" ? "#f0a826" : "#5d6470"),
-          scale: 0.00062, depthTest: true,
+          scale: 0.00054, depthTest: true,
         });
         fresh.position.copy(m.label.position);
         globe.add(fresh);
