@@ -321,3 +321,24 @@ worked.
 
 Margin: reported not enforced on paper (owner's design). Gross notional
 ~₹1.14Cr on ₹1.0L equity — stated plainly, this is the aggression knob.
+
+## 2026-08-19 15:37 — session execution complete
+
+**Pair CLOSED: +₹582 realized** (short 260 NIFTYFUT 24,113.1→24,111.0
+= +546; long 90 BANKNIFTYFUT 57,350→57,350.4 = +36). The relative-
+strength read chopped −2.5k to +0.5k and exited green on the time rule,
+not on bravado.
+
+**Shock basket FILLED at real CAS auction closes** (₹94.7k, 7 names):
+ASIANPAINT 5 @ 2,630.80 · SBILIFE 8 @ 1,780.40 · ITC 53 @ 267.05 ·
+TMPV 44 @ 321.30 · SUNPHARMA 7 @ 1,900.00 · CIPLA 10 @ 1,422.00 ·
+ULTRACEMCO 1 @ 11,450.00. The auction moved prices off the 15:15 freeze
+(ASIANPAINT +10 above), so these are discovered prices, not stale marks.
+Exit: tomorrow's close. Grading: ONE clustered draw.
+
+**Wall spread CARRIED** (short 24,000/long 23,900 PE ×260, credit 27.55):
+defined risk ₹18,837, thesis = the day's freshly rebuilt put wall.
+
+CAS wrinkle logged: between 15:15-15:35 Yahoo rolls prev-close early, so
+day-change fields on F&O names read ~0 and heatmap colours are artifacts
+during the auction window. Levels stay clean; the terminal now knows.
