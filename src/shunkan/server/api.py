@@ -354,9 +354,21 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             await asyncio.sleep(25.0)  # let startup traffic settle first
             while True:
                 if not is_offline():
+                    # Pulse boards + watchlist + the FULL constituent
+                    # universe. It used to stop at the watchlist, so 50-odd
+                    # constituents' archives froze at their seed date and the
+                    # signals scan was reading week-old candles for most of
+                    # the universe (the per-row dates said so - that is what
+                    # they are for).
+                    try:
+                        from shunkan.data.constituents import universe as _uni
+
+                        constituent_syms = [f"{c.symbol}.NS" for c in _uni()]
+                    except Exception:
+                        constituent_syms = []
                     symbols = list(dict.fromkeys(
                         [ticker for _, ticker in INDIA_PULSE + GLOBAL_PULSE]
-                        + load_watchlist()))
+                        + load_watchlist() + constituent_syms))
                     src = (getattr(provider, "broker_name", "") or "yahoo/nse")
 
                     def _sync_all():
@@ -3222,25 +3234,94 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             raise HTTPException(404, str(exc)) from exc
         return {"ok": True, "text": gone.describe()}
 
-    @app.get("/api/layout")
-    def get_layout():
+    def _layouts_path():
         from shunkan.config import APP_DIR
 
-        path = APP_DIR / "layout.json"
+        return APP_DIR / "layouts.json"
+
+    def _load_layouts() -> dict:
+        """Named workspace layouts. The old single layout.json becomes
+        'main' on first read, so nobody's arrangement is lost to the
+        upgrade."""
+        from shunkan.config import APP_DIR
+
+        path = _layouts_path()
         if path.exists():
             try:
                 return json.loads(path.read_text())
             except (json.JSONDecodeError, OSError):
+                return {}
+        legacy = APP_DIR / "layout.json"
+        if legacy.exists():
+            try:
+                return {"main": json.loads(legacy.text() if False else legacy.read_text())}
+            except (json.JSONDecodeError, OSError):
                 pass
-        return {"widgets": None}  # frontend falls back to its default layout
+        return {}
+
+    @app.get("/api/layouts")
+    def list_layouts():
+        return {"names": sorted(_load_layouts().keys()) or ["main"]}
+
+    @app.get("/api/layout")
+    def get_layout(name: str = "main"):
+        return _load_layouts().get(name) or {"widgets": None}
 
     @app.post("/api/layout")
-    def save_layout(body: dict):
-        from shunkan.config import APP_DIR, ensure_dirs
+    def save_layout(body: dict, name: str = "main"):
+        from shunkan.config import ensure_dirs
 
         ensure_dirs()
-        (APP_DIR / "layout.json").write_text(json.dumps(body, indent=2))
-        return {"ok": True}
+        all_ = _load_layouts()
+        all_[name] = body
+        _layouts_path().write_text(json.dumps(all_, indent=2))
+        return {"ok": True, "name": name}
+
+    @app.delete("/api/layout")
+    def delete_layout(name: str):
+        all_ = _load_layouts()
+        if name in all_ and len(all_) > 1:
+            del all_[name]
+            _layouts_path().write_text(json.dumps(all_, indent=2))
+            return {"ok": True}
+        raise HTTPException(400, "cannot delete the last layout")
+
+    @app.get("/api/commodities")
+    def commodities():
+        """The MCX strip: front GOLD/SILVER/CRUDEOIL futures, live rupee
+        prices via Kite. Refuses without a live broker - Yahoo's dollar
+        quotes are a different instrument and would not be labelled MCX."""
+        from datetime import date as _date
+
+        from shunkan.data.brokers import KiteProvider, get_broker
+        from shunkan.data.kite_fno import load_instruments
+        from shunkan.stream.factory import front_future_rows
+
+        try:
+            broker = get_broker()
+            if not isinstance(broker, KiteProvider):
+                raise DataError("no Kite session")
+            nfo = load_instruments(broker, "MCX")
+            fronts = front_future_rows(nfo, ("GOLD", "SILVER", "CRUDEOIL"), _date.today())
+            token_to_name = {t: n for t, n in fronts}
+            rows = nfo[nfo["instrument_token"].isin(token_to_name)][
+                ["instrument_token", "tradingsymbol"]]
+            keys = [f"MCX:{ts}" for ts in rows["tradingsymbol"]]
+            q = broker.get_json("/quote?" + "&".join(f"i={k}" for k in keys))["data"]
+            out = []
+            for _, r in rows.iterrows():
+                d = q.get(f"MCX:{r['tradingsymbol']}") or {}
+                ltp = d.get("last_price")
+                prev = (d.get("ohlc") or {}).get("close")
+                out.append({
+                    "name": token_to_name[int(r["instrument_token"])].replace("FUT", ""),
+                    "tradingsymbol": r["tradingsymbol"],
+                    "ltp": ltp,
+                    "chg_pct": ((ltp / prev - 1) * 100 if ltp and prev else None),
+                })
+            return _clean({"rows": out, "source": "MCX front futures via Kite"})
+        except Exception as exc:
+            raise HTTPException(502, f"commodity strip needs a live Kite session: {str(exc)[:100]}") from exc
 
     @app.get("/api/store/stats")
     def get_store_stats():
