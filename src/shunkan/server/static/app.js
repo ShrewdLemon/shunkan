@@ -534,8 +534,10 @@ async function renderPulse(view) {
   view.innerHTML = `
     <div class="row cols-main-side">
       <div style="display:grid;gap:12px">
-        ${panel({ title: "INDIA", meta: "—", id: "p-india", flush: true, body: loading("quotes") })}
-        ${panel({ title: "GLOBAL", meta: "—", id: "p-global", flush: true, body: loading("quotes") })}
+        ${panel({ title: `INDIA <button class="btn ghost pb-edit" data-board="india">EDIT</button>`,
+                  meta: "—", id: "p-india", flush: true, body: loading("quotes") })}
+        ${panel({ title: `GLOBAL <button class="btn ghost pb-edit" data-board="global">EDIT</button>`,
+                  meta: "—", id: "p-global", flush: true, body: loading("quotes") })}
       </div>
       <div style="display:grid;gap:12px;align-content:start">
         ${panel({ title: `NIFTY 50 — 3M DAILY`, id: "p-mini", flush: true,
@@ -546,6 +548,46 @@ async function renderPulse(view) {
                          <div class="globe-strip" id="globe-strip"></div>` })}
       </div>
     </div>`;
+
+  // Board editor: the lists are preferences, not firmware. One line per
+  // instrument, "TICKER = LABEL" (label optional), saved server-side.
+  const wireBoardEditors = () => {
+    view.querySelectorAll(".pb-edit").forEach((btn) => {
+      btn.onclick = async (ev) => {
+        ev.stopPropagation();
+        const key = btn.dataset.board;
+        const cfg = await getJSON("/api/pulse/boards");
+        const body = $(`#p-${key} .panel-body`);
+        const text = cfg[key].map((r) => r.name && r.name !== r.ticker
+          ? `${r.ticker} = ${r.name}` : r.ticker).join("\n");
+        body.innerHTML = `
+          <div style="padding:8px 12px">
+            <textarea class="in pb-ta" rows="${Math.max(6, cfg[key].length + 2)}"
+              spellcheck="false">${esc(text)}</textarea>
+            <div style="display:flex;gap:8px;margin-top:6px;align-items:baseline">
+              <button class="btn" id="pb-save-${key}">SAVE</button>
+              <button class="btn ghost" id="pb-cancel-${key}">CANCEL</button>
+              <span class="faint" style="font-size:10px">one per line · TICKER = LABEL · Yahoo notation (^NSEI, RELIANCE.NS, GC=F) · 1–20 rows</span>
+            </div>
+          </div>`;
+        $(`#pb-cancel-${key}`).onclick = () => show("pulse");
+        $(`#pb-save-${key}`).onclick = async () => {
+          const rows = body.querySelector(".pb-ta").value.split("\n")
+            .map((l) => l.trim()).filter(Boolean)
+            .map((l) => {
+              const [t, ...rest] = l.split("=");
+              return { ticker: t.trim(), name: rest.join("=").trim() };
+            });
+          try {
+            cfg[key] = rows;
+            await postJSON("/api/pulse/boards", cfg);
+            show("pulse");
+          } catch (e) { toast(`boards: ${e.message}`, "err"); }
+        };
+      };
+    });
+  };
+  wireBoardEditors();
 
   let globeHandle = null;
   const drawGlobe = async () => {
