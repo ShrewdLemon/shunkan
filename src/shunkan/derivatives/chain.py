@@ -54,6 +54,13 @@ class OptionChain:
     # zigzagged by two vol points and fitted with the wrong sign of skew.
     call_mid: np.ndarray | None = None
     put_mid: np.ndarray | None = None
+    # Top of book where the source publishes depth. The v3 chain shows the
+    # EXECUTABLE side per leg (a call writer hits the bid, a put buyer lifts
+    # the ask); NaN where the book was empty or one-sided, never invented.
+    call_bid: np.ndarray | None = None
+    call_ask: np.ndarray | None = None
+    put_bid: np.ndarray | None = None
+    put_ask: np.ndarray | None = None
 
     def quote_price(self, side: str) -> np.ndarray:
         """The best available price per strike: mid where the book was quoted,

@@ -1138,3 +1138,61 @@ main { padding: 0; }
 /* --- rail: keep it working but quieter (phase 2 removes it — see notes) ----- */
 .rail-btn .code { font-size: 11px; }
 .rail-btn .lbl { font-size: 6.5px; }
+
+/* ============ V3 PHASE 2 — THE OPT DESK (spec: the v3 mockup) ============ */
+
+:root { --rail-w: 0px; }
+.rail { display: none; }
+
+.cl-codes { display: inline-flex; gap: 4px; margin-left: auto; }
+.cl-code {
+  background: none; border: 1px solid var(--stroke); color: var(--text-faint);
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
+  padding: 1px 8px; cursor: pointer; border-radius: var(--r);
+}
+.cl-code:hover { color: var(--text); border-color: var(--text-faint); }
+.cl-code.active { color: var(--amber); border-color: var(--amber); }
+
+.sym-band {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 6px 12px 2px; background: var(--bg);
+}
+.sb-name { font-size: 19px; font-weight: 700; color: var(--text); letter-spacing: 0.02em; }
+.sb-px { font-size: 19px; font-weight: 700; color: var(--amber); }
+.sb-chg { font-size: 12px; font-weight: 600; }
+.sb-ohlc { font-size: 10.5px; }
+.sb-right { margin-left: auto; display: inline-flex; gap: 8px; align-items: center; }
+.sym-sub { padding: 0 12px 4px; font-size: 10px; }
+
+.chain-desk { display: grid; grid-template-columns: 1fr 336px; gap: 0; align-items: start; }
+.desk-left { min-width: 0; }
+.desk-right { display: grid; gap: 0; border-left: 1px solid var(--stroke-soft); }
+.desk-right .panel { border-left: none; }
+.chain-tbl th, .chain-tbl td { padding: 1px 7px; }
+.exec-px { color: var(--text-dim); }
+
+.dk-rows { display: grid; }
+.dk-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 2px 10px; border-bottom: 1px solid var(--stroke-soft); font-size: 11px;
+}
+.dk-row span { color: var(--text-dim); font-size: 10px; letter-spacing: 0.05em; }
+.dk-row b { color: var(--text); font-weight: 600; }
+.dk-row b.amber { color: var(--amber); }
+
+.risk-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; }
+.rk { padding: 4px 10px; border-bottom: 1px solid var(--stroke-soft); border-right: 1px solid var(--stroke-soft); }
+.rk span { display: block; color: var(--text-dim); font-size: 9px; letter-spacing: 0.07em; }
+.rk b { font-size: 12px; }
+
+.tape-mini { max-height: 240px; overflow-y: auto; }
+.tp-row {
+  display: grid; grid-template-columns: 62px 14px 1fr auto; gap: 6px;
+  padding: 1px 10px; font-size: 10.5px; border-bottom: 1px solid var(--stroke-soft);
+}
+.tp-sym { color: var(--text-dim); }
+
+@media (max-width: 1100px) {
+  .chain-desk { grid-template-columns: 1fr; }
+  .desk-right { border-left: none; }
+}

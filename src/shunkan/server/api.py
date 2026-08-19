@@ -999,10 +999,12 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                 "strike": float(c.strikes[i]),
                 "call": {"ltp": float(c.call_ltp[i]), "oi": float(c.call_oi[i]),
                          "oi_change": d_call, "volume": float(c.call_volume[i]),
-                         "iv": _clean(float(c.call_iv[i]))},
+                         "iv": _clean(float(c.call_iv[i])),
+                         "bid": _clean(float(c.call_bid[i])) if c.call_bid is not None else None},
                 "put": {"ltp": float(c.put_ltp[i]), "oi": float(c.put_oi[i]),
                         "oi_change": d_put, "volume": float(c.put_volume[i]),
-                        "iv": _clean(float(c.put_iv[i]))},
+                        "iv": _clean(float(c.put_iv[i])),
+                        "ask": _clean(float(c.put_ask[i])) if c.put_ask is not None else None},
                 "atm": i == c.atm_index,
             })
         delta_basis = (
