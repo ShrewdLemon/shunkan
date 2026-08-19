@@ -4867,9 +4867,18 @@ function liveUpdatePulse(t) {
     px.textContent = fmt.n(t.ltp);
     chg.textContent = fmt.pct(t.change_pct);
     chg.className = `chg ${cls(t.change_pct)}`;
-    row.classList.remove("flash-up", "flash-down");
-    void row.offsetWidth;
-    row.classList.add(t.ltp >= old ? "flash-up" : "flash-down");
+    // The flash says "this just moved", not "this is a strobe". Indices
+    // print several times a second, and re-triggering the animation per
+    // tick turned the board into a hazard light - one flash per symbol
+    // per 2s carries the same information without the assault.
+    state._flashAt = state._flashAt || new Map();
+    const last = state._flashAt.get(t.symbol) || 0;
+    if (Date.now() - last > 2000) {
+      state._flashAt.set(t.symbol, Date.now());
+      row.classList.remove("flash-up", "flash-down");
+      void row.offsetWidth;
+      row.classList.add(t.ltp >= old ? "flash-up" : "flash-down");
+    }
   }
 }
 
