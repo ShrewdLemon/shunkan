@@ -509,7 +509,12 @@ window.addEventListener("hashchange", () => {
 });
 window.show = show;
 
-const loading = (msg = "loading") => `<div class="loading"><span class="spin"></span>${msg}</div>`;
+const loading = (msg = "loading") => `
+  <div class="loading">
+    <span class="load-candles">${Array.from({ length: 9 }, (_, i) =>
+      `<i style="animation-delay:${(i * 0.11).toFixed(2)}s"></i>`).join("")}</span>
+    <span class="load-msg">${msg}</span>
+  </div>`;
 
 /* ---------- PULSE ---------- */
 
