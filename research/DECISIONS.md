@@ -342,3 +342,19 @@ defined risk ₹18,837, thesis = the day's freshly rebuilt put wall.
 CAS wrinkle logged: between 15:15-15:35 Yahoo rolls prev-close early, so
 day-change fields on F&O names read ~0 and heatmap colours are artifacts
 during the auction window. Levels stay clean; the terminal now knows.
+
+## 2026-08-19 15:42 — bell. Session accounting (aggressive mandate, paper)
+
+Equity ₹100,243.75 → **₹100,682.75 (+₹439, +0.44% in 28 minutes)**.
+Realized today +₹582 (the pair, closed on the time rule). Unrealized
+−₹143 (wall spread, capped at −₹18,837). Carried into tomorrow: the
+spread + 7 shock names at auction closes (₹94.7k). The aggressive
+mandate made money on the session, and the honest caveat stands in both
+directions: +0.44% in half an hour proves nothing, exactly like a losing
+half hour would have proven nothing. n=1. Tomorrow's close grades the
+basket (the signal's first live draw) and the spread thesis.
+
+Journal grading update (18→19 pair, first grade against a RECORD not a
+reconstruction): regime HELD again (7/7 overall), yesterday's support
+24,000 HELD (today's low 24,026 — the wall framework 13/14 lifetime),
+pain-pull FAILED again (1/6 — the magnet is dead and stays dead).
