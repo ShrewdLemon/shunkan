@@ -1218,3 +1218,28 @@ main { padding: 0; }
 
 /* PRT trade form */
 .trade-form { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; align-items: baseline; }
+
+/* loading: a chart drawing itself - staggered candles breathing while the
+   real data comes. Decorative motion only; no fake progress is implied. */
+.loading { display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 26px 12px; color: var(--text-dim); }
+.load-candles { display: inline-flex; align-items: flex-end; gap: 4px; height: 34px; }
+.load-candles i {
+  width: 5px; height: 100%; transform-origin: bottom;
+  background: var(--up); opacity: 0.85;
+  animation: cndl 1.15s ease-in-out infinite;
+}
+.load-candles i:nth-child(2n) { background: var(--down); }
+.load-candles i:nth-child(3n) { height: 72%; }
+.load-candles i:nth-child(4n) { height: 48%; }
+.load-candles i:nth-child(5n) { height: 86%; }
+@keyframes cndl {
+  0%, 100% { transform: scaleY(0.25); opacity: 0.4; }
+  50%      { transform: scaleY(1);    opacity: 0.95; }
+}
+.load-msg::after { content: ""; animation: dots 1.6s steps(4) infinite; }
+@keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+@media (prefers-reduced-motion: reduce) {
+  .load-candles i { animation: none; transform: scaleY(0.7); }
+  .load-msg::after { animation: none; content: "…"; }
+}
