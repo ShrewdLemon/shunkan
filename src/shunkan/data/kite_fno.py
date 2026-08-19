@@ -226,8 +226,10 @@ def kite_option_chain(
 
     strikes = np.sort(opts["strike"].unique())
     n = len(strikes)
-    cols = {k: np.full(n, np.nan) if k.endswith("_mid") else np.zeros(n) for k in
-            ("c_ltp", "c_oi", "c_vol", "c_mid", "p_ltp", "p_oi", "p_vol", "p_mid")}
+    cols = {k: (np.full(n, np.nan) if k.endswith(("_mid", "_bid", "_ask"))
+                else np.zeros(n)) for k in
+            ("c_ltp", "c_oi", "c_vol", "c_mid", "c_bid", "c_ask",
+             "p_ltp", "p_oi", "p_vol", "p_mid", "p_bid", "p_ask")}
     # Authoritative per contract; a disagreeing or unusable column yields
     # None rather than int(NaN) or a coin-flip multiplier.
     lot_size = _one_lot_size(opts)
@@ -248,6 +250,8 @@ def kite_option_chain(
         bid = float(((depth.get("buy") or [{}])[0]).get("price") or 0.0)
         ask = float(((depth.get("sell") or [{}])[0]).get("price") or 0.0)
         cols[f"{side}_mid"][i] = (bid + ask) / 2.0 if bid > 0 and ask >= bid else np.nan
+        cols[f"{side}_bid"][i] = bid if bid > 0 else np.nan
+        cols[f"{side}_ask"][i] = ask if ask > 0 else np.nan
 
     t_years = time_to_expiry_years(chosen)
     call_iv, put_iv = _solve_chain_ivs(
@@ -275,6 +279,10 @@ def kite_option_chain(
         as_of=as_of,
         call_mid=cols["c_mid"],
         put_mid=cols["p_mid"],
+        call_bid=cols["c_bid"],
+        call_ask=cols["c_ask"],
+        put_bid=cols["p_bid"],
+        put_ask=cols["p_ask"],
         lot_size=lot_size,
         lot_size_source=(f"NFO instruments dump ({chosen} series)"
                          if lot_size else "no single lot in the instruments dump"),

@@ -377,14 +377,17 @@ const VIEWS = [
 ];
 
 function buildRail() {
-  const rail = $("#rail");
+  // v3: the rail's codes live in the command bar as chips; the rail itself
+  // is retired by CSS (--rail-w: 0). Muscle memory carries over: same codes,
+  // same order, one row instead of one column.
+  const host = $("#cl-codes");
+  if (!host) return;
   VIEWS.forEach((v) => {
-    const b = elv("button", "rail-btn",
-      `<span class="code">${v.code}</span><span class="lbl">${v.label}</span>`);
+    const b = elv("button", "cl-code", v.code);
     b.id = `rail-${v.id}`;
-    b.title = `${v.label} (${v.code})`;
+    b.title = `${v.label}`;
     b.onclick = () => show(v.id);
-    rail.appendChild(b);
+    host.appendChild(b);
   });
 }
 
@@ -471,7 +474,7 @@ function show(viewId, params = {}) {
     state.symbol = String(params.symbol).toUpperCase();
   }
   syncViewSub();
-  document.querySelectorAll(".rail-btn").forEach((b) => b.classList.remove("active"));
+  document.querySelectorAll(".rail-btn, .cl-code").forEach((b) => b.classList.remove("active"));
   // A view without its own rail button belongs to the Analyse hub: light
   // ANL so the rail still says where you are.
   const btn = $(`#rail-${viewId}`) || (ANL_VIEWS.has(viewId) ? $("#rail-analyse") : null);
@@ -1230,52 +1233,144 @@ function renderChain(view) {
   let straddleChart = null, straddleSeries = null;
 
   view.innerHTML = `
-    ${panel({ title: `OPTION CHAIN — <span class="hl">${sym}</span>
-        <span class="badge" id="chain-src">—</span><span class="badge" id="chain-dte">—</span>`,
-      id: "chain-top", flush: true,
-      meta: `<span id="chain-upd">LOADING…</span>
-        <span class="controls" style="display:inline-flex;margin-left:8px">
+    <div class="sym-band" id="sym-band">
+      <span class="sb-name">${esc(sym)}</span>
+      <span class="sb-px" id="sb-px">—</span>
+      <span class="sb-chg" id="sb-chg">—</span>
+      <span class="sb-ohlc faint" id="sb-ohlc"></span>
+      <span class="sb-right">
         <select class="in" id="chain-exp"></select>
-        <input class="in" id="chain-sym" value="${sym}" size="8">
-        <button class="btn" id="chain-go">LOAD</button></span>`,
-      body: `
-      <div class="kv-strip">
-        <div class="kv"><div class="k">SPOT</div><div class="v" id="cv-spot">—</div></div>
-        <div class="kv"><div class="k">PCR OI<button class="imark" data-prov="chain:pcr" title="How is this number computed?" style="display:none">i</button></div><div class="v" id="cv-pcr">—</div></div>
-        <div class="kv"><div class="k">MAX PAIN<button class="imark" data-prov="chain:maxpain" title="How is this number computed?" style="display:none">i</button></div><div class="v amber" id="cv-mp">—</div></div>
-        <div class="kv"><div class="k">ATM IV<button class="imark" data-prov="chain:atmiv" title="How is this number computed?" style="display:none">i</button></div><div class="v" id="cv-iv">—</div></div>
-        <div class="kv"><div class="k">EXP MOVE<button class="imark" data-prov="chain:move" title="How is this number computed?" style="display:none">i</button></div><div class="v" id="cv-move">—</div></div>
-        <div class="kv"><div class="k">SUPPORT</div><div class="v up" id="cv-sup">—</div></div>
-        <div class="kv"><div class="k">RESIST</div><div class="v down" id="cv-res">—</div></div>
-        <div class="kv"><div class="k">STRADDLE</div><div class="v" id="cv-str">—</div></div>
-        <div class="kv"><div class="k">EXPIRY</div><div class="v sm" id="cv-exp">—</div></div>
-        <div class="kv"><div class="k">LOT</div><div class="v sm" id="cv-lot">—</div></div>
+        <span class="badge" id="chain-dte">—</span>
+        <span class="faint">LOT <b id="cv-lot">—</b></span>
+        <span class="badge" id="chain-src">—</span>
+        <input class="in" id="chain-sym" value="${esc(sym)}" size="7">
+        <button class="btn" id="chain-go">LOAD</button>
+      </span>
+    </div>
+    <div class="sym-sub faint"><span id="chain-doi">—</span><button class="imark" data-prov="chain:doi" title="How is this number computed?" style="display:none">i</button> <span id="chain-upd">LOADING…</span></div>
+    <div class="chain-desk">
+      <div class="desk-left">
+        ${panel({ title: `STRIKES <span class="badge" id="chain-win">—</span>`, id: "chain-strikes", flush: true,
+          meta: ``,
+          body: `<div class="tbl-scroll" id="chain-scroll">
+            <table class="tbl chain-tbl"><thead><tr>
+              <th class="oi-h call">C·OI</th><th>C·ΔOI</th><th>C·VOL</th><th>C·IV</th><th>C·BID</th><th>C·LTP</th>
+              <th class="k-strike">STRIKE</th>
+              <th>P·LTP</th><th>P·ASK</th><th>P·IV</th><th>P·VOL</th><th>P·ΔOI</th><th class="oi-h put">P·OI</th>
+            </tr></thead><tbody id="chain-rows">
+              <tr><td colspan="13">${loading("chain")}</td></tr>
+            </tbody></table></div>
+          <div class="insight">
+            <div class="insight-title">INSIGHT</div>
+            <div class="insight-item"><span class="marker">▸</span>
+              <span><span class="what" id="ci-bias-w">—</span><button class="imark" data-prov="chain:bias" title="How is this number computed?" style="display:none">i</button>
+                <span class="why" id="ci-bias-y"></span></span></div>
+            <div class="insight-item"><span class="marker">▸</span>
+              <span><span class="what" id="ci-move-w">—</span> <span class="why" id="ci-move-y"></span></span></div>
+            <div class="insight-item" id="ci-unusual" style="display:none"><span class="marker">▸</span>
+              <span><span class="what" id="ci-unusual-w"></span> <span class="why" id="ci-unusual-y"></span></span></div>
+          </div>` })}
       </div>
-      <div class="insight">
-        <div class="insight-title">INSIGHT</div>
-        <div class="insight-item"><span class="marker">▸</span>
-          <span><span class="what" id="ci-bias-w">—</span><button class="imark" data-prov="chain:bias" title="How is this number computed?" style="display:none">i</button>
-            <span class="why" id="ci-bias-y"></span></span></div>
-        <div class="insight-item"><span class="marker">▸</span>
-          <span><span class="what" id="ci-move-w">—</span> <span class="why" id="ci-move-y"></span></span></div>
-        <div class="insight-item" id="ci-unusual" style="display:none"><span class="marker">▸</span>
-          <span><span class="what" id="ci-unusual-w"></span> <span class="why" id="ci-unusual-y"></span></span></div>
-      </div>` })}
-    ${panel({ title: `STRIKES <span class="badge" id="chain-win">—</span>`, id: "chain-strikes", flush: true,
-      meta: `<span id="chain-doi">—</span><button class="imark" data-prov="chain:doi" title="How is this number computed?" style="display:none">i</button>`,
-      body: `<div class="tbl-scroll" id="chain-scroll">
-        <table class="tbl"><thead><tr>
-          <th class="oi-h call">C·OI</th><th>C·ΔOI</th><th>C·VOL</th><th>C·IV</th><th>C·LTP</th>
-          <th class="k-strike">STRIKE</th>
-          <th>P·LTP</th><th>P·IV</th><th>P·VOL</th><th>P·ΔOI</th><th class="oi-h put">P·OI</th>
-        </tr></thead><tbody id="chain-rows">
-          <tr><td colspan="11">${loading("chain")}</td></tr>
-        </tbody></table></div>` })}
-    <div id="chain-straddle" style="display:contents"></div>`;
+      <div class="desk-right">
+        ${panel({ title: "CHAIN ANALYTICS", id: "dk-analytics", flush: true, meta: "", body: `
+          <div class="dk-rows">
+            <div class="dk-row"><span>SPOT</span><b id="cv-spot">—</b></div>
+            <div class="dk-row"><span>PCR OI<button class="imark" data-prov="chain:pcr" title="How is this number computed?" style="display:none">i</button></span><b id="cv-pcr">—</b></div>
+            <div class="dk-row"><span>MAX PAIN<button class="imark" data-prov="chain:maxpain" title="How is this number computed?" style="display:none">i</button></span><b class="amber" id="cv-mp">—</b></div>
+            <div class="dk-row"><span>ATM IV<button class="imark" data-prov="chain:atmiv" title="How is this number computed?" style="display:none">i</button></span><b id="cv-iv">—</b></div>
+            <div class="dk-row"><span>EXP MOVE<button class="imark" data-prov="chain:move" title="How is this number computed?" style="display:none">i</button></span><b id="cv-move">—</b></div>
+            <div class="dk-row"><span>OI SUPPORT</span><b class="amber" id="cv-sup">—</b></div>
+            <div class="dk-row"><span>OI RESIST</span><b class="amber" id="cv-res">—</b></div>
+            <div class="dk-row"><span>STRADDLE</span><b id="cv-str">—</b></div>
+            <div class="dk-row"><span>EXPIRY</span><b id="cv-exp">—</b></div>
+            <div class="dk-row"><span>IV RANK</span><b id="cv-rank">—</b></div>
+          </div>` })}
+        <div id="chain-straddle" style="display:contents"></div>
+        ${panel({ title: "BOOK RISK — NET", id: "dk-risk", flush: true,
+          meta: `<span id="dk-risk-meta">—</span>`, body: `
+          <div class="risk-grid" id="dk-risk-grid">${loading("book")}</div>` })}
+        ${panel({ title: "TAPE — LIVE FEED", id: "dk-tape", flush: true,
+          meta: `<span class="faint">UPTICK / DOWNTICK · NEWEST FIRST</span>`, body: `
+          <div class="tape-mini" id="dk-tape-rows">${loading("ticks")}</div>` })}
+      </div>
+    </div>`;
 
   const symIn = $("#chain-sym"), expSel = $("#chain-exp");
   $("#chain-go").onclick = () => show("chain", { symbol: symIn.value });
   symIn.onkeydown = (e) => { if (e.key === "Enter") $("#chain-go").click(); };
+
+  // Symbol band: price/chg/day-range from the quote API, live ticks override.
+  const paintBand = async () => {
+    try {
+      const alias = TICK_TO_PULSE[sym] || `${sym}.NS`;
+      const q = (await getJSON(`/api/quotes?symbols=${encodeURIComponent(alias)}`))[alias];
+      if (!q || !document.body.contains(view)) return;
+      const live = state.tickStore.get(sym);
+      const px = live ? live.ltp : q.price;
+      const chg = live ? live.change_pct : q.change_pct;
+      $("#sb-px").textContent = fmt.n(px);
+      const el = $("#sb-chg");
+      el.textContent = `${chg >= 0 ? "+" : ""}${fmt.n(px * chg / 100)} ${fmt.pct(chg / 100)}`;
+      el.className = `sb-chg ${cls(chg)}`;
+      $("#sb-ohlc").textContent = q.day_low
+        ? `O ${fmt.n(q.open ?? q.day_low)} H ${fmt.n(q.day_high)} L ${fmt.n(q.day_low)}` : "";
+    } catch { /* band waits for the next pass */ }
+  };
+  paintBand();
+  addTimer("chain:band", paintBand, 15000);
+
+  // IV RANK from the local capture archive - honest counter until 20 days.
+  (async () => {
+    try {
+      const r = await getJSON(`/api/iv/${sym}`);
+      const k = r.iv_rank_local || {};
+      $("#cv-rank").textContent = k.available
+        ? `${(k.rank * 100).toFixed(0)}% · ${k.days_captured}d`
+        : `${k.days_captured ?? 0} / ${k.days_required ?? 20}d`;
+    } catch { /* stays dashed */ }
+  })();
+
+  // Book risk: net greeks + SPAN, from the paper book.
+  const paintRisk = async () => {
+    try {
+      const d = await getJSON("/api/portfolio");
+      if (!document.body.contains(view)) return;
+      const g = (d.risk && (d.risk.net || d.risk)) || {};
+      const nPos = (d.positions || []).length;
+      const span = d.margin && (d.margin.total ?? d.margin_used);
+      $("#dk-risk-meta").textContent =
+        `${nPos} POS${span ? ` · SPAN ₹${fmt.n(span, 0)}` : ""}`;
+      const cell = (k, v, dp = 1) => `
+        <div class="rk"><span>${k}</span><b class="${cls(v ?? 0)}">${v == null ? "—" : fmt.n(v, dp)}</b></div>`;
+      $("#dk-risk-grid").innerHTML = nPos
+        ? cell("NET DELTA", g.delta, 1) + cell("GAMMA", g.gamma, 4)
+          + cell("THETA/DAY", g.theta, 0) + cell("VEGA/PT", g.vega, 0)
+          + cell("RHO", g.rho, 0)
+          + `<div class="rk"><span>EQUITY</span><b>${fmt.n(d.equity, 0)}</b></div>`
+        : `<div class="empty" style="padding:6px 10px">flat — paper book</div>`;
+    } catch { /* next pass */ }
+  };
+  paintRisk();
+  addTimer("chain:risk", paintRisk, 30000);
+
+  // The mini tape: the live feed's prints, newest first.
+  const paintTape = () => {
+    const host = $("#dk-tape-rows");
+    if (!host) return;
+    if (!state.tape.length) {
+      host.innerHTML = `<div class="empty" style="padding:6px 10px">no ticks yet on this connection</div>`;
+      return;
+    }
+    host.innerHTML = state.tape.slice(0, 16).map((t) => `
+      <div class="tp-row">
+        <span class="faint">${fmt.ist(new Date(t.at)).slice(0, 8)}</span>
+        <span class="${t.dir > 0 ? "up" : t.dir < 0 ? "down" : "faint"}">${t.dir > 0 ? "▲" : t.dir < 0 ? "▼" : "·"}</span>
+        <span class="tp-sym">${esc(t.symbol)}</span>
+        <span>${fmt.n(t.ltp)}</span>
+      </div>`).join("");
+  };
+  paintTape();
+  addTimer("chain:tape", paintTape, 2000);
   expSel.onchange = () => { expiry = expSel.value; load(); };
 
   /* ⓘ marks belong to the shell; only their derivation is replaced, so the
@@ -1292,18 +1387,20 @@ function renderChain(view) {
     tb.innerHTML = rows.map(() => `
       <tr>
         <td class="oi-cell call"><div class="oi-bar call"></div><span class="oi-num">—</span></td>
-        <td>—</td><td class="faint">—</td><td>—</td><td class="ltp-cell" data-right="CE">—</td>
+        <td>—</td><td class="faint">—</td><td>—</td><td class="exec-px">—</td><td class="ltp-cell" data-right="CE">—</td>
         <td class="k-strike">—</td>
-        <td class="ltp-cell" data-right="PE">—</td><td>—</td><td class="faint">—</td><td>—</td>
+        <td class="ltp-cell" data-right="PE">—</td><td class="exec-px">—</td><td>—</td><td class="faint">—</td><td>—</td>
         <td class="oi-cell put"><div class="oi-bar put"></div><span class="oi-num">—</span></td>
       </tr>`).join("");
     cells = [...tb.rows].map((tr) => ({
       tr,
       cBar: tr.cells[0].firstElementChild, cOI: tr.cells[0].lastElementChild,
-      cDOI: tr.cells[1], cVol: tr.cells[2], cIV: tr.cells[3], cLTP: tr.cells[4],
-      strike: tr.cells[5],
-      pLTP: tr.cells[6], pIV: tr.cells[7], pVol: tr.cells[8], pDOI: tr.cells[9],
-      pBar: tr.cells[10].firstElementChild, pOI: tr.cells[10].lastElementChild,
+      cDOI: tr.cells[1], cVol: tr.cells[2], cIV: tr.cells[3],
+      cBID: tr.cells[4], cLTP: tr.cells[5],
+      strike: tr.cells[6],
+      pLTP: tr.cells[7], pASK: tr.cells[8], pIV: tr.cells[9], pVol: tr.cells[10],
+      pDOI: tr.cells[11],
+      pBar: tr.cells[12].firstElementChild, pOI: tr.cells[12].lastElementChild,
     }));
   };
 
@@ -1389,6 +1486,7 @@ function renderChain(view) {
       dOI(q.cDOI, r.call.oi_change);
       q.cVol.textContent = fmt.compact(r.call.volume);
       q.cIV.textContent = r.call.iv ? (r.call.iv * 100).toFixed(1) : "—";
+      q.cBID.textContent = r.call.bid != null ? fmt.n(r.call.bid) : "—";
       q.cLTP.textContent = fmt.n(r.call.ltp);
       q.cLTP.dataset.strike = r.strike;
       q.cLTP.dataset.ltp = r.call.ltp;
@@ -1397,6 +1495,7 @@ function renderChain(view) {
       q.pLTP.textContent = fmt.n(r.put.ltp);
       q.pLTP.dataset.strike = r.strike;
       q.pLTP.dataset.ltp = r.put.ltp;
+      q.pASK.textContent = r.put.ask != null ? fmt.n(r.put.ask) : "—";
       q.pIV.textContent = r.put.iv ? (r.put.iv * 100).toFixed(1) : "—";
       q.pVol.textContent = fmt.compact(r.put.volume);
       dOI(q.pDOI, r.put.oi_change);
@@ -1529,7 +1628,7 @@ function renderChain(view) {
       $("#chain-upd").innerHTML = `<span class="down">REFRESH FAILED ${fmt.ist()}</span>`;
       if (painted) return;  // a failed poll must never wipe the last good table
       const trail = (e.detail && e.detail.source_trail) || [];
-      $("#chain-rows").innerHTML = `<tr><td colspan="11">
+      $("#chain-rows").innerHTML = `<tr><td colspan="13">
         <div class="refusal">
           <div class="refusal-head">NO LIVE OPTION CHAIN</div>
           <p>Shunkan will not show a modelled book in place of one it could not
@@ -4647,7 +4746,7 @@ function paintFeed() {
   const dot = $("#stream-dot"), lab = $("#stream-label");
   if (dot) dot.className = `dot ${ui.dot}`;
   if (lab) {
-    lab.textContent = ui.label;
+    lab.textContent = ui.label + (state.tickCount ? ` · ${fmt.compact(state.tickCount)}` : "");
     lab.className = ui.cls;
     lab.title = state.lastTickAt
       ? `last tick ${fmt.ist(new Date(state.lastTickAt))}`
