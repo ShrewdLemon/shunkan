@@ -293,3 +293,31 @@ THE RULES, fixed before the close:
   proves nothing statistically on its own and will not be graded as if it
   did.
 - NO index trade, NO vol trade: nothing validated, VRP at the thin end.
+
+## 2026-08-19 15:14 — AGGRESSIVE SESSION MANDATE (owner's instruction, paper)
+
+Owner: "trade very aggressively (on paper) to generate max profits in the
+current session." Complying as a quant: every position carries the day's
+own data as its reason, sized big, and every one of these is an
+UNVALIDATED tactical call — logged as such, graded without mercy.
+
+**A. Relative-strength pair (session trade, close by 15:38):**
+LONG 90 BANKNIFTYFUT @ 57,350 (₹51.6L) / SHORT 260 NIFTYFUT @ 24,113.1
+(₹62.7L). Reason: banks −0.08% on NIFTY's 7th red day (−0.4%) = clear
+session relative strength; residual ₹11L net-short tilt kept deliberately
+(day trend down, wall break risk). Exit at ~15:38 marks.
+
+**B. Wall-defense bull put spread (carried, defined risk):**
+SHORT 260× NIFTY 25AUG 24,000 PE @ 69.95 / LONG 260× 23,900 PE @ 42.40.
+Credit ₹7,163, max risk ₹18,837. Reason: put writers added +39L/+49L/+58L
+at 24,000/24,050/24,100 today (fresh, 13-21x vol/OI); walls graded 11/12
+as bounds last week. Selling the defended level WITH protection one floor
+lower. Known counters: VRP thin (VIX 4.8pctile), 7-day grind, crude
+catalyst live — hence the long leg.
+
+**C. Shock basket (pre-registered this morning):** 7 qualifiers book at
+the CAS auction close ~15:37. COALINDIA dropped (tagged news) — the rule
+worked.
+
+Margin: reported not enforced on paper (owner's design). Gross notional
+~₹1.14Cr on ₹1.0L equity — stated plainly, this is the aggression knob.
