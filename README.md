@@ -96,6 +96,21 @@ European and Asian indices for cues, but no execution path outside India.
 
 ## Setup
 
+The short way, from PyPI:
+
+```
+pip install shunkan
+shunkan serve          # web terminal at http://127.0.0.1:8720
+shunkan                # or the TUI
+shunkan connect zerodha   # wire a live broker (token needed daily)
+```
+
+Runs offline out of the box on a synthetic feed (`SHUNKAN_OFFLINE=1` forces
+it), goes live when a broker is connected. Everything it stores lives under
+`~/.shunkan`.
+
+From source, or for the Docker route:
+
 ### Requirements
 
 Python 3.12+ and a Zerodha account with a Kite Connect subscription. It has to
