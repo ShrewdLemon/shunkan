@@ -1,54 +1,59 @@
-/* SHUNKAN — Bloomberg-grade terminal skin.
+/* SHUNKAN — skin v2.
 
-   The reference is the thing traders already have muscle memory for: black
-   ground, amber data, blue labels, monospace everywhere, square corners, and
-   1px rules that are actually 1px. Density over comfort.
+   The first skin was the Bloomberg pastiche: true black, all-mono, square,
+   1px rules. The owner benchmarked Groww's 915 side by side and called it:
+   modern desks read as PRODUCTS - layered charcoal surfaces, soft radii,
+   a sans UI face with tabular figures for numbers, colour reserved for
+   direction. This file moves the terminal to that language and keeps the
+   old discipline where it still earns its keep: density, tabular numerals,
+   colour meaning one thing, and honesty devices (dashes, stamps, refusals)
+   untouched.
 
-   Rules this file follows, deliberately:
-   - Monospace is the BODY face, not just the numbers. Every column lines up
-     without asking, and a terminal that mixes proportional labels with
-     tabular data reads as a dashboard.
-   - No radius, no blur, no gradient, no shadow. Those cost pixels and legibility
-     and buy nothing on a screen someone stares at for six hours.
-   - Colour means exactly one thing. Amber is data. Blue is a label or a header.
-     Green and red are direction and nothing else. White is emphasis.
+   - Surfaces separate by TONE, not by drawing boxes: three background
+     layers, hairlines only where tone is not enough.
+   - The UI face is the platform sans; numbers align via tabular figures,
+     not by making prose wear a code font. --mono survives for the places
+     code belongs: keys, formulas, the rail codes.
+   - Radius 10px on surfaces, 8px on controls, pills where 915 uses pills.
+   - White is data. Green/red are direction. Blue is interactive/label.
+     Amber is demoted to warnings and highlights - it no longer carries
+     every number on the screen.
 */
 
 :root {
-  /* Ground. True black: this gets looked at all day and every extra lumen of
-     background is contrast stolen from the numbers. */
-  --bg: #000000;
-  --bg-panel: #080808;
-  --bg-panel-2: #101010;
-  --bg-header: #12161c;
+  --bg: #0b0e11;
+  --bg-panel: #12161b;
+  --bg-panel-2: #1a1f26;
+  --bg-header: #12161b;
 
-  /* Rules are solid, not translucent. An alpha rule over two different panel
-     fills renders as two different greys, which reads as a rendering bug. */
-  --stroke: #23262b;
-  --stroke-soft: #16181c;
+  --stroke: #232a32;
+  --stroke-soft: #1a2026;
 
-  /* Warm off-white, not blue-grey: it sits with amber instead of fighting it. */
-  --text: #e6e1d6;
-  --text-dim: #9b968c;
-  --text-faint: #63605a;
+  --text: #e8eaed;
+  --text-dim: #9aa4af;
+  --text-faint: #5f6a75;
 
-  --amber: #ffa62b;
-  --amber-dim: rgba(255, 166, 43, 0.14);
-  --blue: #5fa8dc;                    /* column headers and field labels */
-  --blue-dim: rgba(95, 168, 220, 0.12);
+  /* amber narrows to warning/highlight duty; data is white now */
+  --amber: #f5a623;
+  --amber-dim: rgba(245, 166, 35, 0.12);
+  --blue: #6ea8fe;
+  --blue-dim: rgba(110, 168, 254, 0.12);
 
-  --up: #23d18b;
-  --up-soft: rgba(35, 209, 139, 0.12);
-  --down: #ff5c5c;
-  --down-soft: rgba(255, 92, 92, 0.12);
+  --up: #2ebd85;
+  --up-soft: rgba(46, 189, 133, 0.12);
+  --down: #f1564b;
+  --down-soft: rgba(241, 86, 75, 0.12);
 
-  --r: 0px;                            /* square. see the header note. */
+  --r: 10px;
+  --r-ctl: 8px;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   --ease: cubic-bezier(0.25, 0.8, 0.25, 1);
-  --rail-w: 58px;
-  --top-h: 40px;
-  --foot-h: 24px;
-  --row-h: 19px;                       /* one data row, tuned for 11px mono */
-  --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --rail-w: 62px;
+  --top-h: 48px;
+  --foot-h: 26px;
+  --row-h: 24px;
+  --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", Roboto, sans-serif;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -57,9 +62,9 @@ html, body { height: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.25;
+  font-family: var(--ui);
+  font-size: 12.5px;
+  line-height: 1.4;
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
@@ -1058,3 +1063,143 @@ main { overflow-x: hidden; }
 .oi-fill.put { background: rgba(63,185,80,0.55); }
 .oi-fill.call { background: rgba(248,81,73,0.55); }
 .oi-fill.neg { opacity: 0.35; }
+
+/* ================= SKIN v2 COMPONENT PASS =================
+   Appended last on purpose: same selectors, later in the cascade, so these
+   win over the v1 primitive declarations above without a specificity war. */
+
+.topbar {
+  height: var(--top-h); background: var(--bg-header);
+  border-bottom: 1px solid var(--stroke-soft);
+  padding: 0 16px; gap: 14px;
+}
+.brand-mark { font-size: 16px; letter-spacing: 0.02em; color: var(--text); }
+.brand-mark + * { color: var(--text-faint); }
+.tbtn {
+  background: var(--bg-panel-2); border: 1px solid transparent;
+  border-radius: 999px; padding: 5px 13px; font-size: 11.5px;
+  color: var(--text-dim);
+}
+.tbtn:hover { color: var(--text); border-color: var(--stroke); background: var(--bg-panel-2); }
+.status-cell { border-radius: 999px; background: var(--bg-panel-2); padding: 4px 11px; font-size: 11px; }
+.clock { font-family: var(--ui); font-variant-numeric: tabular-nums; }
+
+.cmdty-strip { background: var(--bg-header); border-bottom: 1px solid var(--stroke-soft);
+  padding: 5px 16px; font-size: 11.5px; font-family: var(--ui); }
+.cm-name { color: var(--text-faint); }
+.cm-px { color: var(--text); }
+
+.rail { width: var(--rail-w); background: var(--bg); border-right: 1px solid var(--stroke-soft); padding: 6px 5px; }
+.rail-btn { border-radius: var(--r-ctl); padding: 7px 2px 6px; margin-bottom: 2px; transition: background 0.12s var(--ease), color 0.12s var(--ease); }
+.rail-btn:hover { background: var(--bg-panel-2); color: var(--text-dim); }
+.rail-btn.active { background: var(--blue-dim); color: var(--blue); }
+.rail-btn.active .code { color: var(--blue); }
+.rail-btn .code { font-size: 11.5px; }
+.rail-btn .lbl { font-family: var(--ui); font-size: 8.5px; letter-spacing: 0.04em; }
+
+.panel {
+  background: var(--bg-panel); border: 1px solid var(--stroke-soft);
+  border-radius: var(--r); box-shadow: var(--shadow); overflow: hidden;
+}
+.panel-head, .panel .panel-head { background: transparent; border-bottom: 1px solid var(--stroke-soft); padding: 9px 14px; }
+.panel-title {
+  font-family: var(--ui); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.07em; color: var(--text-dim);
+}
+.panel-title .hl { color: var(--text); }
+.panel-meta { font-size: 10.5px; color: var(--text-faint); }
+
+.btn, button.btn {
+  background: var(--bg-panel-2); border: 1px solid var(--stroke-soft);
+  border-radius: 999px; padding: 5px 14px; font-family: var(--ui);
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--text-dim);
+  transition: all 0.12s var(--ease);
+}
+.btn:hover { color: var(--text); border-color: var(--stroke); }
+.btn.ghost { background: transparent; }
+.in, input.in, select.in {
+  background: var(--bg-panel-2); border: 1px solid var(--stroke-soft);
+  border-radius: var(--r-ctl); padding: 5px 10px; font-family: var(--ui);
+  font-size: 11.5px; color: var(--text);
+}
+.in:focus { border-color: var(--blue); outline: none; }
+
+.tbl { font-size: 12px; }
+.tbl th {
+  font-family: var(--ui); font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  color: var(--text-faint); border-bottom: 1px solid var(--stroke-soft);
+  padding: 7px 10px; background: transparent;
+}
+.tbl td { padding: 7px 10px; border-bottom: 1px solid var(--stroke-soft); font-variant-numeric: tabular-nums; }
+.tbl tbody tr { transition: background 0.1s var(--ease); }
+.tbl tbody tr:hover { background: var(--bg-panel-2); }
+.tbl .sym { color: var(--text); font-weight: 600; }
+
+/* data is white now; the old amber-everywhere reads as warning paint */
+.px, .v, .amber-data { color: var(--text); }
+.kv { border-radius: var(--r-ctl); border-color: var(--stroke-soft); }
+.kv .k { font-family: var(--ui); color: var(--text-faint); letter-spacing: 0.07em; }
+.kv .v { color: var(--text); font-weight: 600; }
+.kv-strip { gap: 0; }
+.kv-strip .kv { border-color: var(--stroke-soft); }
+
+.statusbar { background: var(--bg-header); border-top: 1px solid var(--stroke-soft);
+  font-family: var(--ui); font-size: 10.5px; height: var(--foot-h); }
+
+.chip, .badge { border-radius: 999px; font-family: var(--ui); }
+.viz-bar { gap: 8px; }
+.viz-mini, button.viz-mini { border-radius: 999px; font-family: var(--ui); font-size: 10.5px;
+  background: var(--bg-panel-2); border: 1px solid var(--stroke-soft); padding: 4px 12px; }
+.viz-mini.active, .viz-mini.run { background: var(--blue-dim); color: var(--blue); border-color: transparent; }
+.viz-select { border-radius: var(--r-ctl); font-family: var(--ui); }
+
+.ticket { border-radius: 12px; box-shadow: var(--shadow); border: 1px solid var(--stroke); background: var(--bg-panel-2); }
+.tk-side { border-radius: 999px; font-family: var(--ui); font-weight: 700; }
+
+.news-sect { background: transparent; border-top: none; border-bottom: 1px solid var(--stroke-soft);
+  color: var(--text-faint); font-family: var(--ui); font-weight: 600; padding: 9px 14px 4px; }
+.news-row { padding: 8px 14px; border-bottom: 1px solid var(--stroke-soft); transition: background 0.1s var(--ease); }
+.news-row:hover { background: var(--bg-panel-2); }
+.n-title, .n-title a { font-family: var(--ui); font-size: 12.5px; color: var(--text); }
+.n-age { font-size: 10px; color: var(--text-faint); }
+.feed-note { font-family: var(--ui); font-size: 10.5px; color: var(--text-faint);
+  padding: 7px 14px; border-bottom: 1px solid var(--stroke-soft); }
+
+.anl-card { border-radius: var(--r); background: var(--bg-panel-2); border: 1px solid transparent;
+  padding: 12px 14px; transition: all 0.12s var(--ease); }
+.anl-card:hover { border-color: var(--stroke); transform: translateY(-1px); box-shadow: var(--shadow); }
+.anl-code { color: var(--blue); }
+.anl-name { font-family: var(--ui); }
+.anl-desc { font-family: var(--ui); color: var(--text-faint); }
+
+.map-tile { border-radius: var(--r-ctl); border-color: transparent; padding: 8px 9px;
+  transition: transform 0.1s var(--ease); }
+.map-tile:hover { transform: translateY(-1px); border-color: var(--stroke); }
+.mt-sym { font-family: var(--ui); font-weight: 600; }
+
+.grid-stack-item-content { border-radius: var(--r); }
+.widget { background: var(--bg-panel); border: 1px solid var(--stroke-soft);
+  border-radius: var(--r); box-shadow: var(--shadow); overflow: hidden; }
+.w-head { background: transparent; border-bottom: 1px solid var(--stroke-soft); padding: 7px 11px; }
+.w-title { font-family: var(--ui); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; color: var(--text-dim); }
+.w-sym { border-radius: 6px; background: var(--bg-panel-2); border: 1px solid var(--stroke-soft);
+  font-family: var(--ui); font-size: 10.5px; }
+.w-chan { border-radius: 6px; font-family: var(--ui); font-size: 9.5px; }
+.w-close { border-radius: 999px; }
+.w-close:hover { background: var(--down-soft); color: var(--down); }
+.ws-toolbar { gap: 8px; padding: 8px 2px; }
+.ws-hint { font-family: var(--ui); font-size: 9.5px; color: var(--text-faint); }
+
+.oi-tab { border-radius: 999px; font-family: var(--ui); }
+.oi-tab.on { background: var(--blue-dim); color: var(--blue); border-color: transparent; }
+.oi-fill.put { background: rgba(46, 189, 133, 0.55); border-radius: 2px; }
+.oi-fill.call { background: rgba(241, 86, 75, 0.55); border-radius: 2px; }
+
+.refusal { border-radius: var(--r-ctl); }
+.age { font-family: var(--ui); font-size: 10px; }
+.empty { font-family: var(--ui); color: var(--text-faint); }
+.loading { font-family: var(--ui); }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--stroke); border-radius: 999px; }
+::-webkit-scrollbar-track { background: transparent; }
