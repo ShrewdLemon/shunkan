@@ -3184,6 +3184,59 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         return {"ok": True, "price": price, "quantity": quantity,
                 "instrument": inst.key, "label": inst.label, "realized": realized}
 
+    @app.post("/api/basket/margin")
+    def price_staged_basket(body: dict):
+        """Exchange-priced margin for a STAGED basket - legs that are not in
+        the book yet. This is the number that decides whether an idea fits
+        the account before any of it becomes a position. Live Kite only:
+        SPAN netting cannot be approximated locally without lying."""
+        from shunkan.data.brokers import KiteProvider, get_broker
+        from shunkan.data.contract_specs import ORDER_IN_LOTS_VENUES, economic_lot_size
+        from shunkan.data.kite_fno import basket_margin, cached_lot_size
+        from shunkan.portfolio import Instrument
+
+        legs_in = body.get("legs") or []
+        if not legs_in or len(legs_in) > 20:
+            raise HTTPException(400, "between 1 and 20 legs")
+        try:
+            broker = get_broker()
+            if not isinstance(broker, KiteProvider):
+                raise DataError("margin pricing needs a live Kite session")
+        except DataError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+        legs = []
+        for leg in legs_in:
+            try:
+                expiry = (datetime.strptime(leg["expiry"], "%Y-%m-%d").date()
+                          if leg.get("expiry") else None)
+                inst = Instrument(symbol=str(leg["symbol"]).upper(),
+                                  kind=leg.get("kind", "EQ"),
+                                  expiry=expiry,
+                                  strike=leg.get("strike"),
+                                  exchange=leg.get("exchange") or "")
+            except (KeyError, ValueError) as exc:
+                raise HTTPException(400, f"bad leg: {exc}") from exc
+            lots = int(leg.get("lots") or 0)
+            qty = float(leg.get("quantity") or 0)
+            if lots and inst.derivative:
+                if inst.exchange in ORDER_IN_LOTS_VENUES:
+                    lot, src = economic_lot_size(inst.exchange, inst.symbol, None)
+                else:
+                    lot, src = cached_lot_size(inst.symbol, inst.expiry)
+                if not lot:
+                    raise HTTPException(400, f"{inst.label}: no lot size ({src})")
+                qty = lots * lot
+            if qty <= 0:
+                raise HTTPException(400, f"{inst.label}: needs lots or quantity")
+            legs.append({"instrument": inst,
+                         "side": str(leg.get("side", "BUY")).upper(),
+                         "quantity": qty})
+        try:
+            return _clean(basket_margin(broker, legs))
+        except DataError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
     @app.post("/api/portfolio/margin")
     def price_book_margin(force: bool = False):
         """Price the whole book against the exchange's own SPAN calculator.
