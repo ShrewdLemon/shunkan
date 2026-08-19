@@ -243,5 +243,19 @@ def world_sessions(when: datetime | None = None) -> list[dict]:
             "local_time": local.strftime("%H:%M"),
             "local_day": local.strftime("%a"),
             "hours": " · ".join(f"{a:%H:%M}–{b:%H:%M}" for a, b in ex.windows),
+            # Today's windows as UTC decimal hours, for the 24h timeline.
+            # Computed through zoneinfo on TODAY's local date, so DST shifts
+            # land on the right day instead of being a fixed offset.
+            "utc_windows": [
+                [round(local.replace(hour=a.hour, minute=a.minute, second=0)
+                       .astimezone(ZoneInfo("UTC")).hour
+                       + local.replace(hour=a.hour, minute=a.minute, second=0)
+                       .astimezone(ZoneInfo("UTC")).minute / 60.0, 2),
+                 round(local.replace(hour=b.hour, minute=b.minute, second=0)
+                       .astimezone(ZoneInfo("UTC")).hour
+                       + local.replace(hour=b.hour, minute=b.minute, second=0)
+                       .astimezone(ZoneInfo("UTC")).minute / 60.0, 2)]
+                for a, b in ex.windows
+            ],
         })
     return out
