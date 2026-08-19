@@ -354,6 +354,20 @@ def test_participants_history_contract(client):
         assert "no next-day directional edge" in d["caveat"]
 
 
+def test_pulse_boards_roundtrip(client):
+    d = client.get("/api/pulse/boards").json()
+    assert d["india"] and d["global"]
+    custom = {"india": [{"ticker": "^NSEI", "name": "NIFTY 50"},
+                        {"ticker": "TATASTEEL.NS", "name": "Tata Steel"}],
+              "global": [{"ticker": "GC=F", "name": "GOLD"}]}
+    assert client.post("/api/pulse/boards", json=custom).json()["ok"]
+    back = client.get("/api/pulse/boards").json()
+    assert [r["ticker"] for r in back["india"]] == ["^NSEI", "TATASTEEL.NS"]
+    # empty board refused - a pulse with nothing on it is a mistake
+    bad = client.post("/api/pulse/boards", json={"india": [], "global": custom["global"]})
+    assert bad.status_code == 400
+
+
 def test_candles_scan_contract(client):
     d = client.get("/api/candles/scan").json()
     assert "rows" in d and "scanned" in d and "note" in d

@@ -367,7 +367,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                     except Exception:
                         constituent_syms = []
                     symbols = list(dict.fromkeys(
-                        [ticker for _, ticker in INDIA_PULSE + GLOBAL_PULSE]
+                        [r["ticker"] for r in (_pulse_boards()["india"]
+                                               + _pulse_boards()["global"])]
                         + load_watchlist() + constituent_syms))
                     src = (getattr(provider, "broker_name", "") or "yahoo/nse")
 
@@ -815,6 +816,51 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             "server_time": datetime.now(timezone.utc).isoformat(),
         }
 
+    def _pulse_boards() -> dict:
+        """The two pulse boards, user-editable. Falls back to the built-in
+        lists; a saved file wins. Entries are {name, ticker}."""
+        from shunkan.config import APP_DIR
+
+        path = APP_DIR / "pulse_boards.json"
+        if path.exists():
+            try:
+                saved = json.loads(path.read_text())
+                if saved.get("india") and saved.get("global"):
+                    return saved
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {
+            "india": [{"name": n, "ticker": t} for n, t in INDIA_PULSE],
+            "global": [{"name": n, "ticker": t} for n, t in GLOBAL_PULSE],
+        }
+
+    @app.get("/api/pulse/boards")
+    def get_pulse_boards():
+        return _pulse_boards()
+
+    @app.post("/api/pulse/boards")
+    def save_pulse_boards(body: dict):
+        """Persist edited boards. Refuses empty boards and junk shapes -
+        a pulse with nothing on it is a mistake, not a preference."""
+        from shunkan.config import APP_DIR, ensure_dirs
+
+        out = {}
+        for key in ("india", "global"):
+            rows = body.get(key) or []
+            clean = []
+            for r in rows:
+                t = str(r.get("ticker", "")).strip()
+                if not t or len(t) > 24:
+                    continue
+                clean.append({"name": (str(r.get("name", "")).strip() or t)[:28],
+                              "ticker": t})
+            if not clean or len(clean) > 20:
+                raise HTTPException(400, f"{key}: between 1 and 20 instruments")
+            out[key] = clean
+        ensure_dirs()
+        (APP_DIR / "pulse_boards.json").write_text(json.dumps(out, indent=2))
+        return {"ok": True}
+
     @app.get("/api/pulse")
     def pulse(cached: int = 0):
         """The landing board. ?cached=1 returns the last REAL snapshot from
@@ -836,7 +882,9 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                 raise HTTPException(404, "snapshot unreadable") from exc
 
         boards = {}
-        for key, board in (("india", INDIA_PULSE), ("global", GLOBAL_PULSE)):
+        boards_cfg = _pulse_boards()
+        for key, board in (("india", [(r["name"], r["ticker"]) for r in boards_cfg["india"]]),
+                           ("global", [(r["name"], r["ticker"]) for r in boards_cfg["global"]])):
             try:
                 quotes = provider.quotes([t for _, t in board])
             except DataError:
@@ -2731,7 +2779,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         from shunkan.markets import INDEX_ALIASES
         from shunkan.screener import UNIVERSES
 
-        syms = set(INDEX_ALIASES) | {t for _, t in INDIA_PULSE + GLOBAL_PULSE}
+        _pb = _pulse_boards()
+        syms = set(INDEX_ALIASES) | {r["ticker"] for r in _pb["india"] + _pb["global"]}
         syms |= set(load_watchlist())
         for u in ("nifty50", "banks", "it", "fno"):
             syms |= set(UNIVERSES[u])
