@@ -1030,3 +1030,31 @@ main { overflow-x: hidden; }
 .anl-code { color: var(--amber, #f0a826); font-size: 10px; letter-spacing: .14em; }
 .anl-name { font-size: 12.5px; font-weight: 700; }
 .anl-desc { font-size: 10.5px; color: var(--dim, #8b949e); line-height: 1.45; }
+
+/* commodity strip under the topbar (MCX front futures, live only) */
+.cmdty-strip { display: flex; gap: 18px; align-items: baseline;
+  padding: 3px 14px; border-bottom: 1px solid var(--stroke-soft, #1b2634);
+  background: var(--panel, #0d1420); font-size: 11px; }
+.cmdty { display: inline-flex; gap: 7px; align-items: baseline; }
+.cm-name { color: var(--blue, #58a6ff); font-size: 9.5px; letter-spacing: .1em; }
+.cm-px { color: var(--amber, #f0a826); }
+
+/* OI histogram widget */
+.oi-tabs { display: flex; gap: 4px; padding: 4px 8px; align-items: center;
+  border-bottom: 1px solid var(--stroke-soft, #1b2634); }
+.oi-tab { background: none; border: 1px solid var(--stroke-soft, #1b2634);
+  color: var(--dim, #8b949e); font: inherit; font-size: 9px; letter-spacing: .08em;
+  padding: 1px 7px; cursor: pointer; }
+.oi-tab.on { color: var(--amber, #f0a826); border-color: var(--amber, #f0a826); }
+.oi-grid { display: grid; gap: 1px; padding: 4px 8px; overflow-y: auto; }
+.oi-row { display: grid; grid-template-columns: 1fr 64px 1fr; gap: 6px; align-items: center; }
+.oi-row.atm .oi-k { color: var(--amber, #f0a826); font-weight: 700; }
+.oi-k { text-align: center; font-size: 10px; color: var(--fg, #c9d1d9); }
+.oi-k.pw { text-decoration: underline; text-decoration-color: #3fb950; }
+.oi-k.cw { text-decoration: underline; text-decoration-color: #f85149; }
+.oi-track { height: 10px; position: relative; }
+.oi-track.put { display: flex; justify-content: flex-end; }
+.oi-fill { height: 100%; }
+.oi-fill.put { background: rgba(63,185,80,0.55); }
+.oi-fill.call { background: rgba(248,81,73,0.55); }
+.oi-fill.neg { opacity: 0.35; }

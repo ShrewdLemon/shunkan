@@ -324,6 +324,7 @@ const state = {
   // (viewSub). One extra symbol at a time, released on view switch, so the
   // feed streams exactly what is being looked at.
   autoSubs: new Set(), viewSub: null,
+  wsName: null,      // active named workspace layout
 };
 // Keyed and idempotent: re-registering the same key is a no-op, so a render
 // function that reschedules itself can no longer double the interval count
@@ -485,6 +486,16 @@ function show(viewId, params = {}) {
 
 // Back, forward, and a hash someone edited or pasted. Suppressed while it is
 // this handler doing the driving, so the write above cannot loop.
+window.addEventListener("keydown", (e) => {
+  // 915's Shift+W reflex: jump to the workspace, focus the add-widget box.
+  if (e.shiftKey && (e.key === "W" || e.key === "w")
+      && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName || "")) {
+    e.preventDefault();
+    if (state.view !== "workspace") show("workspace");
+    setTimeout(() => $("#ws-add-type")?.focus(), 350);
+  }
+});
+
 window.addEventListener("hashchange", () => {
   const r = parseHash();
   if (!r) return;
@@ -3094,9 +3105,14 @@ const WS_WIDGETS = {
   watchlist: { title: "WATCHLIST", w: 3, h: 5 },
   chart:     { title: "CHART", w: 5, h: 5, hasSymbol: true },
   chain:     { title: "CHAIN ATM±6", w: 4, h: 5, hasSymbol: true },
+  oi:        { title: "OPEN INTEREST", w: 4, h: 5, hasSymbol: true },
   tape:      { title: "TAPE", w: 3, h: 4 },
   news:      { title: "NEWS", w: 5, h: 4 },
   straddle:  { title: "STRADDLE (CAPTURED)", w: 4, h: 4, hasSymbol: true },
+  migration: { title: "PAIN & WALLS INTRADAY", w: 4, h: 4, hasSymbol: true },
+  positions: { title: "POSITIONS & P&L", w: 3, h: 4 },
+  pulse:     { title: "PULSE", w: 3, h: 4 },
+  heat:      { title: "HEATMAP MINI", w: 4, h: 4 },
 };
 
 const WS_DEFAULT = [
@@ -3106,6 +3122,15 @@ const WS_DEFAULT = [
   { type: "tape",      x: 0, y: 5, w: 3, h: 4, config: {} },
   { type: "news",      x: 3, y: 5, w: 5, h: 4, config: {} },
   { type: "straddle",  x: 8, y: 5, w: 4, h: 4, config: { channel: "A", symbol: "NIFTY" } },
+];
+
+const WS_DEFAULT_VOL = [
+  { type: "chart",     x: 0, y: 0, w: 5, h: 6, config: { channel: "A", symbol: "NIFTY", period: "3mo" } },
+  { type: "chain",     x: 5, y: 0, w: 4, h: 6, config: { channel: "A", symbol: "NIFTY" } },
+  { type: "oi",        x: 9, y: 0, w: 3, h: 6, config: { channel: "A", symbol: "NIFTY" } },
+  { type: "migration", x: 0, y: 6, w: 4, h: 4, config: { channel: "A", symbol: "NIFTY" } },
+  { type: "straddle",  x: 4, y: 6, w: 4, h: 4, config: { channel: "A", symbol: "NIFTY" } },
+  { type: "news",      x: 8, y: 6, w: 4, h: 4, config: {} },
 ];
 
 let saveTimer = null;
@@ -3120,7 +3145,7 @@ function saveLayoutNow() {
     const inst = wsInstances.get(n.el.id);
     if (inst) widgets.push({ type: inst.type, x: n.x, y: n.y, w: n.w, h: n.h, config: inst.config });
   });
-  postJSON("/api/layout", { widgets, channels: CHANNELS }).catch(() => {});
+  postJSON(`/api/layout?name=${encodeURIComponent(state.wsName || "main")}`, { widgets, channels: CHANNELS }).catch(() => {});
 }
 
 function wsAddWidget(type, pos = {}, config = {}) {
@@ -3337,21 +3362,199 @@ function wStraddle(body, inst, symInput) {
 const WS_RENDER = {
   watchlist: wWatchlist, chart: wChart, chain: wChain,
   tape: wTape, news: wNews, straddle: wStraddle,
+  oi: wOI, migration: wMigration, positions: wPositions, pulse: wPulse, heat: wHeat,
 };
+
+function wOI(body, inst, symInput) {
+  // 915's Open Interest panel, honestly labelled: bars per strike, tabs for
+  // OI / day change / PCR, and the WALLS named as what they are - the
+  // largest put and call bases - not "strong support" prophecy.
+  inst.config.tab = inst.config.tab || "oi";
+  inst.config.n = inst.config.n || 7;
+  const load = async (symbol) => {
+    inst.config.symbol = symbol;
+    if (symInput) symInput.value = symbol;
+    try {
+      const c = await getJSON(`/api/chain/${symbol}`);
+      if (!document.body.contains(body)) return;
+      const atmIdx = c.rows.findIndex((r) => r.atm);
+      const lo = Math.max(0, atmIdx - inst.config.n);
+      const rows = c.rows.slice(lo, atmIdx + inst.config.n + 1);
+      const field = inst.config.tab === "chg" ? "oi_change" : "oi";
+      const maxV = Math.max(1, ...rows.flatMap((r) =>
+        [Math.abs(r.call[field] || 0), Math.abs(r.put[field] || 0)]));
+      const putWall = rows.reduce((a, b) => ((b.put.oi || 0) > (a.put.oi || 0) ? b : a));
+      const callWall = rows.reduce((a, b) => ((b.call.oi || 0) > (a.call.oi || 0) ? b : a));
+      const totP = rows.reduce((a, b) => a + (b.put.oi || 0), 0);
+      const totC = rows.reduce((a, b) => a + (b.call.oi || 0), 0);
+      const bar = (v, side) => {
+        const w = Math.abs(v || 0) / maxV * 100;
+        const neg = (v || 0) < 0;
+        return `<div class="oi-track ${side}"><div class="oi-fill ${side}${neg ? " neg" : ""}" style="width:${w}%"></div></div>`;
+      };
+      body.innerHTML = `
+        <div class="oi-tabs">
+          ${["oi", "chg", "pcr"].map((t) => `<button class="oi-tab${inst.config.tab === t ? " on" : ""}" data-t="${t}">${
+            t === "oi" ? "OI" : t === "chg" ? "Δ OI" : "PCR"}</button>`).join("")}
+          <span class="faint" style="margin-left:auto;font-size:9px">±<b id="oi-n">${inst.config.n}</b>
+            <button class="oi-tab" data-n="-1">−</button><button class="oi-tab" data-n="1">+</button></span>
+        </div>
+        ${inst.config.tab === "pcr"
+          ? `<div class="empty" style="padding:6px 10px">PCR (OI) over shown strikes:
+               <b class="${totP / totC > 1 ? "up" : "down"}">${(totP / totC).toFixed(2)}</b>
+               · put ${fmt.compact(totP)} / call ${fmt.compact(totC)}</div>`
+          : `<div class="oi-grid">
+            ${rows.map((r) => `
+              <div class="oi-row${r.atm ? " atm" : ""}">
+                ${bar(r.put[field], "put")}
+                <span class="oi-k${r.strike === putWall.strike ? " pw" : ""}${r.strike === callWall.strike ? " cw" : ""}">${fmt.i(r.strike)}</span>
+                ${bar(r.call[field], "call")}
+              </div>`).join("")}
+          </div>
+          <div class="empty" style="padding:3px 10px;font-size:9.5px">
+            <span class="up">put wall ${fmt.i(putWall.strike)}</span> ·
+            <span class="down">call wall ${fmt.i(callWall.strike)}</span> ·
+            largest bases, not prophecy · ${inst.config.tab === "chg" ? "Δ vs " + esc(c.delta_oi_basis || "basis") : "as of " + esc((c.as_of || "").slice(11, 19))}</div>`}
+      `;
+      body.querySelectorAll(".oi-tab[data-t]").forEach((b) => {
+        b.onclick = () => { inst.config.tab = b.dataset.t; saveLayoutSoon(); load(symbol); };
+      });
+      body.querySelectorAll(".oi-tab[data-n]").forEach((b) => {
+        b.onclick = () => {
+          inst.config.n = Math.max(3, Math.min(15, inst.config.n + (+b.dataset.n)));
+          saveLayoutSoon(); load(symbol);
+        };
+      });
+    } catch (e) { body.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  };
+  inst.onSymbol = load;
+  load(inst.config.symbol || "NIFTY");
+  addTimer(`woi:${inst.el.id}`, () => load(inst.config.symbol || "NIFTY"), 60000);
+}
+
+function wMigration(body, inst, symInput) {
+  const load = async (symbol) => {
+    inst.config.symbol = symbol;
+    if (symInput) symInput.value = symbol;
+    try {
+      const d = await getJSON(`/api/analysis/intraday/${symbol}`);
+      if (!document.body.contains(body)) return;
+      if (d.error) { body.innerHTML = `<div class="empty">${esc(d.error)}</div>`; return; }
+      body.innerHTML = `<div class="w-chart-host"><canvas class="plot"></canvas></div>
+        <div class="empty" style="padding:2px 10px;font-size:9.5px">spot blue · pain amber · ${d.n_snapshots} snaps</div>`;
+      linePlot(body.querySelector("canvas"), [
+        { points: d.path.map((r) => ({ x: Date.parse(r.ts), y: r.spot })), color: "#58a6ff", width: 1.3 },
+        { points: d.path.map((r) => ({ x: Date.parse(r.ts), y: r.max_pain })), color: "#f0a826", width: 1.3 },
+      ], { height: Math.max(90, body.clientHeight - 40), fmtY: (v) => fmt.i(v), fmtX: (v) => fmt.ist(new Date(v)) });
+    } catch (e) { body.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  };
+  inst.onSymbol = load;
+  load(inst.config.symbol || "NIFTY");
+  addTimer(`wmig:${inst.el.id}`, () => load(inst.config.symbol || "NIFTY"), 120000);
+}
+
+function wPositions(body, inst) {
+  const paint = async () => {
+    try {
+      const d = await getJSON("/api/portfolio");
+      if (!document.body.contains(body)) return;
+      const pnl = (d.realized_pnl || 0) + (d.unrealized_pnl || 0);
+      body.innerHTML = `
+        <div class="kv-strip" style="padding:4px 8px">
+          <div class="kv"><div class="k">EQUITY</div><div class="v sm">${fmt.n(d.equity)}</div></div>
+          <div class="kv"><div class="k">P&L</div><div class="v sm ${cls(pnl)}">${fmt.n(pnl)}</div></div>
+          <div class="kv"><div class="k">MARGIN</div><div class="v sm">${d.margin_used ? fmt.n(d.margin_used) : "—"}</div></div>
+        </div>
+        ${(d.positions || []).length ? `<table class="tbl"><tbody>
+          ${d.positions.slice(0, 8).map((po) => `<tr>
+            <td class="txt sym" style="font-size:9.5px">${esc(po.label || po.key || "")}</td>
+            <td>${fmt.n(po.net_quantity ?? po.quantity ?? 0, 0)}</td>
+            <td class="${cls(po.unrealized ?? 0)}">${po.unrealized != null ? fmt.n(po.unrealized) : "—"}</td>
+          </tr>`).join("")}</tbody></table>`
+        : `<div class="empty" style="padding:6px 10px">flat — paper book</div>`}`;
+    } catch { /* next tick */ }
+  };
+  paint();
+  addTimer(`wpos:${inst.el.id}`, paint, 30000);
+}
+
+function wPulse(body, inst) {
+  const SY = [["NIFTY", "^NSEI"], ["BANKNIFTY", "^NSEBANK"], ["VIX", "^INDIAVIX"], ["USD/INR", "USDINR=X"]];
+  const paint = async () => {
+    try {
+      const q = await getJSON(`/api/quotes?symbols=${encodeURIComponent(SY.map(([, s]) => s).join(","))}`);
+      if (!document.body.contains(body)) return;
+      body.innerHTML = `<table class="tbl"><tbody>
+        ${SY.map(([label, sym]) => {
+          const d = q[sym] || {};
+          const live = state.tickStore.get(label);
+          const px = live ? live.ltp : d.price;
+          const chg = live ? live.change_pct : d.change_pct;
+          return `<tr><td class="txt sym">${label}</td>
+            <td>${px != null ? fmt.n(px) : "—"}</td>
+            <td class="${chg != null ? cls(chg) : "faint"}">${chg != null ? fmt.pct(chg) : "—"}</td></tr>`;
+        }).join("")}</tbody></table>`;
+    } catch { /* next tick */ }
+  };
+  paint();
+  addTimer(`wpul:${inst.el.id}`, paint, 15000);
+}
+
+function wHeat(body, inst) {
+  const paint = async () => {
+    try {
+      const d = await getJSON("/api/heatmap");
+      if (!document.body.contains(body)) return;
+      const by = new Map();
+      d.tiles.forEach((t) => {
+        if (!by.has(t.sector)) by.set(t.sector, []);
+        by.get(t.sector).push(t);
+      });
+      const mean = (rows) => {
+        const v = rows.map((r) => r.chg_pct).filter((x) => x != null);
+        return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+      };
+      const sects = [...by.entries()].map(([s, rows]) => [s, mean(rows), rows.length])
+        .filter(([, m]) => m != null).sort((a, b) => b[1] - a[1]);
+      body.innerHTML = `<table class="tbl"><tbody>
+        ${sects.map(([sname, m, n]) => `<tr>
+          <td class="txt" style="font-size:9.5px">${esc(sname.slice(0, 22).toUpperCase())}</td>
+          <td class="faint">${n}</td>
+          <td class="${cls(m)}">${fmt.pct(m / 100)}</td></tr>`).join("")}
+      </tbody></table>`;
+    } catch { /* next tick */ }
+  };
+  paint();
+  addTimer(`wheat:${inst.el.id}`, paint, 300000);
+}
 
 async function renderWorkspace(view) {
   wsInstances.clear();
   gsGrid = null;
+  let names = ["main"];
+  try { names = (await getJSON("/api/layouts")).names; } catch {}
+  if (!state.wsName || !names.includes(state.wsName)) state.wsName = names[0];
   view.innerHTML = `
     <div class="ws-toolbar">
+      <select class="in" id="ws-name">
+        ${names.map((n) => `<option${n === state.wsName ? " selected" : ""}>${esc(n)}</option>`).join("")}
+      </select>
+      <button class="btn ghost" id="ws-new" title="new named layout">+ LAYOUT</button>
       <select class="in" id="ws-add-type">
         ${Object.entries(WS_WIDGETS).map(([k, v]) => `<option value="${k}">${v.title}</option>`).join("")}
       </select>
       <button class="btn" id="ws-add">ADD WIDGET</button>
-      <button class="btn ghost" id="ws-reset">RESET LAYOUT</button>
-      <span class="ws-hint">DRAG HEADER TO MOVE · CORNER TO RESIZE · CH A/B/C LINK WIDGETS: CLICK A SYMBOL, LINKED WIDGETS FOLLOW · LAYOUT AUTOSAVES</span>
+      <button class="btn ghost" id="ws-preset" title="load the volatility-desk preset">VOL PRESET</button>
+      <button class="btn ghost" id="ws-reset">RESET</button>
+      <span class="ws-hint">SHIFT+W ADDS · DRAG HEADER · CH A/B/C LINK SYMBOLS · AUTOSAVES TO "${esc(state.wsName)}"</span>
     </div>
     <div class="grid-stack"></div>`;
+  $("#ws-name").onchange = () => { state.wsName = $("#ws-name").value; show("workspace"); };
+  $("#ws-new").onclick = () => {
+    const v = window.prompt("layout name (e.g. volatility, positional):", "");
+    const n = v && v.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+    if (n) { state.wsName = n; show("workspace"); }
+  };
 
   gsGrid = GridStack.init(
     { cellHeight: 86, margin: 0, float: false, handle: ".w-head", animate: true },
@@ -3361,7 +3564,7 @@ async function renderWorkspace(view) {
 
   let layout = null;
   try {
-    const saved = await getJSON("/api/layout");
+    const saved = await getJSON(`/api/layout?name=${encodeURIComponent(state.wsName || "main")}`);
     if (saved.widgets && saved.widgets.length) {
       layout = saved.widgets;
       Object.assign(CHANNELS, saved.channels || {});
@@ -3372,7 +3575,13 @@ async function renderWorkspace(view) {
 
   $("#ws-add").onclick = () => { wsAddWidget($("#ws-add-type").value); saveLayoutSoon(); };
   $("#ws-reset").onclick = async () => {
-    await postJSON("/api/layout", { widgets: WS_DEFAULT.map((w) => ({ ...w })) });
+    await postJSON(`/api/layout?name=${encodeURIComponent(state.wsName || "main")}`,
+      { widgets: WS_DEFAULT.map((w) => ({ ...w })) });
+    show("workspace");
+  };
+  $("#ws-preset").onclick = async () => {
+    await postJSON(`/api/layout?name=${encodeURIComponent(state.wsName || "main")}`,
+      { widgets: WS_DEFAULT_VOL.map((w) => ({ ...w })) });
     show("workspace");
   };
 }
@@ -4348,8 +4557,17 @@ const RENDER = {
 /* ---------- websocket ---------- */
 
 let ws = null;
+function bootChrome() {
+  // Raw intervals on purpose: addTimer timers die on every view switch,
+  // and the header outlives views.
+  paintPnlChip(); paintCommodities();
+  setInterval(paintPnlChip, 30000);
+  setInterval(paintCommodities, 60000);
+}
+
 function connectWS() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
+  if (!window._chromeBooted) { window._chromeBooted = true; bootChrome(); }
   ws = new WebSocket(`${proto}://${location.host}/ws/ticks`);
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
@@ -4435,6 +4653,37 @@ function paintFeed() {
       : "no tick has arrived on this connection";
   }
   updateStatusbar();
+}
+
+/* ---------- header chrome: P&L chip + MCX strip -------------------------- */
+
+async function paintPnlChip() {
+  const el = $("#pnl-chip");
+  if (!el) return;
+  try {
+    const d = await getJSON("/api/portfolio");
+    const pnl = (d.realized_pnl || 0) + (d.unrealized_pnl || 0);
+    el.innerHTML = `P&L <b class="${cls(pnl)}">${pnl >= 0 ? "+" : ""}${fmt.n(pnl)}</b>`;
+    el.title = `paper book · equity ${fmt.n(d.equity)} · realized ${fmt.n(d.realized_pnl || 0)} · unrealized ${fmt.n(d.unrealized_pnl || 0)}`;
+  } catch { el.textContent = "P&L —"; }
+}
+
+async function paintCommodities() {
+  const el = $("#cmdty-strip");
+  if (!el) return;
+  try {
+    const d = await getJSON("/api/commodities");
+    el.hidden = false;
+    el.innerHTML = d.rows.map((r) => `
+      <span class="cmdty"><span class="cm-name">${esc(r.name)}</span>
+        <span class="cm-px">${r.ltp != null ? fmt.n(r.ltp) : "—"}</span>
+        <span class="${r.chg_pct != null ? cls(r.chg_pct) : "faint"}">${r.chg_pct != null ? fmt.pct(r.chg_pct / 100) : ""}</span></span>`
+    ).join("") + `<span class="faint" style="margin-left:auto;font-size:9px">${esc(d.source)}</span>`;
+  } catch {
+    // No live Kite session: the strip hides rather than showing dollar
+    // lookalikes labelled MCX.
+    el.hidden = true;
+  }
 }
 
 /* ---------- data age ----------------------------------------------------- */

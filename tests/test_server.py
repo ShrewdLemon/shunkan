@@ -564,8 +564,8 @@ def test_nse_parser_reads_the_snapshot_timestamp():
     payload = {"records": {
         "timestamp": "13-Aug-2026 15:29:00",
         "underlyingValue": 24500.0,
-        "expiryDates": ["18-Aug-2026"],
-        "data": [{"expiryDate": "18-Aug-2026", "strikePrice": 24500,
+        "expiryDates": ["18-Aug-2099"],
+        "data": [{"expiryDate": "18-Aug-2099", "strikePrice": 24500,
                   "CE": {"lastPrice": 100.0, "openInterest": 1000,
                          "changeinOpenInterest": 10, "totalTradedVolume": 500,
                          "impliedVolatility": 12.5},
@@ -585,8 +585,8 @@ def test_an_unparseable_source_timestamp_becomes_none_not_now():
     payload = {"records": {
         "timestamp": "sometime yesterday",
         "underlyingValue": 24500.0,
-        "expiryDates": ["18-Aug-2026"],
-        "data": [{"expiryDate": "18-Aug-2026", "strikePrice": 24500,
+        "expiryDates": ["18-Aug-2099"],
+        "data": [{"expiryDate": "18-Aug-2099", "strikePrice": 24500,
                   "CE": {"lastPrice": 100.0, "openInterest": 1000},
                   "PE": {"lastPrice": 90.0, "openInterest": 900}}],
     }}
