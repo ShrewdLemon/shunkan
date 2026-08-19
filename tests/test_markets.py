@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from shunkan.markets import (
+    MARKET_CLOSE,
     IST,
     MIN_TTE_SECONDS,
     SECONDS_PER_YEAR,
@@ -45,17 +46,23 @@ def test_denormalize_round_trip():
 
 
 def test_time_to_expiry_decays_through_the_expiry_session():
+    # CAS era (2026-08-03): derivatives trade 09:15-15:40, so the expiry-day
+    # session is 6h25m. Derived from MARKET_CLOSE, not hardcoded - these
+    # tests fossilised the pre-CAS 15:30 bell once already.
     expiry = date(2026, 6, 18)  # Thursday
+    session_s = (MARKET_CLOSE.hour * 3600 + MARKET_CLOSE.minute * 60) - (9 * 3600 + 15 * 60)
     at_open = time_to_expiry_years(expiry, datetime(2026, 6, 18, 9, 15, tzinfo=IST))
     at_three = time_to_expiry_years(expiry, datetime(2026, 6, 18, 15, 0, tzinfo=IST))
-    assert at_open == pytest.approx(6.25 * 3600 / SECONDS_PER_YEAR)
-    assert at_three == pytest.approx(1800 / SECONDS_PER_YEAR)
-    assert at_three < at_open / 10  # the old flat 12-hour T made these equal
+    assert at_open == pytest.approx(session_s / SECONDS_PER_YEAR)
+    assert at_three == pytest.approx(
+        ((MARKET_CLOSE.hour - 15) * 3600 + MARKET_CLOSE.minute * 60) / SECONDS_PER_YEAR)
+    assert at_three < at_open / 9
 
 
 def test_time_to_expiry_floors_at_the_bell_instead_of_zero():
     expiry = date(2026, 6, 18)
-    bell = time_to_expiry_years(expiry, datetime(2026, 6, 18, 15, 30, tzinfo=IST))
+    bell = time_to_expiry_years(expiry, datetime(
+        2026, 6, 18, MARKET_CLOSE.hour, MARKET_CLOSE.minute, tzinfo=IST))
     assert bell == pytest.approx(MIN_TTE_SECONDS / SECONDS_PER_YEAR)
     assert bell > 0  # Black-Scholes must never divide by zero time
 
@@ -70,5 +77,5 @@ def test_time_to_expiry_is_the_same_from_any_host_timezone():
 
 def test_contract_is_live_until_its_close_bell():
     expiry = date(2026, 6, 18)
-    assert not is_expired(expiry, datetime(2026, 6, 18, 15, 29, tzinfo=IST))
-    assert is_expired(expiry, datetime(2026, 6, 18, 15, 31, tzinfo=IST))
+    assert not is_expired(expiry, datetime(2026, 6, 18, 15, 39, tzinfo=IST))
+    assert is_expired(expiry, datetime(2026, 6, 18, 15, 41, tzinfo=IST))

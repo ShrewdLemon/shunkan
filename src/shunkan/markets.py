@@ -120,9 +120,18 @@ def session_phase(when: datetime | None = None) -> SessionInfo:
         return info("opening", True, "Opening hour — highest volatility window")
     if time(10, 0) <= t < time(14, 30):
         return info("midday", True, "Midday session")
-    if time(14, 30) <= t < time(15, 30):
+    if time(14, 30) <= t < time(15, 15):
         return info("closing", True, "Closing hour — intraday square-off flows")
-    if time(15, 30) <= t < time(18, 0):
+    if time(15, 15) <= t < time(15, 35):
+        # CAS, live since 2026-08-03: F&O-listed cash names leave continuous
+        # trading at 15:15 and their close is discovered by call auction to
+        # ~15:35. Derivatives keep trading right through it.
+        return info("auction", True, "Closing auction (CAS) — F&O cash names in "
+                                     "auction; derivatives trade to 15:40")
+    if time(15, 35) <= t < time(15, 40):
+        return info("closing_deriv", True, "Derivatives-only tail — F&O reacts "
+                                           "to the auction close")
+    if time(15, 40) <= t < time(18, 0):
         return info("post_market", False, "Post-market — news lands on tomorrow's open")
     return info("overnight", False, "Overnight — global cues set tomorrow's gap")
 
@@ -133,7 +142,12 @@ def session_phase(when: datetime | None = None) -> SessionInfo:
 # one clock and it is never the host machine's.
 # ---------------------------------------------------------------------------
 
-MARKET_CLOSE = time(15, 30)
+# Since 2026-08-03 (CAS): derivatives trade to 15:40; F&O cash names close by
+# auction ~15:35; non-F&O cash still 15:30. Options date themselves from the
+# DERIVATIVES close, which is the clock that matters for anything with theta.
+MARKET_CLOSE = time(15, 40)
+CASH_CLOSE = time(15, 30)
+CAS_WINDOW = (time(15, 15), time(15, 35))
 SECONDS_PER_YEAR = 365.0 * 24 * 3600  # calendar years — NSE's own IV convention
 
 # Floor on time to expiry. Under ~1s the IV solve reads the last residual
@@ -203,7 +217,7 @@ class Exchange:
 
 EXCHANGES: tuple[Exchange, ...] = (
     Exchange("NSE", "Mumbai", 19.07, 72.88, "Asia/Kolkata",
-             ((time(9, 15), time(15, 30)),)),
+             ((time(9, 15), time(15, 40)),)),  # incl. CAS + derivatives tail
     Exchange("LSE", "London", 51.51, -0.09, "Europe/London",
              ((time(8, 0), time(16, 30)),)),
     Exchange("NYSE", "New York", 40.71, -74.01, "America/New_York",
