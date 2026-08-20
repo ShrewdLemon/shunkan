@@ -1260,3 +1260,11 @@ main { padding: 0; }
 
 .map-u { font-size: 8.5px; padding: 0 7px; margin-left: 4px; }
 .map-u.active { color: var(--amber); border-color: var(--amber); }
+
+/* company ownership bars */
+.own-row { display: grid; grid-template-columns: 110px 1fr 52px; gap: 10px;
+  align-items: center; height: 20px; font-size: 10.5px; }
+.own-row span { color: var(--text-dim); letter-spacing: 0.06em; }
+.own-row b { text-align: right; }
+.own-track { height: 8px; background: var(--bg-panel-2, #101010); }
+.own-fill { height: 100%; }
