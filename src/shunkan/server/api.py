@@ -2221,6 +2221,150 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                                   "refusing to guess dates money depends on"},
         })
 
+    @app.get("/api/company/{symbol}")
+    def company(symbol: str):
+        """Company intelligence, Bloomberg-DES style, honestly sourced.
+
+        Everything here names where it came from. The two things a
+        Bloomberg carries that no free source publishes structured - the
+        holder-level registry and the supplier/customer graph - come back
+        as REFUSALS with reasons, not as invented arrows. The business
+        summary is where the raw-material-to-end-user story lives for most
+        names, and it is quoted as the source text, not paraphrased into
+        false precision."""
+        import time as _time
+
+        sym = symbol.upper().replace(".NS", "")
+        ck = f"company:{sym}"
+        hit = _scan_cache.get(ck)
+        if hit and _time.monotonic() - hit[0] < 3600:
+            return hit[1]
+        if is_offline():
+            raise HTTPException(502, "company intelligence needs the network "
+                                     "(SHUNKAN_OFFLINE=1 is set)")
+        import yfinance as yf
+
+        out: dict = {"symbol": sym}
+        t = yf.Ticker(f"{sym}.NS")
+        try:
+            info = t.info or {}
+            if not info.get("longName"):
+                raise DataError(f"Yahoo has no profile for {sym}.NS")
+        except Exception as exc:
+            raise HTTPException(502, f"profile unavailable: {str(exc)[:120]}") from exc
+
+        out["profile"] = _clean({
+            "name": info.get("longName"),
+            "yahoo_sector": info.get("sector"),
+            "yahoo_industry": info.get("industry"),
+            "hq": ", ".join(x for x in (info.get("city"), info.get("state"),
+                                        info.get("country")) if x),
+            "employees": info.get("fullTimeEmployees"),
+            "website": info.get("website"),
+            "market_cap": info.get("marketCap"),
+            "trailing_pe": info.get("trailingPE"),
+            "price_to_book": info.get("priceToBook"),
+            "dividend_yield_pct": info.get("dividendYield"),
+            "beta": info.get("beta"),
+            "52w_low": info.get("fiftyTwoWeekLow"),
+            "52w_high": info.get("fiftyTwoWeekHigh"),
+            "source": "Yahoo Finance company profile",
+        })
+        out["business"] = {
+            "summary": info.get("longBusinessSummary")
+                       or "no business description published",
+            "source": "Yahoo Finance longBusinessSummary, quoted verbatim",
+        }
+        out["management"] = {
+            "officers": [{"name": o.get("name"), "title": o.get("title"),
+                          "age": o.get("age"),
+                          "pay": o.get("totalPay")}
+                         for o in (info.get("companyOfficers") or [])[:12]],
+            "source": "Yahoo Finance companyOfficers",
+        }
+        ins = info.get("heldPercentInsiders")
+        inst = info.get("heldPercentInstitutions")
+        out["ownership"] = _clean({
+            "promoter_pct": ins * 100 if ins is not None else None,
+            "institutions_pct": inst * 100 if inst is not None else None,
+            "public_other_pct": ((1 - ins - inst) * 100
+                                 if ins is not None and inst is not None else None),
+            "institutions_count": info.get("heldPercentInstitutions") is not None
+                                  and (t.major_holders is not None
+                                       and _maybe_holders_count(t)) or None,
+            "label_note": ("Yahoo reports the promoter group under 'insiders' "
+                           "for Indian names; percentages are their latest "
+                           "reported figures, not a live registry"),
+            "holder_table": {"error": "holder-level registry is not published "
+                                      "by any free structured source for NSE "
+                                      "names - refusing to invent one; the "
+                                      "quarterly shareholding pattern lives in "
+                                      "exchange filings"},
+        })
+        try:
+            fin = t.financials
+            rows = {}
+            for label, key in (("revenue", "Total Revenue"),
+                               ("operating_income", "Operating Income"),
+                               ("net_income", "Net Income"),
+                               ("ebitda", "EBITDA")):
+                if key in fin.index:
+                    rows[label] = {str(c.date()): _clean(float(v))
+                                   for c, v in fin.loc[key].items() if pd.notna(v)}
+            margins = {}
+            rev = rows.get("revenue", {})
+            for y, r in rev.items():
+                ni = rows.get("net_income", {}).get(y)
+                if r and ni is not None:
+                    margins[y] = round(ni / r * 100, 2)
+            out["financials"] = {
+                "annual": rows,
+                "net_margin_pct": margins,
+                "source": "Yahoo Finance annual statements",
+                "note": "net margin computed here from the two rows above",
+            }
+        except Exception as exc:
+            out["financials"] = {"error": f"statements unavailable: {str(exc)[:100]}"}
+
+        try:
+            from shunkan.data.constituents import universe as _uni
+
+            cons = _uni(("NIFTY500",))
+            mine = next((c for c in cons if c.symbol == sym), None)
+            if mine is None or not mine.industry:
+                raise DataError(f"{sym} not in NIFTY500 list - no NSE industry peers")
+            peer_syms = [c.symbol for c in cons
+                         if c.industry == mine.industry and c.symbol != sym][:24]
+            changes = _bulk_day_change([f"{x}.NS" for x in peer_syms]) if peer_syms else {}
+            out["peers"] = {
+                "nse_industry": mine.industry,
+                "rows": [{"symbol": x,
+                          "price": changes.get(x, (None, None))[0],
+                          "chg_pct": changes.get(x, (None, None))[1]}
+                         for x in peer_syms],
+                "source": "NSE NIFTY500 constituent taxonomy + bulk quotes",
+            }
+        except Exception as exc:
+            out["peers"] = {"error": str(exc)[:120]}
+
+        out["supply_chain"] = {
+            "error": ("no free structured supplier/customer graph exists for "
+                      "NSE names (Bloomberg SPLC is licensed data) - the "
+                      "BUSINESS text above is the sourced description of "
+                      "inputs, segments and end-markets; annual-report "
+                      "parsing is the honest future path"),
+        }
+        out = _clean(out)
+        _scan_cache[ck] = (_time.monotonic(), out)
+        return out
+
+    def _maybe_holders_count(t) -> float | None:
+        try:
+            mh = t.major_holders
+            return float(mh.loc["institutionsCount"]["Value"])
+        except Exception:
+            return None
+
     HEAT_UNIVERSES = {
         "core":     ("NIFTY50", "BANKNIFTY"),
         "next50":   ("NIFTYNEXT50",),

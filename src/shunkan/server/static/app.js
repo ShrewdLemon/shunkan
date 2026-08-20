@@ -415,7 +415,7 @@ const SYM_RE = /^[\^A-Z0-9][A-Z0-9._&^-]{0,23}$/;
 // quietly set the global symbol as a side effect of a malformed link.
 const SYMBOL_VIEWS = new Set([
   "chart", "chain", "payoff", "iv", "volume", "news", "backtest",
-  "viz", "mlstudio", "brief", "oicharts",
+  "viz", "mlstudio", "brief", "oicharts", "company",
 ]);
 
 let _routing = false;   // true while show() is being driven BY the hash
@@ -2568,6 +2568,106 @@ function drawTape() {
 
 /* ---------- SCREENER ---------- */
 
+/* ---------- COMPANY INTELLIGENCE (CMP) ----------
+   The DES page, honestly sourced: every section names where it came from,
+   and the two things only licensed data carries - the holder registry and
+   the supplier/customer graph - are refusals with reasons, not inventions. */
+
+async function renderCompany(view, params = {}) {
+  if (params.symbol) state.symbol = params.symbol.toUpperCase();
+  const sym = state.symbol;
+  view.innerHTML = panel({
+    title: `COMPANY — <span class="hl">${esc(sym)}</span>`,
+    id: "cmp-panel", flush: true,
+    meta: `<span class="controls"><input class="in" id="cmp-sym" value="${esc(sym)}" size="11">
+           <button class="btn" id="cmp-go">LOAD</button></span> <span id="cmp-upd">…</span>`,
+    body: loading("reading the company"),
+  });
+  $("#cmp-go").onclick = () => show("company", { symbol: $("#cmp-sym").value });
+  $("#cmp-sym").onkeydown = (e) => { if (e.key === "Enter") $("#cmp-go").click(); };
+  try {
+    const d = await getJSON(`/api/company/${encodeURIComponent(sym)}`);
+    const host = $("#cmp-panel .panel-body");
+    if (!host) return;
+    const pr = d.profile, own = d.ownership, fin = d.financials, peers = d.peers;
+    $("#cmp-upd").innerHTML = ageStamp(null);
+    const cr = (v) => v == null ? "—" : v >= 1e7 ? `₹${fmt.n(v / 1e7, 0)} Cr` : fmt.n(v);
+    const ownBar = (label, pct, color) => pct == null ? "" : `
+      <div class="own-row"><span>${label}</span>
+        <div class="own-track"><div class="own-fill" style="width:${Math.min(pct, 100)}%;background:${color}"></div></div>
+        <b>${pct.toFixed(1)}%</b></div>`;
+    const years = fin.annual ? Object.keys(fin.annual.revenue || {}).sort().reverse().slice(0, 4) : [];
+    host.innerHTML = `
+      <div class="kv-strip">
+        <div class="kv"><div class="k">NAME</div><div class="v sm">${esc(pr.name || sym)}</div></div>
+        <div class="kv"><div class="k">HQ</div><div class="v sm">${esc(pr.hq || "—")}</div></div>
+        <div class="kv"><div class="k">EMPLOYEES</div><div class="v sm">${pr.employees ? fmt.n(pr.employees, 0) : "—"}</div></div>
+        <div class="kv"><div class="k">MCAP</div><div class="v sm">${cr(pr.market_cap)}</div></div>
+        <div class="kv"><div class="k">P/E</div><div class="v sm">${pr.trailing_pe ? pr.trailing_pe.toFixed(1) : "—"}</div></div>
+        <div class="kv"><div class="k">P/B</div><div class="v sm">${pr.price_to_book ? pr.price_to_book.toFixed(1) : "—"}</div></div>
+        <div class="kv"><div class="k">DIV YLD</div><div class="v sm">${pr.dividend_yield_pct != null ? pr.dividend_yield_pct.toFixed(2) + "%" : "—"}</div></div>
+        <div class="kv"><div class="k">52W</div><div class="v sm">${pr["52w_low"] ? fmt.n(pr["52w_low"]) + "–" + fmt.n(pr["52w_high"]) : "—"}</div></div>
+      </div>
+      <div class="empty" style="padding:2px 12px"><span class="faint">${esc(pr.yahoo_sector || "")} · ${esc(pr.yahoo_industry || "")} · ${pr.website ? `<a href="${esc(pr.website)}" target="_blank" rel="noopener">${esc(pr.website)}</a>` : ""} · ${esc(pr.source)}</span></div>
+
+      <div class="news-sect">BUSINESS — WHAT IT MAKES, FROM WHAT, FOR WHOM</div>
+      <div style="padding:8px 14px;max-width:88ch;line-height:1.6;font-size:12px">${esc(d.business.summary)}</div>
+      <div class="empty" style="padding:0 14px 6px"><span class="faint">${esc(d.business.source)}</span></div>
+
+      <div class="news-sect">OWNERSHIP</div>
+      <div style="padding:8px 14px;max-width:60ch">
+        ${ownBar("PROMOTERS", own.promoter_pct, "var(--amber, #ffa62b)")}
+        ${ownBar("INSTITUTIONS", own.institutions_pct, "var(--blue, #5fa8dc)")}
+        ${ownBar("PUBLIC & OTHER", own.public_other_pct, "var(--text-faint, #63605a)")}
+      </div>
+      <div class="empty" style="padding:0 14px 4px"><span class="faint">${esc(own.label_note)}</span></div>
+      <div class="empty" style="padding:0 14px 8px"><span class="faint">holder table: ${esc(own.holder_table.error)}</span></div>
+
+      <div class="news-sect">MANAGEMENT</div>
+      <table class="tbl"><tbody>
+        ${(d.management.officers || []).map((o) => `<tr>
+          <td class="txt sym">${esc(o.name || "")}</td>
+          <td class="txt">${esc(o.title || "")}</td>
+          <td class="faint">${o.age ? o.age + "y" : ""}</td>
+          <td>${o.pay ? cr(o.pay) : ""}</td></tr>`).join("")}
+      </tbody></table>
+
+      <div class="news-sect">FINANCIALS — ANNUAL</div>
+      ${fin.error ? `<div class="empty" style="padding:8px 14px">${esc(fin.error)}</div>` : `
+      <table class="tbl"><thead><tr><th class="txt">LINE</th>${years.map((y) => `<th>${y.slice(0, 4)}</th>`).join("")}</tr></thead><tbody>
+        ${["revenue", "operating_income", "net_income", "ebitda"].map((line) => fin.annual[line] ? `<tr>
+          <td class="txt">${line.replace("_", " ").toUpperCase()}</td>
+          ${years.map((y) => `<td>${cr(fin.annual[line][y])}</td>`).join("")}</tr>` : "").join("")}
+        <tr><td class="txt">NET MARGIN %</td>${years.map((y) => `<td class="${cls(fin.net_margin_pct[y])}">${fin.net_margin_pct[y] != null ? fin.net_margin_pct[y].toFixed(1) + "%" : "—"}</td>`).join("")}</tr>
+      </tbody></table>
+      <div class="empty" style="padding:2px 14px"><span class="faint">${esc(fin.source)} · ${esc(fin.note)}</span></div>`}
+
+      <div class="news-sect">PEERS — SAME NSE INDUSTRY${peers.nse_industry ? ` · ${esc(peers.nse_industry.toUpperCase())}` : ""}</div>
+      ${peers.error ? `<div class="empty" style="padding:8px 14px">${esc(peers.error)}</div>` : `
+      <div class="map-grid" style="padding-top:6px">
+        ${peers.rows.filter((r) => r.price != null).map((r) => {
+          const mag = r.chg_pct == null ? 0 : Math.min(Math.abs(r.chg_pct) / 2.5, 1);
+          const bg = r.chg_pct == null ? "transparent"
+            : r.chg_pct >= 0 ? `rgba(35,209,139,${0.08 + 0.3 * mag})` : `rgba(255,92,92,${0.08 + 0.3 * mag})`;
+          return `<div class="map-tile" data-sym="${esc(r.symbol)}" style="background:${bg}">
+            <div class="mt-sym">${esc(r.symbol)}</div>
+            <div class="mt-chg ${cls(r.chg_pct)}">${r.chg_pct == null ? "—" : fmt.pct(r.chg_pct / 100)}</div>
+          </div>`;
+        }).join("")}
+      </div>
+      <div class="empty" style="padding:2px 14px"><span class="faint">${esc(peers.source)} · click a tile for that company</span></div>`}
+
+      <div class="news-sect">SUPPLY CHAIN</div>
+      <div class="empty" style="padding:8px 14px">${esc(d.supply_chain.error)}</div>`;
+    host.querySelectorAll(".map-tile").forEach((el) => {
+      el.onclick = () => show("company", { symbol: el.dataset.sym });
+    });
+  } catch (e) {
+    const host = $("#cmp-panel .panel-body");
+    if (host) host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
 /* ---------- HEATMAP (MAP) ----------
    Equal tiles grouped by NSE's sector taxonomy, coloured by the day move.
    Equal ON PURPOSE: cap-weighted tiles need a cap source this codebase
@@ -2705,6 +2805,7 @@ const ANL_GROUPS = [
     ["mlstudio", "MLS", "ML studio", "chronological split, baseline always shown"],
   ]],
   ["CONTEXT", [
+    ["company", "CMP", "Company intelligence", "business, promoters, management, financials, NSE peers — refusals where no source exists"],
     ["news", "NWS", "News intelligence", "time-sorted, sector-grouped wires with sentiment provenance"],
     ["calendar", "CAL", "Calendar", "expiries from the contract master; refusals where no source exists"],
     ["workspace", "WSP", "Workspace", "saved layouts and notes"],
@@ -4879,7 +4980,7 @@ const RENDER = {
   iv: renderIV, volume: renderVolume, news: renderNews, backtest: renderBacktest,
   tape: renderTape, screener: renderScreener, signals: renderSignals,
   fiidii: renderFiiDii, oicharts: renderOICharts, heatmap: renderHeatmap,
-  calendar: renderCalendar, analyse: renderAnalyse,
+  calendar: renderCalendar, analyse: renderAnalyse, company: renderCompany,
   portfolio: renderPortfolio, alerts: renderAlerts,
   datastore: renderDatastore, workspace: renderWorkspace, viz: renderViz,
   mlstudio: renderMLStudio, brief: renderBrief,
@@ -5128,6 +5229,7 @@ const CODE_ALIAS = { OPT: "oc", PRT: "portfolio", PLS: "pulse", ANL: "analyse",
                      ANA: "brief", BRF: "brief", QNT: "qnt", SCR: "screener",
                      SIG: "signals", FII: "fiidii", OIC: "oicharts",
                      MAP: "heatmap", CAL: "calendar", WSP: "workspace",
+                     CMP: "company",
                      VOL: "iv", FLW: "volume", NWS: "news", BTL: "backtest",
                      MLS: "mlstudio", PAY: "payoff" };
 
@@ -5158,6 +5260,7 @@ function runCommand(line) {
   const cmd = tok[0].toLowerCase();
   const sym = tok[1] ? tok[1].toUpperCase() : undefined;
   const route = {
+    cmp: () => show("company", { symbol: sym }), des: () => show("company", { symbol: sym }),
     pulse: () => show("pulse"), p: () => show("pulse"),
     c: () => { if (tok[2]) state.chartPeriod = tok[2]; show("chart", { symbol: sym }); },
     chart: () => show("chart", { symbol: sym }), q: () => show("chart", { symbol: sym }),
