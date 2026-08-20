@@ -2221,6 +2221,145 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                                   "refusing to guess dates money depends on"},
         })
 
+    HEAT_UNIVERSES = {
+        "core":     ("NIFTY50", "BANKNIFTY"),
+        "next50":   ("NIFTYNEXT50",),
+        "n100":     ("NIFTY100",),
+        "n200":     ("NIFTY200",),
+        "n500":     ("NIFTY500",),
+        "mid150":   ("MIDCAP150",),
+        "small250": ("SMALLCAP250",),
+    }
+
+    _heat_builds: dict = {}
+
+    def _bulk_day_change(ns_symbols: list[str], progress=None) -> dict:
+        """Last close vs previous close for MANY symbols, chunked at 80 per
+        Yahoo call - one 500-ticker call hangs on throttling (measured 3min+),
+        chunks run ~3s each. Returns {SYM: (price, chg_pct)}."""
+        import yfinance as yf
+
+        out: dict = {}
+        for i in range(0, len(ns_symbols), 80):
+            chunk = ns_symbols[i:i + 80]
+            try:
+                data = yf.download(chunk, period="5d", interval="1d",
+                                   group_by="ticker", threads=True,
+                                   progress=False, auto_adjust=False)
+            except Exception:
+                continue
+            for sym in chunk:
+                try:
+                    closes = data[sym]["Close"].dropna()
+                    if len(closes) >= 2:
+                        last, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
+                        out[sym.replace(".NS", "").upper()] = (last, (last / prev - 1) * 100)
+                except (KeyError, IndexError, TypeError):
+                    continue
+            if progress:
+                progress(min(i + 80, len(ns_symbols)))
+        return out
+
+    @app.get("/api/heatmap")
+    def heatmap(universe: str = "core"):
+        """Sector-grouped tiles for a chosen NSE universe.
+
+        `core` (NIFTY50+BANKNIFTY) up to `n500` - the full 20-sector
+        taxonomy only appears from n500; the core board carries ~15 of 20
+        and says nothing about Chemicals, Media, Realty, Textiles or
+        Diversified, which is why the selector exists. Equal tiles still:
+        cap-weighting needs a cap source this codebase does not carry.
+        Cached ~5 minutes per universe."""
+        import time as _time
+
+        if universe not in HEAT_UNIVERSES:
+            raise HTTPException(400, f"universe must be one of {sorted(HEAT_UNIVERSES)}")
+        ck = f"heatmap:{universe}"
+        hit = _scan_cache.get(ck)
+        if hit and _time.monotonic() - hit[0] < 300:
+            return hit[1]
+        # Big universes build in the BACKGROUND: a 500-name pull is ~20s of
+        # chunked Yahoo calls, and a request that blocks that long reads as
+        # a hang. The client polls; the loader has a real job.
+        b = _heat_builds.get(universe)
+        if b and b.get("status") == "building":
+            return {"building": True, "done": b.get("done", 0), "total": b.get("total", 0),
+                    "universe": universe}
+
+        import threading
+
+        try:
+            from shunkan.data.constituents import industry_map, universe as _uni
+
+            cons = _uni(HEAT_UNIVERSES[universe])
+            industry = industry_map(cons)
+            symbols = [c.symbol for c in cons]
+        except Exception as exc:
+            raise HTTPException(502, f"constituents unavailable: {str(exc)[:120]}") from exc
+
+        _heat_builds[universe] = {"status": "building", "done": 0, "total": len(symbols)}
+
+        def build():
+            try:
+                changes = _bulk_day_change(
+                    [f"{s}.NS" for s in symbols],
+                    progress=lambda n: _heat_builds[universe].update(done=n))
+                tiles = []
+                for sym in symbols:
+                    px, chg = changes.get(sym, (None, None))
+                    tiles.append({"symbol": sym, "sector": industry.get(sym, "OTHER"),
+                                  "price": px, "chg_pct": chg})
+                priced = sum(1 for x in tiles if x["price"] is not None)
+                out = _clean({
+                    "tiles": tiles, "n": len(tiles), "priced": priced,
+                    "universe": universe,
+                    "sectors": len({x["sector"] for x in tiles}),
+                    "note": (f"{priced}/{len(tiles)} priced - a dash is a name "
+                             "Yahoo did not serve, not a zero; equal tiles, no "
+                             "fake cap weights"),
+                })
+                _scan_cache[ck] = (_time.monotonic(), out)
+            finally:
+                _heat_builds.pop(universe, None)
+
+        threading.Thread(target=build, daemon=True).start()
+        return {"building": True, "done": 0, "total": len(symbols), "universe": universe}
+
+    @app.get("/api/calendar")
+    def calendar():
+        """The expiry calendar, from the instruments dumps - real listings,
+        not a typed-in schedule. Holidays and earnings dates are REFUSED
+        with reasons: neither has a source wired yet, and a guessed calendar
+        is how someone holds a position into a settlement they mistimed."""
+        from shunkan.data.kite_fno import load_instruments
+
+        out_venues = {}
+        for venue in ("NFO", "BFO", "MCX", "CDS"):
+            try:
+                df = load_instruments(exchange=venue)
+                exp = df[df["expiry"].astype(str) != ""].copy()
+                exp["expiry"] = pd.to_datetime(exp["expiry"], errors="coerce")
+                exp = exp.dropna(subset=["expiry"])
+                exp = exp[exp["expiry"].dt.date >= datetime.now(IST).date()]
+                nxt = (exp.groupby(exp["expiry"].dt.date)
+                       .agg(contracts=("tradingsymbol", "count"),
+                            names=("name", lambda s: sorted(set(s))[:6]))
+                       .reset_index().sort_values("expiry").head(8))
+                out_venues[venue] = [
+                    {"date": str(r["expiry"]), "contracts": int(r["contracts"]),
+                     "names": list(r["names"])}
+                    for _, r in nxt.iterrows()
+                ]
+            except Exception as exc:
+                out_venues[venue] = {"error": str(exc)[:120]}
+        return _clean({
+            "venues": out_venues,
+            "holidays": {"error": "no sourced exchange holiday list wired yet - "
+                                  "refusing to guess one"},
+            "earnings": {"error": "no earnings-date source wired yet - "
+                                  "refusing to guess dates money depends on"},
+        })
+
     @app.get("/api/heatmap")
     def heatmap():
         """NIFTY50+BANKNIFTY tiles grouped by NSE's sector taxonomy.

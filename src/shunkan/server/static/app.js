@@ -509,12 +509,37 @@ window.addEventListener("hashchange", () => {
 });
 window.show = show;
 
-const loading = (msg = "loading") => `
+/* Wisdom for the wait: short, famous, attributed. Shown one at a time
+   under the loader - decoration with provenance, like everything else. */
+const LOAD_QUOTES = [
+  ["Be fearful when others are greedy, and greedy when others are fearful.", "Warren Buffett"],
+  ["The big money is not in the buying and selling, but in the waiting.", "Charlie Munger"],
+  ["It's not whether you're right or wrong, but how much you make when right.", "George Soros"],
+  ["Losers average losers.", "Paul Tudor Jones"],
+  ["The trend is your friend until the end when it bends.", "Ed Seykota"],
+  ["Risk comes from not knowing what you're doing.", "Warren Buffett"],
+  ["We're right 50.75 percent of the time. You can make billions that way.", "Robert Mercer, Renaissance"],
+  ["Markets can remain irrational longer than you can remain solvent.", "attr. John Maynard Keynes"],
+  ["The four most dangerous words in investing: this time it's different.", "Sir John Templeton"],
+  ["Know what you own, and know why you own it.", "Peter Lynch"],
+  ["Being too far ahead of your time is indistinguishable from being wrong.", "Howard Marks"],
+  ["It never was my thinking that made the big money for me. It was my sitting.", "Jesse Livermore"],
+  ["Whenever you find yourself on the side of the majority, pause and reflect.", "Mark Twain"],
+  ["If you're not willing to react with equanimity to a 50% decline, you deserve the result.", "Charlie Munger"],
+  ["Amateurs want to be right. Professionals want to make money.", "trading floor proverb"],
+  ["All of humanity's problems stem from man's inability to sit quietly in a room.", "Blaise Pascal"],
+];
+
+const loading = (msg = "loading") => {
+  const [q, who] = LOAD_QUOTES[Math.floor(Math.random() * LOAD_QUOTES.length)];
+  return `
   <div class="loading">
     <span class="load-candles">${Array.from({ length: 9 }, (_, i) =>
       `<i style="animation-delay:${(i * 0.11).toFixed(2)}s"></i>`).join("")}</span>
     <span class="load-msg">${msg}</span>
+    <span class="load-quote">"${q}" <b>— ${who}</b></span>
   </div>`;
+};
 
 /* ---------- PULSE ---------- */
 
@@ -2541,17 +2566,35 @@ function drawTape() {
    Equal ON PURPOSE: cap-weighted tiles need a cap source this codebase
    does not carry, and a guessed weight is a fabricated number as a layout. */
 
+const MAP_UNIVERSES = [
+  ["core", "NIFTY50+BANK"], ["next50", "NEXT 50"], ["n100", "NIFTY 100"],
+  ["n200", "NIFTY 200"], ["n500", "NIFTY 500"], ["mid150", "MIDCAP 150"],
+  ["small250", "SMALLCAP 250"],
+];
+let mapUniverse = "core";
+
 async function renderHeatmap(view) {
   view.innerHTML = panel({
-    title: "HEATMAP — NIFTY 50 + BANKNIFTY BY SECTOR",
+    title: `HEATMAP — BY SECTOR <span class="controls">${MAP_UNIVERSES.map(([k, label]) =>
+      `<button class="btn ghost map-u${k === mapUniverse ? " active" : ""}" data-u="${k}">${label}</button>`).join("")}</span>`,
     id: "map-panel", flush: true, meta: `<span id="map-upd">…</span>`,
     body: loading("pricing the universe"),
   });
+  view.querySelectorAll(".map-u").forEach((b) => {
+    b.onclick = () => { mapUniverse = b.dataset.u; show("heatmap"); };
+  });
   try {
-    const d = await getJSON("/api/heatmap");
+    let d = await getJSON(`/api/heatmap?universe=${mapUniverse}`);
+    while (d.building) {
+      const host = $("#map-panel .panel-body");
+      if (!host || !document.body.contains(view)) return;
+      host.innerHTML = loading(`pricing ${d.done}/${d.total} names`);
+      await new Promise((r) => setTimeout(r, 3500));
+      d = await getJSON(`/api/heatmap?universe=${mapUniverse}`);
+    }
     const host = $("#map-panel .panel-body");
     if (!host) return;
-    $("#map-upd").innerHTML = stamp(`${d.n} NAMES`) + " " + ageStamp(null);
+    $("#map-upd").innerHTML = stamp(`${d.priced}/${d.n} PRICED · ${d.sectors} SECTORS`) + " " + ageStamp(null);
     const bySector = new Map();
     d.tiles.forEach((t) => {
       if (!bySector.has(t.sector)) bySector.set(t.sector, []);
@@ -2571,7 +2614,7 @@ async function renderHeatmap(view) {
             <span class="${cls(m)}">${m == null ? "—" : fmt.pct(m / 100)}</span>
             <span class="faint">· ${rows.length}</span></div>
           <div class="map-grid">
-            ${rows.sort((a, b) => (b.chg_pct ?? -99) - (a.chg_pct ?? -99)).map((t) => {
+            ${rows.sort((a, b) => (b.chg_pct ?? -99) - (a.chg_pct ?? -99)).filter((t) => t.price != null).map((t) => {
               const c = t.chg_pct;
               const mag = c == null ? 0 : Math.min(Math.abs(c) / 2.5, 1);
               const bg = c == null ? "transparent"
