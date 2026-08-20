@@ -35,6 +35,12 @@ from shunkan.data.provider import DataError
 INDEX_FILES = {
     "NIFTY50": "ind_nifty50list.csv",
     "BANKNIFTY": "ind_niftybanklist.csv",
+    "NIFTYNEXT50": "ind_niftynext50list.csv",
+    "NIFTY100": "ind_nifty100list.csv",
+    "NIFTY200": "ind_nifty200list.csv",
+    "NIFTY500": "ind_nifty500list.csv",
+    "MIDCAP150": "ind_niftymidcap150list.csv",
+    "SMALLCAP250": "ind_niftysmallcap250list.csv",
 }
 ARCHIVE = "https://nsearchives.nseindia.com/content/indices/"
 
