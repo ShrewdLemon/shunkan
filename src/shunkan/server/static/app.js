@@ -530,8 +530,15 @@ const LOAD_QUOTES = [
   ["All of humanity's problems stem from man's inability to sit quietly in a room.", "Blaise Pascal"],
 ];
 
+// One quote per ~18s window, however often loaders repaint - progress
+// polling was re-rolling the wisdom every 3.5s, which is not how wisdom works.
+let _loadQuote = { at: 0, pick: LOAD_QUOTES[0] };
 const loading = (msg = "loading") => {
-  const [q, who] = LOAD_QUOTES[Math.floor(Math.random() * LOAD_QUOTES.length)];
+  if (Date.now() - _loadQuote.at > 18000) {
+    _loadQuote = { at: Date.now(),
+                   pick: LOAD_QUOTES[Math.floor(Math.random() * LOAD_QUOTES.length)] };
+  }
+  const [q, who] = _loadQuote.pick;
   return `
   <div class="loading">
     <span class="load-candles">${Array.from({ length: 9 }, (_, i) =>
