@@ -358,3 +358,21 @@ Journal grading update (18→19 pair, first grade against a RECORD not a
 reconstruction): regime HELD again (7/7 overall), yesterday's support
 24,000 HELD (today's low 24,026 — the wall framework 13/14 lifetime),
 pain-pull FAILED again (1/6 — the magnet is dead and stays dead).
+
+## 2026-08-20 16:20 — the shock basket exits: FIRST LIVE DRAW OF THE SIGNAL, GREEN
+
+Exited all 7 at today's closes, held exactly one session per the
+pre-registration. **Realized +₹495.40 gross = +0.52% on ₹94,658** —
+against the study's +0.35% expectation. Hit 5/7 (ITC +1.72%, CIPLA
++1.13%, ULTRACEMCO +1.09%, SUNPHARMA +0.21%, SBILIFE +0.09%; ASIANPAINT
+−0.21%, TMPV −0.33%). Delivery cost stack ~25–30bp ≈ ₹240–280 → net
+≈ +₹215–255. Positive net of costs on draw one.
+
+Graded as registered: ONE clustered draw. It neither validates nor
+settles anything — it is one observation that landed inside the
+distribution the study measured, entered at honest auction closes,
+exited on the clock. The signal's live ledger is now open: 1 draw,
++0.52% gross. n grows from here.
+
+Book: equity ₹106,352.15 (wall spread still carried, 2 legs, marks
+green with the market's bounce). Lifetime realized ₹1,321.15.
