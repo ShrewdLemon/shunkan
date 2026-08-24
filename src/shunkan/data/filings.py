@@ -405,3 +405,22 @@ def fetch_report_text(url: str, max_pages: int = 400) -> tuple[str, int]:
         except Exception:
             continue
     return "\n".join(chunks), n
+
+
+def registry_stats(root=None) -> dict:
+    """What the local ownership registry actually contains."""
+    import pandas as pd
+
+    from shunkan.store.store import STORE_DIR
+
+    path = (root or STORE_DIR) / "ownership" / "holders.parquet"
+    if not path.exists():
+        return {"companies": 0, "holders": 0, "rows": 0}
+    try:
+        df = pd.read_parquet(path)
+    except Exception:
+        return {"error": "registry unreadable"}
+    return {"companies": int(df["symbol"].nunique()),
+            "holders": int(df["holder"].nunique()),
+            "rows": int(len(df)),
+            "as_of_dates": sorted(df["as_of"].dropna().unique().tolist())[-3:]}

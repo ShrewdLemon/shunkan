@@ -239,6 +239,30 @@ in /api/status under feed_keepalive.futures. Bus routing resolves symbols
 the feed already streams by identity, so NIFTYFUT is subscribable even
 though no cash resolver knows it.
 
+## Ownership registry, and the reverse map (2026-08-24)
+
+The first cut of the ownership panel had a real arithmetic bug, caught by
+the owner reading it: promoter + institutions + public summed to 119.5%.
+SEBI's tree does not work that way - PUBLIC ALREADY CONTAINS the
+institutions. It now renders as filed: promoter + public = 100 (Reliance
+50.48 + 49.52), with domestic / foreign / non-institutional nested inside
+public. The list was also capped at 30 while Reliance files 57; the cap
+is gone and the table is tabbed by bucket.
+
+The "who are these anonymous LLPs" question is answered by the filing
+itself: Companies Act s.90 Significant Beneficial Owner declarations sit
+in the same XBRL and name the humans behind the shells (Srichakra
+Commercials LLP -> Mukesh, Nita, Isha, Akash and Anant Ambani). 36 of
+Reliance's 57 holders carry a control chain. Entity kind (LLP / company /
+trust / HUF / fund / individual) is read off the legal suffix, because
+the filing's PAN field is masked and nothing should be inferred from it.
+
+Every scan persists to `store/ownership/holders.parquet`, which makes the
+REVERSE question answerable without a new source: 60 companies scanned
+gives 2,249 distinct holders and 4,386 positions, and LIC turns up in 45
+of them (ITC 16.3%, L&T 12.4%). Coverage always travels with the answer -
+a partial scan must never read as a holder's full book.
+
 ## Company intelligence and the SPLC map (2026-08-24)
 
 The Bloomberg comparison, answered with what Indian disclosure actually

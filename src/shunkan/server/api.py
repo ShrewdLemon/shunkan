@@ -2221,6 +2221,57 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                                   "refusing to guess dates money depends on"},
         })
 
+    _own_scan: dict = {"running": False}
+
+    @app.post("/api/ownership/scan")
+    def ownership_scan(universe: str = "core", limit: int = 60):
+        """Populate the ownership registry across a universe.
+
+        One shareholding filing per company, politely paced. This is what
+        turns 'which companies does LIC hold' from a two-company answer
+        into a real one - and the coverage number always travels with the
+        result, so a partial scan never reads as a full book."""
+        import threading
+        import time as _time
+
+        if _own_scan.get("running"):
+            return {"running": True, **_own_scan}
+        if universe not in HEAT_UNIVERSES:
+            raise HTTPException(400, f"universe must be one of {sorted(HEAT_UNIVERSES)}")
+        try:
+            from shunkan.data.constituents import universe as _uni
+
+            symbols = [c.symbol for c in _uni(HEAT_UNIVERSES[universe])][:limit]
+        except Exception as exc:
+            raise HTTPException(502, f"constituents unavailable: {str(exc)[:110]}") from exc
+
+        _own_scan.update({"running": True, "done": 0, "total": len(symbols),
+                          "ok": 0, "failed": 0, "universe": universe})
+
+        def run():
+            from shunkan.data.filings import latest_shareholding
+
+            for i, sym in enumerate(symbols, 1):
+                try:
+                    latest_shareholding(sym)      # persists as a side effect
+                    _own_scan["ok"] += 1
+                except Exception as exc:
+                    _own_scan["failed"] += 1
+                    _own_scan["last_error"] = f"{sym}: {str(exc)[:90]}"
+                _own_scan["done"] = i
+                _time.sleep(0.8)                  # polite to the exchange
+            _own_scan["running"] = False
+            _own_scan["finished_at"] = _now_iso()
+
+        threading.Thread(target=run, daemon=True).start()
+        return {"running": True, **_own_scan}
+
+    @app.get("/api/ownership/scan")
+    def ownership_scan_status():
+        from shunkan.data.filings import registry_stats
+
+        return _clean({**_own_scan, "registry": registry_stats()})
+
     @app.get("/api/holder")
     def holder_lookup(q: str):
         """Reverse ownership: every company in the local registry this holder
