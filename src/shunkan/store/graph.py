@@ -157,6 +157,56 @@ def canonical_name(raw: str) -> str:
     return raw
 
 
+# SBO declarations pack a whole family into one string with no separators:
+# "Mukesh Ambani Nita Ambani Isha Ambani Akash Ambani and Anant Ambani
+# together and collectively". Stored whole it is one useless node; split
+# badly it invents people. The rule below only splits on a REPEATED SURNAME,
+# which is evidence in the string itself, and otherwise leaves the text
+# alone - a coarse node beats a fabricated person.
+_SBO_TAIL = re.compile(
+    r"\b(together and collectively|together|collectively|jointly|and others?)\b\.?\s*$",
+    re.I)
+
+
+def split_beneficial_owners(text: str) -> list[str]:
+    t = str(text or "").strip()
+    for _ in range(3):
+        t = _SBO_TAIL.sub("", t).strip(" ,.;")
+    if not t:
+        return []
+    parts = [p.strip() for p in re.split(r"\s*(?:,|;|\band\b|&)\s*", t) if p.strip()]
+    out: list[str] = []
+    for part in parts:
+        toks = part.split()
+        if len(toks) <= 3:
+            out.append(part)
+            continue
+        # a surname repeating inside one part means several people ran together
+        counts: dict[str, int] = {}
+        for tk in toks:
+            counts[tk.upper()] = counts.get(tk.upper(), 0) + 1
+        surname = next((tk for tk in toks if counts[tk.upper()] > 1
+                        and len(tk) > 2), None)
+        if not surname:
+            out.append(part)
+            continue
+        buf: list[str] = []
+        for tk in toks:
+            buf.append(tk)
+            if tk.upper() == surname.upper():
+                out.append(" ".join(buf))
+                buf = []
+        if buf:
+            out.append(" ".join(buf))
+    seen, uniq = set(), []
+    for n in out:
+        k = normalise(n)
+        if k and k not in seen and len(n) > 3:
+            seen.add(k)
+            uniq.append(n.strip())
+    return uniq
+
+
 def node_id(kind: str, key: str) -> str:
     return f"{kind}:{str(key).strip().upper()}"
 
