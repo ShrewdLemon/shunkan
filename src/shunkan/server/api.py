@@ -2607,17 +2607,20 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             from shunkan.data.filings import latest_shareholding
 
             sh = latest_shareholding(sym)
-            t = sh.totals
+            # NOT `t` - that is the yfinance Ticker this function still needs
+            # for the financials below. Shadowing it silently replaced every
+            # company's statements with an AttributeError.
+            tot = sh.totals
             out["ownership"] = _clean({
                 # SEBI's tree: promoter + public = 100, and public CONTAINS
                 # the institutions. Serving them as three peers is what put
                 # this panel past 100% before.
-                "promoter_pct": t.get("promoter"),
-                "public_pct": t.get("public"),
-                "inst_domestic_pct": t.get("inst_domestic"),
-                "inst_foreign_pct": t.get("inst_foreign"),
-                "non_institutions_pct": t.get("non_institutions"),
-                "non_promoter_non_public_pct": t.get("non_promoter_non_public"),
+                "promoter_pct": tot.get("promoter"),
+                "public_pct": tot.get("public"),
+                "inst_domestic_pct": tot.get("inst_domestic"),
+                "inst_foreign_pct": tot.get("inst_foreign"),
+                "non_institutions_pct": tot.get("non_institutions"),
+                "non_promoter_non_public_pct": tot.get("non_promoter_non_public"),
                 "as_of": sh.as_of,
                 "total_shares": sh.total_shares,
                 "categories": sh.categories,

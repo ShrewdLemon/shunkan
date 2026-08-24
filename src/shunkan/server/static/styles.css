@@ -1287,3 +1287,31 @@ main { padding: 0; }
 .own-sub { color: var(--text-faint, #63605a); font-size: 9.5px; letter-spacing: .08em;
   padding: 5px 0 2px; }
 .own-tab.on { color: var(--amber, #ffa62b); border-color: var(--amber, #ffa62b); }
+
+/* collapsible sections: reference tables open on demand and scroll inside
+   their own box, so the page stops burying what matters below a mile of rows */
+.sec { border-bottom: 1px solid var(--stroke-soft); }
+.sec > summary {
+  cursor: pointer; list-style: none; user-select: none;
+  display: flex; align-items: baseline; gap: 6px;
+}
+.sec > summary::-webkit-details-marker { display: none; }
+.sec > summary::before {
+  content: "▸"; color: var(--text-faint); font-size: 9px;
+  transition: transform 0.12s var(--ease); display: inline-block;
+}
+.sec[open] > summary::before { transform: rotate(90deg); }
+.sec > summary:hover { background: var(--bg-panel-2); }
+.sec-body { max-height: 46vh; overflow-y: auto; overflow-x: auto; }
+.sec-body::-webkit-scrollbar { width: 7px; height: 7px; }
+.sec-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 4px; }
+
+/* panels must not clip their own children on long pages */
+#cmp-panel, #mfd-panel, #gph-panel, #msc-panel { overflow: visible; }
+#cmp-panel .panel-body, #mfd-panel .panel-body,
+#gph-panel .panel-body, #msc-panel .panel-body { overflow: visible; }
+
+/* long tables anywhere get their own scroll box rather than growing the page */
+#mfd-panel .tbl-scroll, #gph-panel .tbl-scroll { max-height: 44vh; }
+#msc-panel .panel-body { max-height: 72vh; overflow-y: auto; }
+.sec-body > .map-grid { padding-bottom: 8px; }
