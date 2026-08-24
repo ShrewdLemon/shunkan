@@ -625,3 +625,14 @@ def test_pulse_cached_refuses_offline(client):
     """A synthetic board must never be persisted or served as a snapshot."""
     r = client.get("/api/pulse?cached=1")
     assert r.status_code == 404
+
+
+def test_company_payload_carries_financials_not_an_error(client):
+    """Regression: the ownership block once shadowed the yfinance ticker
+    variable, so every company's statements came back as an AttributeError
+    while the page still looked fine everywhere else."""
+    r = client.get("/api/company/RELIANCE")
+    if r.status_code != 200:
+        pytest.skip("network unavailable in this environment")
+    fin = r.json().get("financials", {})
+    assert "object has no attribute" not in str(fin.get("error", ""))

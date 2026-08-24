@@ -2932,6 +2932,18 @@ async function renderFunds(view, params = {}) {
   if (q0) searchSchemes(q0); else searchSchemes("");
 }
 
+/* A collapsible section. Long tables (57 promoter entities, 120 holdings)
+   turned the company page into a mile of scroll where the interesting part
+   sat below the fold; each one now opens on demand and scrolls inside its
+   own box instead of pushing the page. `open` for the sections worth
+   reading first, closed for the reference tables. */
+function secBlock(title, count, bodyHtml, { open = false, scroll = true } = {}) {
+  return `<details class="sec"${open ? " open" : ""}>
+    <summary class="news-sect">${title}${count != null ? ` <span class="faint">· ${count}</span>` : ""}</summary>
+    <div class="sec-body${scroll ? " tbl-scroll" : ""}">${bodyHtml}</div>
+  </details>`;
+}
+
 /* ---------- COMPANY INTELLIGENCE (CMP) ----------
    The DES page, honestly sourced: every section names where it came from,
    and the two things only licensed data carries - the holder registry and
@@ -2977,9 +2989,10 @@ async function renderCompany(view, params = {}) {
           <span class="faint"> p=${d.msci.p_in_index ?? "—"} · mcap $${d.msci.full_mcap_usd_bn ?? "—"}bn · ${esc(String(d.msci.reason || "").slice(0, 130))}</span></div>` : ""}
       <div class="empty" style="padding:2px 12px"><span class="faint">${esc(pr.yahoo_sector || "")} · ${esc(pr.yahoo_industry || "")} · ${pr.website ? `<a href="${esc(pr.website)}" target="_blank" rel="noopener">${esc(pr.website)}</a>` : ""} · ${esc(pr.source)}</span></div>
 
-      <div class="news-sect">BUSINESS — WHAT IT MAKES, FROM WHAT, FOR WHOM</div>
-      <div style="padding:8px 14px;max-width:88ch;line-height:1.6;font-size:12px">${esc(d.business.summary)}</div>
-      <div class="empty" style="padding:0 14px 6px"><span class="faint">${esc(d.business.source)}</span></div>
+      ${secBlock("BUSINESS — WHAT IT MAKES, FROM WHAT, FOR WHOM", null, `
+        <div style="padding:8px 14px;max-width:88ch;line-height:1.6;font-size:12px">${esc(d.business.summary)}</div>
+        <div class="empty" style="padding:0 14px 6px"><span class="faint">${esc(d.business.source)}</span></div>`,
+        { open: true, scroll: true })}
 
       <div class="news-sect">OWNERSHIP${own.as_of ? ` <span class="faint">· AS OF ${esc(own.as_of)}</span>` : ""}</div>
       <div style="padding:8px 14px;max-width:66ch">
@@ -2991,6 +3004,8 @@ async function renderCompany(view, params = {}) {
         ${ownBar("· NON-INSTITUTIONAL", own.non_institutions_pct, "var(--text-dim, #9b968c)")}
       </div>
       ${(own.holders && own.holders.length) ? `
+        <details class="sec"><summary class="news-sect">HOLDERS <span class="faint">· ${own.holders.length} named — promoters, institutions, public</span></summary>
+        <div class="sec-body">
         <div class="oi-tabs" id="own-tabs">
           ${[["promoter", "PROMOTERS"], ["inst_domestic", "INST · DOMESTIC"],
              ["inst_foreign", "INST · FOREIGN"], ["non_institutions", "NON-INSTITUTIONAL"],
@@ -3000,17 +3015,17 @@ async function renderCompany(view, params = {}) {
             return `<button class="oi-tab own-tab${k === ownTab ? " on" : ""}" data-t="${k}">${label} <span class="faint">${n}</span></button>`;
           }).join("")}
         </div>
-        <div id="own-table"></div>` : ""}
+        <div id="own-table" class="tbl-scroll"></div></div></details>` : ""}
       <div class="empty" style="padding:2px 14px 8px"><span class="faint">${esc(own.source || "")} · ${esc(own.label_note || "")}</span></div>
 
-      <div class="news-sect">MANAGEMENT</div>
-      <table class="tbl"><tbody>
+      ${secBlock("MANAGEMENT", (d.management.officers || []).length, `
+        <table class="tbl"><tbody>
         ${(d.management.officers || []).map((o) => `<tr>
           <td class="txt sym">${esc(o.name || "")}</td>
           <td class="txt">${esc(o.title || "")}</td>
           <td class="faint">${o.age ? o.age + "y" : ""}</td>
           <td>${o.pay ? cr(o.pay) : ""}</td></tr>`).join("")}
-      </tbody></table>
+        </tbody></table>`)}
 
       <div class="news-sect">FINANCIALS — ANNUAL</div>
       ${fin.error ? `<div class="empty" style="padding:8px 14px">${esc(fin.error)}</div>` : `
@@ -3022,8 +3037,9 @@ async function renderCompany(view, params = {}) {
       </tbody></table>
       <div class="empty" style="padding:2px 14px"><span class="faint">${esc(fin.source)} · ${esc(fin.note)}</span></div>`}
 
-      <div class="news-sect">PEERS — SAME NSE INDUSTRY${peers.nse_industry ? ` · ${esc(peers.nse_industry.toUpperCase())}` : ""}</div>
-      ${peers.error ? `<div class="empty" style="padding:8px 14px">${esc(peers.error)}</div>` : `
+      ${secBlock(`PEERS — SAME NSE INDUSTRY${peers.nse_industry ? ` · ${esc(peers.nse_industry.toUpperCase())}` : ""}`,
+        (peers.rows || []).length,
+      peers.error ? `<div class="empty" style="padding:8px 14px">${esc(peers.error)}</div>` : `
       <div class="map-grid" style="padding-top:6px">
         ${peers.rows.filter((r) => r.price != null).map((r) => {
           const mag = r.chg_pct == null ? 0 : Math.min(Math.abs(r.chg_pct) / 2.5, 1);
@@ -3035,12 +3051,12 @@ async function renderCompany(view, params = {}) {
           </div>`;
         }).join("")}
       </div>
-      <div class="empty" style="padding:2px 14px"><span class="faint">${esc(peers.source)} · click a tile for that company</span></div>`}
+      <div class="empty" style="padding:2px 14px"><span class="faint">${esc(peers.source)} · click a tile for that company</span></div>`)}
 
-      <div class="news-sect">MUTUAL FUND OWNERSHIP — SCHEME LEVEL</div>
-      <div id="cmp-mf"><div class="empty" style="padding:8px 14px">checking the fund store…</div></div>
-      <div class="news-sect">SUPPLY CHAIN — FROM THE FILED ANNUAL REPORT</div>
-      <div id="cmp-splc"><div class="empty" style="padding:8px 14px">loading the map…</div></div>`;
+      <details class="sec"><summary class="news-sect">MUTUAL FUND OWNERSHIP — SCHEME LEVEL <span class="faint" id="cmp-mf-count"></span></summary>
+        <div class="sec-body tbl-scroll" id="cmp-mf"><div class="empty" style="padding:8px 14px">checking the fund store…</div></div></details>
+      <details class="sec"><summary class="news-sect">SUPPLY CHAIN — FROM THE FILED ANNUAL REPORT <span class="faint" id="cmp-splc-count"></span></summary>
+        <div class="sec-body" id="cmp-splc"><div class="empty" style="padding:8px 14px">loading the map…</div></div></details>`;
     drawSupplyMap(sym, view);
     drawFundOwnership(sym, view);
     host.querySelectorAll(".map-tile").forEach((el) => {
@@ -3133,6 +3149,8 @@ async function drawFundOwnership(sym, view) {
       host.innerHTML = `<div class="empty" style="padding:8px 14px">no disclosed scheme holds this name in the fund store</div>`;
       return;
     }
+    const cnt = $("#cmp-mf-count");
+    if (cnt) cnt.textContent = `· ${d.n_schemes} schemes · ₹${fmt.n(d.total_value_cr, 0)} Cr`;
     host.innerHTML = `
       <div class="empty" style="padding:6px 14px">
         <b class="hl">${d.n_schemes} schemes</b> hold ${esc(sym)},
@@ -3178,6 +3196,8 @@ async function drawSupplyMap(sym, view) {
     const h = host();
     if (!h) return;
     if (d.error) { h.innerHTML = `<div class="empty" style="padding:8px 14px">${esc(d.error)}</div>`; return; }
+    const sc = $("#cmp-splc-count");
+    if (sc) sc.textContent = `· ${(d.inputs || []).length} inputs · ${(d.customers || []).length} customers · ${(d.facilities || []).length} facilities`;
     h.innerHTML = `
       <div class="splc-grid">
         ${col("UPSTREAM · INPUTS", d.inputs || [], "up")}
@@ -3185,12 +3205,11 @@ async function drawSupplyMap(sym, view) {
         ${col("OUTPUTS · PRODUCTS", d.outputs || [], "amber")}
         ${col("DOWNSTREAM · CUSTOMERS", d.customers || [], "down")}
       </div>
-      ${(d.family || []).length ? `
-        <div class="news-sect">CORPORATE FAMILY — SUBSIDIARIES / JV / ASSOCIATES</div>
+      ${(d.family || []).length ? secBlock("CORPORATE FAMILY — SUBSIDIARIES / JV / ASSOCIATES", d.family.length, `
         <table class="tbl"><tbody>${d.family.map((f) => `<tr>
           <td class="txt sym">${esc(f.term)}</td>
           <td class="txt faint" style="font-size:10px">${esc(f.evidence.slice(0, 170))}…</td>
-        </tr>`).join("")}</tbody></table>` : ""}
+        </tr>`).join("")}</tbody></table>`) : ""}
       ${(d.locations || []).length ? `<div class="empty" style="padding:6px 14px">
         <b class="hl">LOCATIONS NAMED:</b> ${d.locations.map(esc).join(" · ")}</div>` : ""}
       <div class="empty" style="padding:4px 14px 10px"><span class="faint">
