@@ -78,3 +78,18 @@ def test_stats_report_the_shape(g):
     g.commit()
     st = g.stats()
     assert st["nodes"] == 2 and st["by_kind"]["company"] == 1
+
+
+def test_sbo_splits_a_family_but_never_invents_a_person():
+    from shunkan.store.graph import split_beneficial_owners as split
+
+    # a repeated surname is evidence IN the string that several people ran
+    # together; that is the only thing allowed to trigger a split
+    assert split("Mukesh Ambani Nita Ambani Isha Ambani Akash Ambani "
+                 "and Anant Ambani together and collectively") == \
+        ["Mukesh Ambani", "Nita Ambani", "Isha Ambani", "Akash Ambani", "Anant Ambani"]
+    assert split("VIVEK SARAOGI") == ["VIVEK SARAOGI"]
+    assert split("Ravi Kumar and Sita Kumar") == ["Ravi Kumar", "Sita Kumar"]
+    # no repeated surname, no split - a coarse node beats a fabricated person
+    assert split("A B Corp Holdings Pte") == ["A B Corp Holdings Pte"]
+    assert split("   together and collectively ") == []

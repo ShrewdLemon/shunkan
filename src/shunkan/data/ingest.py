@@ -18,7 +18,8 @@ import json
 
 import pandas as pd
 
-from shunkan.store.graph import canonical_name, graph, node_id
+from shunkan.store.graph import (canonical_name, graph, node_id,
+                                 split_beneficial_owners)
 
 
 def _p(name: str):
@@ -77,10 +78,15 @@ def rebuild(verbose=None) -> dict:
                           "meta": {"bucket": r.bucket, "shares": None if pd.isna(r.shares) else int(r.shares)}})
             bo = getattr(r, "beneficial_owner", "")
             if isinstance(bo, str) and bo.strip():
-                pid = g.put_node("person", bo.strip()[:80], bo.strip())
-                edges.append({"src": hid, "dst": pid, "rel": "beneficial_owner",
-                              "as_of": r.as_of,
-                              "source": "SBO declaration, Companies Act s.90"})
+                # One declaration can name a whole family; each becomes a
+                # person, so "which companies does X control" is answerable
+                # per human rather than per boilerplate string.
+                for person in split_beneficial_owners(bo):
+                    pid = g.put_node("person", person[:80], person)
+                    g.put_alias(person, pid, "SBO declaration")
+                    edges.append({"src": hid, "dst": pid, "rel": "beneficial_owner",
+                                  "as_of": r.as_of,
+                                  "source": "SBO declaration, Companies Act s.90"})
         g.put_edges(edges)
         g.commit()
         out["ownership_edges"] = len(edges)
