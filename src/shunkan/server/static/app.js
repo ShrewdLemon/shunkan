@@ -2615,23 +2615,25 @@ async function renderCompany(view, params = {}) {
       <div class="empty" style="padding:0 14px 6px"><span class="faint">${esc(d.business.source)}</span></div>
 
       <div class="news-sect">OWNERSHIP${own.as_of ? ` <span class="faint">· AS OF ${esc(own.as_of)}</span>` : ""}</div>
-      <div style="padding:8px 14px;max-width:60ch">
+      <div style="padding:8px 14px;max-width:66ch">
         ${ownBar("PROMOTERS", own.promoter_pct, "var(--amber, #ffa62b)")}
-        ${ownBar("INSTITUTIONS", own.institutions_pct, "var(--blue, #5fa8dc)")}
-        ${ownBar("PUBLIC & OTHER", own.public_other_pct, "var(--text-faint, #63605a)")}
+        ${ownBar("PUBLIC", own.public_pct, "var(--text-faint, #63605a)")}
+        <div class="own-sub">within public:</div>
+        ${ownBar("· INST DOMESTIC", own.inst_domestic_pct, "var(--blue, #5fa8dc)")}
+        ${ownBar("· INST FOREIGN", own.inst_foreign_pct, "var(--up, #23d18b)")}
+        ${ownBar("· NON-INSTITUTIONAL", own.non_institutions_pct, "var(--text-dim, #9b968c)")}
       </div>
       ${(own.holders && own.holders.length) ? `
-        <table class="tbl"><thead><tr>
-          <th class="txt">HOLDER</th><th class="txt">GROUP</th><th>SHARES</th><th>%</th><th>PLEDGED</th>
-        </tr></thead><tbody>
-          ${own.holders.map((h) => `<tr>
-            <td class="txt sym">${esc(h.name)}</td>
-            <td class="txt ${h.group === "promoter" ? "amber" : h.group === "institution" ? "hl" : "faint"}">${esc(h.group)}</td>
-            <td>${h.shares ? fmt.compact(h.shares) : "—"}</td>
-            <td>${h.pct != null ? h.pct.toFixed(2) + "%" : "—"}</td>
-            <td class="${h.pledged_pct ? "down" : "faint"}">${h.pledged_pct ? h.pledged_pct.toFixed(2) + "%" : "—"}</td>
-          </tr>`).join("")}
-        </tbody></table>` : ""}
+        <div class="oi-tabs" id="own-tabs">
+          ${[["promoter", "PROMOTERS"], ["inst_domestic", "INST · DOMESTIC"],
+             ["inst_foreign", "INST · FOREIGN"], ["non_institutions", "NON-INSTITUTIONAL"],
+             ["all", "ALL"]].map(([k, label]) => {
+            const n = k === "all" ? own.holders.length
+                    : own.holders.filter((h) => h.bucket === k).length;
+            return `<button class="oi-tab own-tab${k === ownTab ? " on" : ""}" data-t="${k}">${label} <span class="faint">${n}</span></button>`;
+          }).join("")}
+        </div>
+        <div id="own-table"></div>` : ""}
       <div class="empty" style="padding:2px 14px 8px"><span class="faint">${esc(own.source || "")} · ${esc(own.label_note || "")}</span></div>
 
       <div class="news-sect">MANAGEMENT</div>
@@ -2674,9 +2676,80 @@ async function renderCompany(view, params = {}) {
     host.querySelectorAll(".map-tile").forEach((el) => {
       el.onclick = () => show("company", { symbol: el.dataset.sym });
     });
+
+    // ---- ownership tabs -------------------------------------------------
+    const paintHolders = () => {
+      const box = $("#own-table");
+      if (!box) return;
+      const rows = ownTab === "all" ? own.holders
+        : own.holders.filter((h) => h.bucket === ownTab);
+      box.innerHTML = rows.length ? `
+        <table class="tbl"><thead><tr>
+          <th class="txt">HOLDER</th><th class="txt">TYPE</th>
+          <th class="txt">BENEFICIAL OWNER</th><th class="txt">CATEGORY</th>
+          <th>SHARES</th><th>%</th><th>PLEDGED</th>
+        </tr></thead><tbody>
+          ${rows.map((h) => `<tr>
+            <td class="txt sym" data-holder="${esc(h.name)}" style="cursor:pointer" title="see every company holding this name">${esc(h.name)}</td>
+            <td class="txt faint">${esc(h.kind || "")}</td>
+            <td class="txt ${h.beneficial_owner ? "hl" : "faint"}" style="font-size:10px">${esc(h.beneficial_owner || "—")}</td>
+            <td class="txt faint" style="font-size:10px">${esc(h.category || "")}</td>
+            <td>${h.shares ? fmt.compact(h.shares) : "—"}</td>
+            <td>${h.pct != null ? h.pct.toFixed(2) + "%" : "—"}</td>
+            <td class="${h.pledged_pct ? "down" : "faint"}">${h.pledged_pct ? h.pledged_pct.toFixed(2) + "%" : "—"}</td>
+          </tr>`).join("")}
+        </tbody></table>`
+        : `<div class="empty" style="padding:8px 14px">the filing names no holder in this class</div>`;
+      box.querySelectorAll("[data-holder]").forEach((el) => {
+        el.onclick = () => showHolderPositions(el.dataset.holder);
+      });
+    };
+    host.querySelectorAll(".own-tab").forEach((b) => {
+      b.onclick = () => {
+        ownTab = b.dataset.t;
+        host.querySelectorAll(".own-tab").forEach((x) => x.classList.toggle("on", x.dataset.t === ownTab));
+        paintHolders();
+      };
+    });
+    paintHolders();
   } catch (e) {
     const host = $("#cmp-panel .panel-body");
     if (host) host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+let ownTab = "promoter";
+
+/* Reverse ownership: click a holder, see every scanned company it sits in.
+   The registry grows as companies are opened; the panel says how many. */
+async function showHolderPositions(name) {
+  const box = $("#own-table");
+  if (!box) return;
+  box.insertAdjacentHTML("afterbegin",
+    `<div id="hp-box" class="empty" style="padding:8px 14px">${esc(name)}: looking up…</div>`);
+  try {
+    const d = await getJSON(`/api/holder?q=${encodeURIComponent(name.slice(0, 28))}`);
+    const el = $("#hp-box");
+    if (!el) return;
+    el.innerHTML = `
+      <b class="hl">${esc(name)}</b> — ${d.rows.length} position${d.rows.length === 1 ? "" : "s"}
+      across ${d.companies_scanned} scanned compan${d.companies_scanned === 1 ? "y" : "ies"}
+      <button class="btn ghost" id="hp-close" style="margin-left:8px">CLOSE</button>
+      ${d.rows.length ? `<table class="tbl" style="margin-top:4px"><tbody>
+        ${d.rows.slice(0, 25).map((r) => `<tr>
+          <td class="txt sym" data-sym="${esc(r.symbol)}" style="cursor:pointer">${esc(r.symbol)}</td>
+          <td class="txt faint" style="font-size:10px">${esc(r.holder)}</td>
+          <td>${r.pct != null ? r.pct.toFixed(2) + "%" : "—"}</td>
+          <td class="faint">${esc(r.as_of)}</td></tr>`).join("")}
+      </tbody></table>` : ""}
+      <div class="faint" style="font-size:10px;margin-top:3px">${esc(d.note)}</div>`;
+    el.querySelector("#hp-close").onclick = () => el.remove();
+    el.querySelectorAll("[data-sym]").forEach((x) => {
+      x.onclick = () => show("company", { symbol: x.dataset.sym });
+    });
+  } catch (e) {
+    const el = $("#hp-box");
+    if (el) el.textContent = e.message;
   }
 }
 

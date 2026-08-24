@@ -2221,6 +2221,16 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                                   "refusing to guess dates money depends on"},
         })
 
+    @app.get("/api/holder")
+    def holder_lookup(q: str):
+        """Reverse ownership: every company in the local registry this holder
+        appears in. Coverage is what has been scanned, and says so."""
+        from shunkan.data.filings import holder_positions
+
+        if len(q.strip()) < 3:
+            raise HTTPException(400, "query needs at least 3 characters")
+        return _clean(holder_positions(q.strip()))
+
     _supply_builds: dict = {}
 
     @app.get("/api/company/{symbol}/supply")
@@ -2354,30 +2364,38 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             from shunkan.data.filings import latest_shareholding
 
             sh = latest_shareholding(sym)
+            t = sh.totals
             out["ownership"] = _clean({
-                "promoter_pct": sh.promoter_pct,
-                "institutions_pct": sum(v for k, v in sh.categories.items()
-                                        if k not in ("Promoter & promoter group",
-                                                     "Public")) or None,
-                "public_other_pct": sh.public_pct,
+                # SEBI's tree: promoter + public = 100, and public CONTAINS
+                # the institutions. Serving them as three peers is what put
+                # this panel past 100% before.
+                "promoter_pct": t.get("promoter"),
+                "public_pct": t.get("public"),
+                "inst_domestic_pct": t.get("inst_domestic"),
+                "inst_foreign_pct": t.get("inst_foreign"),
+                "non_institutions_pct": t.get("non_institutions"),
+                "non_promoter_non_public_pct": t.get("non_promoter_non_public"),
                 "as_of": sh.as_of,
+                "total_shares": sh.total_shares,
                 "categories": sh.categories,
-                "holders": [{"name": h.name, "group": h.group,
-                             "category": h.category, "shares": h.shares,
-                             "pct": h.pct, "pledged_pct": h.pledged_pct}
-                            for h in sh.holders[:30]],
+                "holders": [{"name": h.name, "bucket": h.bucket,
+                             "category": h.category, "kind": h.kind,
+                             "shares": h.shares, "pct": h.pct,
+                             "pledged_pct": h.pledged_pct,
+                             "beneficial_owner": h.beneficial_owner}
+                            for h in sh.holders],
                 "source": f"NSE shareholding pattern XBRL, {sh.as_of}",
                 "source_url": sh.source_url,
-                "label_note": ("filed quarterly under SEBI LODR Reg 31; "
-                               "promoter entities are named individually, "
-                               "public holders appear above 1%"),
+                "label_note": ("SEBI LODR Reg 31, filed quarterly. Promoter + "
+                               "public sum to 100; the institutional splits sit "
+                               "INSIDE public. Beneficial owners come from the "
+                               "filing's own SBO declarations (Companies Act s.90)."),
             })
         except Exception as exc:
             out["ownership"] = _clean({
                 "promoter_pct": ins * 100 if ins is not None else None,
-                "institutions_pct": inst * 100 if inst is not None else None,
-                "public_other_pct": ((1 - ins - inst) * 100
-                                     if ins is not None and inst is not None else None),
+                "public_pct": ((1 - ins) * 100 if ins is not None else None),
+                "inst_domestic_pct": None, "inst_foreign_pct": None,
                 "holders": [],
                 "source": "Yahoo Finance estimate (exchange filing unavailable)",
                 "label_note": f"NSE filing unreadable: {str(exc)[:110]}",
