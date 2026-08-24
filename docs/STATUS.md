@@ -239,6 +239,43 @@ in /api/status under feed_keepalive.futures. Bus routing resolves symbols
 the feed already streams by identity, so NIFTYFUT is subscribable even
 though no cash resolver knows it.
 
+## The knowledge graph, and why it is not a graph database (2026-08-24)
+
+Opening a company used to refetch everything - profile, XBRL filings, a
+400-page annual report - every single time. There is now one SQLite file
+(`~/.shunkan/shunkan.db`) holding a typed graph plus a content cache, and
+the difference is measurable: a company page went from **5.8s cold to
+0.029s after a container restart**, because the cache is on disk rather
+than in a process that dies.
+
+**Why SQLite and not Neo4j/Kuzu.** Every relationship the terminal knows -
+ownership, fund holdings, index calls, sectors, beneficial owners -
+totals ~77k edges today and ~120k at full NSE scale. Measured on that
+data: alias resolve 0.4ms, one-hop neighbours 27ms, a three-hop control
+chain (person -> promoter LLPs -> companies) 31ms across 74 paths, and
+the two-hop crowding query 206ms. A graph engine earns its keep past
+~100M edges or at unbounded depth; here it would cost a server or a heavy
+dependency and buy nothing, while breaking the promise that `pip install
+shunkan` is self-contained. So the MODEL is a graph (typed nodes, typed
+sourced edges) and the STORAGE is relational - if it ever outgrows this,
+callers do not change.
+
+**Every edge names its source.** `put_edges` refuses a row without one.
+The graph can always explain itself.
+
+**The mapping service is the reason it joins at all.** Filings spell one
+institution three ways. Normalisation handles form ("Ltd", "Through its
+various schemes"); a curated CANONICAL list handles genuine synonymy
+("LIC OF INDIA" = "LIFE INSURANCE CORPORATION OF INDIA"), written down as
+auditable data rather than guessed by a fuzzy matcher that would also
+merge things that are truly different. That merge alone recovered 20
+positions LIC had split across spellings - the reverse map had been
+undercounting.
+
+**Self-contained.** The container cannot see `~/Projects` at all; it
+serves ownership, funds, MSCI and the graph from its own store. The
+sibling projects are import sources, not runtime dependencies.
+
 ## Mutual funds and MSCI: the flow layer (2026-08-24)
 
 Two sibling projects on this machine already solved problems Shunkan was
