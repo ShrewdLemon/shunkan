@@ -60,25 +60,103 @@ def _client():
 # The XBRL pairs every holder across two contexts: D_<Group>_Context<N> carries
 # the NAME, <Group>_Context<N> the numbers. Joining on the stripped prefix is
 # the whole trick.
-_PCT_TAGS = (
-    "ShareholdingAsAPercentageOfTotalNumberOfSharesCalculatedAsPerSCRR1957AsAPercentageOfAPlusBPlusC2",
-    "ShareholdingAsAPercentageAssumingFullConversionOfConvertibleSecuritiesAsAPercentageOfDilutedShareCapital",
-    "ShareholdingAsAPercentageOfTotalNumberOfShares",
-)
 _PLEDGE_TAGS = (
     "SharesPledgedOrOtherwiseEncumberedAsAPercentageOfTotalShares",
     "NumberOfSharesPledgedOrOtherwiseEncumbered",
 )
+_PCT = "ShareholdingAsAPercentageOfTotalNumberOfShares"
+_PCT_SCRR = ("ShareholdingAsAPercentageOfTotalNumberOfSharesCalculatedAsPer"
+             "SCRR1957AsAPercentageOfAPlusBPlusC2")
+_VOTING = "PercentageOfTotalVotingRights"
+
+# SEBI's tree, and the shape of it matters: PUBLIC ALREADY CONTAINS the
+# institutions. Adding promoter + institutions + public double-counts and
+# lands past 100%, which is exactly what this view did before.
+#   Promoter & promoter group   ─┐
+#   Public                       ├ these two sum to 100
+#     ├ Institutions - domestic  │
+#     ├ Institutions - foreign   │
+#     └ Non-institutions        ─┘
+_AGG = {
+    "promoter": "ShareholdingOfPromoterAndPromoterGroup_Context",
+    "public": "PublicShareholding_Context",
+    "inst_domestic": "InstitutionsDomestic_Context",
+    "inst_foreign": "InstitutionsForeign_Context",
+    "non_institutions": "NonInstitutions_Context",
+    "non_promoter_non_public": "SharesHeldByNonPromoterNonPublicShareholders_Context",
+}
+
+# Which bucket a named holder belongs in, by its XBRL group tag.
+_FOREIGN_GROUPS = (
+    "InstitutionsForeignPortfolioInvestorCategoryOne",
+    "InstitutionsForeignPortfolioInvestorCategoryTwo",
+    "ForeignPortfolioInvestorsCategoryI", "ForeignPortfolioInvestorsCategoryII",
+    "DetailsOfSharesHeldByOtherInstitutionsForeign", "OtherInstitutionsForeign",
+    "ForeignVentureCapitalInvestors", "ForeignDirectInvestment",
+    "SovereignWealthFunds", "ForeignNationals", "ForeignInstitutionalInvestors",
+)
+_DOMESTIC_GROUPS = (
+    "MutualFundsOrUTI", "InsuranceCompanies", "Banks", "AlternativeInvestmentFunds",
+    "ProvidentFundsOrPensionFunds", "NBFCRegisteredWithRBI", "VentureCapitalFunds",
+    "AssetReconstructionCompanies", "OtherFinancialInstitutions",
+    "InstitutionsDomestic", "OtherInstitutionsDomestic",
+)
+_PROMOTER_GROUPS = ("IndividualsOrHUF", "OthersIndianShareholders", "BodiesCorporate",
+                    "Foreign", "CentralGovernmentOrStateGovernments", "AnyOther")
+
+
+def _bucket(group_tag: str, is_promoter: bool) -> tuple[str, str]:
+    """(bucket, label) for a named holder. Promoter flag wins - the same
+    group tags are reused inside the promoter table."""
+    if is_promoter:
+        return "promoter", _pretty(group_tag)
+    for g in _FOREIGN_GROUPS:
+        if group_tag.startswith(g):
+            return "inst_foreign", _pretty(group_tag)
+    for g in _DOMESTIC_GROUPS:
+        if group_tag.startswith(g):
+            return "inst_domestic", _pretty(group_tag)
+    if group_tag.startswith("CustodianOrDRHolder"):
+        return "non_promoter_non_public", _pretty(group_tag)
+    return "non_institutions", _pretty(group_tag)
+
+
+def entity_kind(name: str) -> str:
+    """What KIND of entity a holder name denotes. Read off the legal suffix,
+    which Indian names carry reliably - the filing's PAN field is masked."""
+    n = " " + name.upper().replace(".", "") + " "
+    if " LLP " in n or "LIMITED LIABILITY PARTNERSHIP" in n:
+        return "LLP"
+    if "PRIVATE LIMITED" in n or " PVT LTD " in n or " PVT LIMITED " in n:
+        return "Private company"
+    if " LIMITED " in n or " LTD " in n or " PLC " in n:
+        return "Company"
+    if "TRUST" in n:
+        return "Trust"
+    if " HUF " in n or "KARTA" in n:
+        return "HUF"
+    if "MUTUAL FUND" in n or " MF " in n or "TRUSTEE" in n:
+        return "Fund"
+    if "ASSOCIATION" in n or " SOCIETY " in n:
+        return "Association"
+    if any(k in n for k in ("FUND", "INVESTMENT", "CAPITAL", "PENSION", "NPS")):
+        return "Fund"
+    return "Individual"
 
 
 @dataclass
 class Holder:
     name: str
-    group: str            # promoter | institution | public
-    category: str         # the XBRL group tag, human-readable
+    bucket: str           # promoter | inst_domestic | inst_foreign | non_institutions
+    category: str         # the XBRL group, human-readable
+    kind: str             # LLP | Company | Trust | Individual | Fund ...
     shares: int | None
     pct: float | None
     pledged_pct: float | None = None
+    # Who ultimately controls this entity, from the filing's own Significant
+    # Beneficial Owner declaration (Companies Act s.90). This is what turns a
+    # wall of anonymous LLPs into a readable control chain.
+    beneficial_owner: str = ""
 
 
 @dataclass
@@ -86,10 +164,10 @@ class Shareholding:
     symbol: str
     as_of: str
     source_url: str
-    promoter_pct: float | None
-    public_pct: float | None
-    categories: dict = field(default_factory=dict)   # label -> pct
-    holders: list[Holder] = field(default_factory=list)
+    totals: dict = field(default_factory=dict)      # bucket -> pct
+    categories: dict = field(default_factory=dict)  # fine-grained label -> pct
+    holders: list = field(default_factory=list)
+    total_shares: int | None = None
 
 
 def _num(v):
@@ -99,24 +177,12 @@ def _num(v):
         return None
 
 
-def _group_of(tag: str) -> str:
-    t = tag.lower()
-    if "promoter" in t or t.startswith(("individualsorhuf", "othersindian",
-                                        "bodiescorporate", "anyother")):
-        return "promoter"
-    if any(k in t for k in ("mutualfund", "institution", "insurance", "bank",
-                            "alternativeinvestment", "foreignportfolio",
-                            "provident", "sovereign", "assetreconstruction")):
-        return "institution"
-    return "public"
-
-
 def _pretty(tag: str) -> str:
-    return re.sub(r"(?<!^)(?=[A-Z])", " ", tag).replace("Or", "/").strip()
+    return re.sub(r"(?<!^)(?=[A-Z])", " ", tag).replace(" Or ", "/").strip()
 
 
 def latest_shareholding(symbol: str) -> Shareholding:
-    """The most recent quarterly shareholding pattern, parsed from XBRL."""
+    """The most recent quarterly shareholding pattern, whole and unabridged."""
     sym = symbol.upper().replace(".NS", "")
     c = _client()
     try:
@@ -145,11 +211,36 @@ def latest_shareholding(symbol: str) -> Shareholding:
             facts[ref][el.tag.split("}")[-1]] = el.text.strip()
 
     def pct_of(f: dict):
-        for t in _PCT_TAGS:
+        for t in (_PCT_SCRR, _PCT, _VOTING):
             if t in f:
-                return _num(f[t])
+                v = _num(f[t])
+                if v is not None:
+                    return round(v * 100, 4)
         return None
 
+    # ---- aggregates -------------------------------------------------------
+    totals, categories = {}, {}
+    total_shares = None
+    for key, prefix in _AGG.items():
+        for ref, f in facts.items():
+            if ref.startswith(prefix) and "NumberOfFullyPaidUpEquityShares" in f:
+                v = pct_of(f)
+                if v is not None:
+                    totals[key] = round(v, 2)
+                    break
+    for ref, f in facts.items():
+        if ref.startswith("D_") or "NameOfTheShareholder" in f:
+            continue
+        if "NumberOfFullyPaidUpEquityShares" not in f:
+            continue
+        v = pct_of(f)
+        tag = ref.split("_Context")[0]
+        if v and v >= 0.005 and tag not in _AGG.values():
+            categories.setdefault(_pretty(tag), round(v, 2))
+        if ref.startswith("TotalShareholding") or ref.startswith("Total_Context"):
+            total_shares = int(_num(f["NumberOfFullyPaidUpEquityShares"]) or 0) or None
+
+    # ---- every named holder, no cap ---------------------------------------
     holders: list[Holder] = []
     for ref, f in facts.items():
         name = f.get("NameOfTheShareholder")
@@ -157,57 +248,104 @@ def latest_shareholding(symbol: str) -> Shareholding:
             continue
         num_ref = ref[2:]
         nf = facts.get(num_ref, {})
-        grp_tag = ref[2:].split("_Context")[0]
+        group_tag = num_ref.split("_Context")[0]
+        is_prom = bool(f.get("TypeOfPromoterShareholding")) or "promoter" in group_tag.lower()
+        bucket, label = _bucket(group_tag, is_prom)
         pledged = None
         for t in _PLEDGE_TAGS:
             if t in nf and "Percentage" in t:
                 pledged = _num(nf[t])
+                pledged = round(pledged * 100, 2) if pledged is not None else None
                 break
         holders.append(Holder(
-            name=name,
-            group=("promoter" if f.get("TypeOfPromoterShareholding")
-                   or "promoter" in grp_tag.lower() else _group_of(grp_tag)),
-            category=_pretty(grp_tag),
+            name=name.strip(), bucket=bucket, category=label,
+            kind=entity_kind(name),
             shares=int(_num(nf.get("NumberOfFullyPaidUpEquityShares")) or 0) or None,
-            pct=(lambda v: round(v * 100, 2) if v is not None else None)(pct_of(nf)),
-            pledged_pct=pledged,
+            pct=pct_of(nf), pledged_pct=pledged,
         ))
+    # ---- significant beneficial owners: registered entity -> real controller
+    sbo: dict[str, str] = {}
+    for f in facts.values():
+        owner = f.get("NameOfSignificantBeneficialOwners")
+        reg = f.get("NameOfRegisteredOwner")
+        if owner and reg:
+            sbo[reg.strip().upper()] = re.sub(r"\s{2,}", " ", owner.strip())
+    for h in holders:
+        h.beneficial_owner = sbo.get(h.name.upper(), "")
+
     holders.sort(key=lambda h: (h.pct is None, -(h.pct or 0)))
 
-    def cat(ctx_key: str):
-        # Scan EVERY matching context, not just the first: several share the
-        # prefix and the earliest one often carries counts without a
-        # percentage, which silently blanked the public shareholding.
-        for ref, f in facts.items():
-            if ref.startswith(ctx_key):
-                v = pct_of(f)
-                if v is not None:
-                    return v
-        return None
+    sh = Shareholding(symbol=sym, as_of=row.get("date") or "",
+                      source_url=row["xbrl"], totals=totals,
+                      categories=categories, holders=holders,
+                      total_shares=total_shares)
+    try:
+        _persist(sh)
+    except Exception:
+        pass     # the registry is a bonus; a write failure must not break a read
+    return sh
 
-    categories = {}
-    for label, key in (("Promoter & promoter group", "ShareholdingOfPromoterAndPromoterGroup_Context"),
-                       ("Public", "PublicShareholding_Context"),
-                       ("Mutual funds / UTI", "MutualFundsOrUTI_Context"),
-                       ("Foreign portfolio investors", "ForeignPortfolioInvestorsCategoryI_Context"),
-                       ("Insurance companies", "InsuranceCompanies_Context"),
-                       ("Alternative investment funds", "AlternativeInvestmentFunds_Context"),
-                       ("Banks", "Banks_Context")):
-        v = cat(key)
-        if v is not None:
-            # XBRL reports these as fractions of one; the whole app talks
-            # percent, and a 0.43 on an ownership bar reads as 0.43%.
-            categories[label] = round(v * 100, 2)
 
-    return Shareholding(
-        symbol=sym,
-        as_of=row.get("date") or "",
-        source_url=row["xbrl"],
-        promoter_pct=categories.get("Promoter & promoter group"),
-        public_pct=categories.get("Public"),
-        categories=categories,
-        holders=holders,
-    )
+def _persist(sh: Shareholding) -> None:
+    """Append this filing to the local ownership registry.
+
+    Every company scanned makes the REVERSE question answerable - which
+    companies does LIC hold, and how much - without any new source. The
+    index grows as the terminal is used."""
+    import pandas as pd
+
+    from shunkan.store.store import STORE_DIR
+
+    d = STORE_DIR / "ownership"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / "holders.parquet"
+    fresh = pd.DataFrame([{
+        "symbol": sh.symbol, "as_of": sh.as_of, "holder": h.name,
+        "bucket": h.bucket, "category": h.category, "kind": h.kind,
+        "shares": h.shares, "pct": h.pct, "pledged_pct": h.pledged_pct,
+        "beneficial_owner": h.beneficial_owner,
+    } for h in sh.holders])
+    if fresh.empty:
+        return
+    if path.exists():
+        try:
+            old = pd.read_parquet(path)
+            fresh = pd.concat([old, fresh], ignore_index=True)
+        except Exception:
+            path.rename(path.with_suffix(f".{int(__import__('time').time())}.corrupt.parquet"))
+    fresh = fresh.drop_duplicates(subset=["symbol", "as_of", "holder"], keep="last")
+    fresh.to_parquet(path, index=False)
+
+
+def holder_positions(query: str, root=None) -> dict:
+    """Reverse lookup: every company in the local registry this holder owns.
+
+    Coverage is exactly what has been scanned - stated, never implied to be
+    the holder's full book."""
+    import pandas as pd
+
+    from shunkan.store.store import STORE_DIR
+
+    path = (root or STORE_DIR) / "ownership" / "holders.parquet"
+    if not path.exists():
+        return {"query": query, "rows": [], "companies_scanned": 0,
+                "note": "no company has been scanned yet - open a few CMP pages"}
+    df = pd.read_parquet(path)
+    scanned = df["symbol"].nunique()
+    hit = df[df["holder"].str.contains(re.escape(query), case=False, na=False)]
+    hit = hit.sort_values("pct", ascending=False)
+    return {
+        "query": query,
+        "companies_scanned": int(scanned),
+        "matched_names": sorted(hit["holder"].unique().tolist())[:40],
+        "rows": [{"symbol": r.symbol, "holder": r.holder, "pct": r.pct,
+                  "shares": None if pd.isna(r.shares) else int(r.shares),
+                  "as_of": r.as_of, "bucket": r.bucket}
+                 for r in hit.head(200).itertuples()],
+        "note": (f"local registry only: {scanned} companies scanned so far. "
+                 "This is not the holder's full book - it is every position "
+                 "visible in what this terminal has read."),
+    }
 
 
 # ---------------------------------------------------------------------------

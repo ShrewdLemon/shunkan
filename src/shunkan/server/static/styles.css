@@ -1284,3 +1284,6 @@ main { padding: 0; }
 .splc-term { font-size: 11px; color: var(--text, #e6e1d6); letter-spacing: 0.04em; }
 .splc-ev { font-size: 9.5px; color: var(--text-faint, #63605a); line-height: 1.45; margin-top: 2px; }
 @media (max-width: 1200px) { .splc-grid { grid-template-columns: repeat(2, 1fr); } }
+.own-sub { color: var(--text-faint, #63605a); font-size: 9.5px; letter-spacing: .08em;
+  padding: 5px 0 2px; }
+.own-tab.on { color: var(--amber, #ffa62b); border-color: var(--amber, #ffa62b); }
