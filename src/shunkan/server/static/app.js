@@ -3069,27 +3069,60 @@ async function renderCompany(view, params = {}) {
       if (!box) return;
       const rows = ownTab === "all" ? own.holders
         : own.holders.filter((h) => h.bucket === ownTab);
-      box.innerHTML = rows.length ? `
-        <table class="tbl"><thead><tr>
-          <th class="txt">HOLDER</th><th class="txt">TYPE</th>
-          <th class="txt">BENEFICIAL OWNER</th><th class="txt">CATEGORY</th>
-          <th>SHARES</th><th>%</th><th>PLEDGED</th>
-        </tr></thead><tbody>
-          ${rows.map((h) => `<tr>
-            <td class="txt sym" data-holder="${esc(h.name)}" style="cursor:pointer" title="see every company holding this name">${esc(h.name)}</td>
-            <td class="txt faint">${esc(h.kind || "")}</td>
-            <td class="txt ${h.beneficial_owner ? "hl" : "faint"}" style="font-size:10px">${esc(h.beneficial_owner || "—")}</td>
-            <td class="txt faint" style="font-size:10px">${esc(h.category || "")}</td>
-            <td>${h.shares ? fmt.compact(h.shares) : "—"}</td>
-            <td>${h.pct != null ? h.pct.toFixed(2) + "%" : "—"}</td>
-            <td class="${h.pledged_pct ? "down" : "faint"}">${h.pledged_pct ? h.pledged_pct.toFixed(2) + "%" : "—"}</td>
-          </tr>`).join("")}
-        </tbody></table>`
-        : `<div class="empty" style="padding:8px 14px">the filing names no holder in this class</div>`;
-      box.querySelectorAll("[data-holder]").forEach((el) => {
-        el.onclick = () => showHolderPositions(el.dataset.holder);
+      if (!rows.length) {
+        box.innerHTML = `<div class="empty" style="padding:8px 14px">the filing names no holder in this class</div>`;
+        return;
+      }
+      // One line per holder: who, and how much. Everything else - the
+      // beneficial owners, the category, the share count, and the other
+      // companies the same name holds - opens underneath on click, so the
+      // detail sits with the row it belongs to instead of beside it.
+      box.innerHTML = rows.map((h, i) => `
+        <details class="hold" data-i="${i}">
+          <summary>
+            <span class="hold-name">${esc(h.name)}</span>
+            <span class="hold-kind faint">${esc(h.kind || "")}</span>
+            <span class="hold-pct">${h.pct != null ? h.pct.toFixed(2) + "%" : "—"}</span>
+          </summary>
+          <div class="hold-body" id="hb-${i}"></div>
+        </details>`).join("");
+      box.querySelectorAll("details.hold").forEach((el) => {
+        el.addEventListener("toggle", () => {
+          if (!el.open) return;
+          const h = rows[+el.dataset.i];
+          const body = el.querySelector(".hold-body");
+          if (body.dataset.filled) return;
+          body.dataset.filled = "1";
+          const owners = (h.beneficial_owners && h.beneficial_owners.length)
+            ? h.beneficial_owners : (h.beneficial_owner ? [h.beneficial_owner] : []);
+          const row = (k, v) => v ? `<div class="hd-row"><span>${k}</span><b>${v}</b></div>` : "";
+          body.innerHTML = `
+            ${row("TYPE", esc(h.kind || ""))}
+            ${row("CATEGORY", esc(h.category || ""))}
+            ${row("SHARES", h.shares ? fmt.n(h.shares, 0) : "")}
+            ${row("HOLDING", h.pct != null ? h.pct.toFixed(2) + "% of the company" : "")}
+            ${h.pledged_pct ? row("PLEDGED", `<span class="down">${h.pledged_pct.toFixed(2)}%</span>`) : ""}
+            ${owners.length ? `<div class="hd-row"><span>BENEFICIAL OWNERS</span>
+              <b>${owners.map((o) => `<span class="hl">${esc(o)}</span>`).join(" · ")}</b></div>` : ""}
+            <div class="hd-row"><span>ALSO HOLDS</span><b id="hp-${el.dataset.i}" class="faint">looking up…</b></div>`;
+          getJSON(`/api/holder?q=${encodeURIComponent(h.name.slice(0, 28))}`)
+            .then((d) => {
+              const t = $(`#hp-${el.dataset.i}`);
+              if (!t) return;
+              const others = d.rows.filter((r) => r.symbol !== sym);
+              t.className = "";
+              t.innerHTML = others.length
+                ? others.slice(0, 12).map((r) => `<span class="hp-pos" data-sym="${esc(r.symbol)}">${esc(r.symbol)} ${r.pct != null ? r.pct.toFixed(2) + "%" : ""}</span>`).join(" ")
+                  + ` <span class="faint">· ${d.companies_scanned} companies scanned</span>`
+                : `<span class="faint">no other position among ${d.companies_scanned} scanned companies</span>`;
+              t.querySelectorAll("[data-sym]").forEach((x) =>
+                x.onclick = () => show("company", { symbol: x.dataset.sym }));
+            })
+            .catch(() => { const t = $(`#hp-${el.dataset.i}`); if (t) t.textContent = "—"; });
+        });
       });
     };
+
     host.querySelectorAll(".own-tab").forEach((b) => {
       b.onclick = () => {
         ownTab = b.dataset.t;
@@ -3106,38 +3139,7 @@ async function renderCompany(view, params = {}) {
 
 let ownTab = "promoter";
 
-/* Reverse ownership: click a holder, see every scanned company it sits in.
-   The registry grows as companies are opened; the panel says how many. */
-async function showHolderPositions(name) {
-  const box = $("#own-table");
-  if (!box) return;
-  box.insertAdjacentHTML("afterbegin",
-    `<div id="hp-box" class="empty" style="padding:8px 14px">${esc(name)}: looking up…</div>`);
-  try {
-    const d = await getJSON(`/api/holder?q=${encodeURIComponent(name.slice(0, 28))}`);
-    const el = $("#hp-box");
-    if (!el) return;
-    el.innerHTML = `
-      <b class="hl">${esc(name)}</b> — ${d.rows.length} position${d.rows.length === 1 ? "" : "s"}
-      across ${d.companies_scanned} scanned compan${d.companies_scanned === 1 ? "y" : "ies"}
-      <button class="btn ghost" id="hp-close" style="margin-left:8px">CLOSE</button>
-      ${d.rows.length ? `<table class="tbl" style="margin-top:4px"><tbody>
-        ${d.rows.slice(0, 25).map((r) => `<tr>
-          <td class="txt sym" data-sym="${esc(r.symbol)}" style="cursor:pointer">${esc(r.symbol)}</td>
-          <td class="txt faint" style="font-size:10px">${esc(r.holder)}</td>
-          <td>${r.pct != null ? r.pct.toFixed(2) + "%" : "—"}</td>
-          <td class="faint">${esc(r.as_of)}</td></tr>`).join("")}
-      </tbody></table>` : ""}
-      <div class="faint" style="font-size:10px;margin-top:3px">${esc(d.note)}</div>`;
-    el.querySelector("#hp-close").onclick = () => el.remove();
-    el.querySelectorAll("[data-sym]").forEach((x) => {
-      x.onclick = () => show("company", { symbol: x.dataset.sym });
-    });
-  } catch (e) {
-    const el = $("#hp-box");
-    if (el) el.textContent = e.message;
-  }
-}
+
 
 async function drawFundOwnership(sym, view) {
   const host = $("#cmp-mf");
