@@ -2424,6 +2424,27 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         except DataError as exc:
             raise HTTPException(404, str(exc)) from exc
 
+    @app.get("/api/funds/perf/{isin}")
+    def funds_perf(isin: str):
+        """Returns and risk computed from the fund's own NAV series, with
+        its benchmark beside it."""
+        from shunkan.data.funds import scheme_performance
+
+        try:
+            return _clean(scheme_performance(isin))
+        except DataError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.get("/api/funds/category/{category}")
+    def funds_category(category: str, window: str = "1y"):
+        """A category ranked on one window - the quartile view."""
+        from shunkan.data.funds import category_table
+
+        try:
+            return _clean(category_table(category, window))
+        except DataError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
     @app.get("/api/funds/{isin}")
     def funds_detail(isin: str):
         from shunkan.data.funds import scheme_detail

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
@@ -58,8 +59,6 @@ def import_from_pipeline(source: Path | None = None, root=None) -> dict:
     hold_dir = src / "datadump" / "holdings"
     if not db.exists():
         raise DataError(f"no mf.db at {db} - point `source` at the mfresearch checkout")
-
-    import sqlite3
 
     con = sqlite3.connect(str(db))
     schemes = pd.read_sql_query("select * from schemes", con)
@@ -132,6 +131,16 @@ def import_from_pipeline(source: Path | None = None, root=None) -> dict:
                 "as_of": d.get("fetched"),
             })
 
+    # ---- NAV and benchmark series ---------------------------------------
+    con = sqlite3.connect(str(db))
+    try:
+        nav = pd.read_sql_query("select code, d as date, v as nav from nav", con)
+        idx = pd.read_sql_query("select ticker, d as date, v as close from idx", con)
+        bench = pd.read_sql_query("select benchmark, ticker, kind from bench_series", con)
+    except Exception:
+        nav, idx, bench = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    con.close()
+
     d_out = funds_dir(root)
     holdings = pd.DataFrame(rows)
     schemes = schemes.merge(pd.DataFrame(scheme_rows), on="isin", how="outer",
@@ -143,9 +152,15 @@ def import_from_pipeline(source: Path | None = None, root=None) -> dict:
         ter.to_parquet(d_out / "ter.parquet", index=False)
     if not mcap.empty:
         mcap.to_parquet(d_out / "stock_mcap.parquet", index=False)
+    for name, frame in (("nav", nav), ("idx", idx), ("bench_map", bench)):
+        if not frame.empty:
+            frame.to_parquet(d_out / f"{name}.parquet", index=False)
 
     resolved = int(holdings["symbol"].notna().sum()) if not holdings.empty else 0
     return {
+        "nav_rows": int(len(nav)),
+        "nav_schemes": int(nav["code"].nunique()) if not nav.empty else 0,
+        "index_rows": int(len(idx)),
         "schemes": int(len(schemes)),
         "portfolios": len(files),
         "holdings_rows": int(len(holdings)),
@@ -260,3 +275,120 @@ def store_stats(root=None) -> dict:
         else:
             out[name] = 0
     return out
+
+
+# ---------------------------------------------------------------------------
+# Performance
+# ---------------------------------------------------------------------------
+
+_WINDOWS = {"1m": 21, "3m": 63, "6m": 126, "1y": 252, "3y": 756, "5y": 1260}
+
+
+def _cagr(series: pd.Series, days: int) -> float | None:
+    """Point-to-point return, annualised past a year. None when the fund is
+    younger than the window - a 3-year number on a 2-year fund is a lie
+    with a decimal point."""
+    if len(series) <= days:
+        return None
+    last, first = float(series.iloc[-1]), float(series.iloc[-1 - days])
+    if first <= 0:
+        return None
+    total = last / first - 1.0
+    years = days / 252.0
+    return float(((1 + total) ** (1 / years) - 1) * 100 if years > 1 else total * 100)
+
+
+def scheme_performance(isin: str, root=None) -> dict:
+    """Returns and risk from the fund's own NAV history, plus its benchmark.
+
+    Everything here is computed from the stored series; nothing is taken on
+    a factsheet's word."""
+    import numpy as np
+
+    schemes = _load("schemes", root)
+    row = schemes[schemes["isin"] == isin]
+    if row.empty:
+        raise DataError(f"no scheme with ISIN {isin}")
+    meta = row.iloc[0]
+    code = meta.get("code")
+    try:
+        nav = _load("nav", root)
+    except DataError:
+        return {"isin": isin, "error": "no NAV series imported yet"}
+    mine = nav[nav["code"] == code].sort_values("date")
+    if len(mine) < 30:
+        return {"isin": isin, "error": f"only {len(mine)} NAV points on file"}
+    v = mine["nav"].astype(float).reset_index(drop=True)
+
+    returns = {k: _cagr(v, d) for k, d in _WINDOWS.items()}
+    r = np.log(v).diff().dropna()
+    vol = float(r.tail(252).std() * np.sqrt(252) * 100) if len(r) > 60 else None
+    roll_max = v.cummax()
+    dd = float(((v / roll_max) - 1).min() * 100)
+
+    out = {
+        "isin": isin, "name": meta.get("name"), "code": code,
+        "first": str(mine["date"].iloc[0]), "last": str(mine["date"].iloc[-1]),
+        "points": int(len(mine)),
+        "nav": float(v.iloc[-1]),
+        "returns_pct": returns,
+        "vol_1y_pct": vol,
+        "max_drawdown_pct": round(dd, 2),
+        "series": [{"date": str(d), "nav": float(x)}
+                   for d, x in zip(mine["date"].iloc[::5], v.iloc[::5])][-500:],
+        "note": ("returns are point-to-point, annualised beyond one year; a "
+                 "window longer than the fund's life reports nothing rather "
+                 "than a shortened one"),
+    }
+
+    # ---- benchmark, when the mapping knows one --------------------------
+    bm = meta.get("benchmark")
+    out["benchmark"] = bm
+    try:
+        bmap = _load("bench_map", root)
+        idx = _load("idx", root)
+        tick = bmap[bmap["benchmark"] == bm]
+        if not tick.empty:
+            t = tick.iloc[0]["ticker"]
+            ser = idx[idx["ticker"] == t].sort_values("date")
+            if len(ser) > 30:
+                bv = ser["close"].astype(float).reset_index(drop=True)
+                out["benchmark_ticker"] = t
+                out["benchmark_returns_pct"] = {k: _cagr(bv, d)
+                                                for k, d in _WINDOWS.items()}
+                out["excess_pct"] = {
+                    k: (None if out["returns_pct"].get(k) is None
+                        or out["benchmark_returns_pct"].get(k) is None
+                        else round(out["returns_pct"][k] - out["benchmark_returns_pct"][k], 2))
+                    for k in _WINDOWS}
+    except DataError:
+        pass
+    return out
+
+
+def category_table(category: str, window: str = "1y", root=None) -> dict:
+    """Every scheme in a category ranked on one window - the quartile view."""
+    schemes = _load("schemes", root)
+    nav = _load("nav", root)
+    days = _WINDOWS.get(window, 252)
+    pool = schemes[schemes["category"].astype(str).str.contains(
+        re.escape(category), case=False, na=False)]
+    rows = []
+    for r in pool.itertuples():
+        mine = nav[nav["code"] == r.code].sort_values("date")
+        if len(mine) <= days:
+            continue
+        ret = _cagr(mine["nav"].astype(float).reset_index(drop=True), days)
+        if ret is None:
+            continue
+        rows.append({"isin": r.isin, "name": r.name, "amc": r.amc,
+                     "aum_cr": None if pd.isna(r.aum) else float(r.aum),
+                     "return_pct": round(ret, 2)})
+    rows.sort(key=lambda x: -x["return_pct"])
+    n = len(rows)
+    for i, x in enumerate(rows):
+        x["rank"] = i + 1
+        x["quartile"] = min(4, int(i / max(n, 1) * 4) + 1)
+    return {"category": category, "window": window, "n": n, "rows": rows,
+            "note": ("ranked on the stored NAV series; schemes younger than "
+                     "the window are absent, not zero-filled")}

@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from shunkan.markets import (
+    session_phase,
     MARKET_CLOSE,
     IST,
     MIN_TTE_SECONDS,
@@ -79,3 +80,23 @@ def test_contract_is_live_until_its_close_bell():
     expiry = date(2026, 6, 18)
     assert not is_expired(expiry, datetime(2026, 6, 18, 15, 39, tzinfo=IST))
     assert is_expired(expiry, datetime(2026, 6, 18, 15, 41, tzinfo=IST))
+
+
+def test_every_session_phase_has_a_news_timing_factor():
+    """A phase the impact model does not know must degrade, not raise. The
+    CAS rollout added two phases and the news panel died with a KeyError
+    for the twenty minutes a day they were active."""
+    from datetime import datetime, timedelta
+
+    from shunkan.intel.impact import timing_factor
+
+    seen = set()
+    t = datetime(2026, 8, 24, 0, 0, tzinfo=IST)
+    for _ in range(24 * 12):        # every five minutes of a weekday
+        seen.add(session_phase(t).phase)
+        t += timedelta(minutes=5)
+    for phase in seen:
+        mult, horizon = timing_factor(phase)
+        assert mult > 0 and horizon
+    assert {"auction", "closing_deriv"} <= seen      # CAS is modelled
+    assert timing_factor("a_phase_invented_in_2030")[0] == 1.0
