@@ -1315,3 +1315,26 @@ main { padding: 0; }
 #mfd-panel .tbl-scroll, #gph-panel .tbl-scroll { max-height: 44vh; }
 #msc-panel .panel-body { max-height: 72vh; overflow-y: auto; }
 .sec-body > .map-grid { padding-bottom: 8px; }
+
+/* holder rows: one line each, detail opens underneath the row it describes */
+.hold { border-bottom: 1px solid var(--stroke-soft); }
+.hold > summary {
+  cursor: pointer; list-style: none; display: grid;
+  grid-template-columns: 1fr 110px 80px; gap: 10px; align-items: baseline;
+  padding: 4px 12px;
+}
+.hold > summary::-webkit-details-marker { display: none; }
+.hold > summary:hover { background: var(--bg-panel-2); }
+.hold[open] > summary { background: var(--bg-panel-2); }
+.hold-name { color: var(--text); }
+.hold[open] .hold-name { color: var(--amber); }
+.hold-kind { font-size: 10px; text-align: right; }
+.hold-pct { text-align: right; font-variant-numeric: tabular-nums; }
+.hold-body { padding: 4px 12px 9px 26px; background: rgba(255,255,255,0.012); }
+.hd-row { display: grid; grid-template-columns: 150px 1fr; gap: 10px;
+  padding: 2px 0; font-size: 11px; align-items: baseline; }
+.hd-row > span { color: var(--text-faint); font-size: 9.5px; letter-spacing: 0.08em; }
+.hd-row > b { color: var(--text); font-weight: 400; }
+.hp-pos { display: inline-block; border: 1px solid var(--stroke); padding: 0 6px;
+  margin: 1px 3px 1px 0; cursor: pointer; font-size: 10.5px; }
+.hp-pos:hover { border-color: var(--amber); color: var(--amber); }

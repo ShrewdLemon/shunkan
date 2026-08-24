@@ -2464,6 +2464,14 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             raise HTTPException(400, "query needs at least 3 characters")
         return _clean(holder_positions(q.strip()))
 
+    def _split_sbo(text: str) -> list:
+        try:
+            from shunkan.store.graph import split_beneficial_owners
+
+            return split_beneficial_owners(text or "")
+        except Exception:
+            return []
+
     _supply_builds: dict = {}
 
     @app.get("/api/company/{symbol}/supply")
@@ -2628,7 +2636,10 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                              "category": h.category, "kind": h.kind,
                              "shares": h.shares, "pct": h.pct,
                              "pledged_pct": h.pledged_pct,
-                             "beneficial_owner": h.beneficial_owner}
+                             "beneficial_owner": h.beneficial_owner,
+                             # split the same way the graph splits it, so a
+                             # family reads as people rather than one string
+                             "beneficial_owners": _split_sbo(h.beneficial_owner)}
                             for h in sh.holders],
                 "source": f"NSE shareholding pattern XBRL, {sh.as_of}",
                 "source_url": sh.source_url,
