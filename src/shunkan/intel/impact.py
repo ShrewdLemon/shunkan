@@ -54,7 +54,20 @@ _TIMING: dict[str, tuple[float, str]] = {
     "opening":     (1.10, "intraday, first hour"),
     "midday":      (0.90, "intraday drift"),
     "closing":     (0.95, "late-day move, spillover tomorrow"),
+    # CAS, live since 2026-08-03. News landing while F&O cash names are in
+    # the call auction cannot be traded in the cash market at all, and the
+    # derivatives tail is thin - both get discounted rather than crashing
+    # the lookup, which is what a missing key did here.
+    "auction":       (0.70, "closing auction — cash in call, F&O only"),
+    "closing_deriv": (0.80, "derivatives tail to 15:40, cash closed"),
 }
+
+
+def timing_factor(phase: str) -> tuple[float, str]:
+    """Never raise on an unknown phase. The session model gains phases as
+    the exchange changes its rules; an unrecognised one should degrade to
+    neutral, not take the news panel down with it."""
+    return _TIMING.get(phase, (1.0, "outside modelled sessions"))
 
 
 @dataclass
@@ -93,7 +106,7 @@ def assess_impact(item: NewsItem, now: datetime | None = None) -> ImpactCall:
     effective = sent * flip
     published = item.published or (now or datetime.now(timezone.utc))
     phase = session_phase(published.astimezone(IST))
-    timing_mult, horizon = _TIMING[phase.phase]
+    timing_mult, horizon = timing_factor(phase.phase)
 
     strength = abs(effective) * weight * timing_mult
     confidence = min(0.5 + 0.45 * strength, 0.85)

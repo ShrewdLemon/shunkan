@@ -2568,6 +2568,118 @@ function drawTape() {
 
 /* ---------- SCREENER ---------- */
 
+/* ---------- ENTITY GRAPH (GPH) ----------
+   One screen over the whole knowledge graph: resolve any spelling to an
+   entity, see everything it connects to, and walk. Every edge shows the
+   source it came from, because an edge that cannot say where it came from
+   was never written. */
+
+const GPH_KIND_COLOUR = {
+  company: "var(--amber, #ffa62b)", holder: "var(--blue, #5fa8dc)",
+  scheme: "var(--up, #23d18b)", amc: "var(--up, #23d18b)",
+  person: "var(--down, #ff5c5c)", sector: "var(--text-dim, #9b968c)",
+  index: "var(--text, #e6e1d6)",
+};
+
+async function renderGraph(view, params = {}) {
+  view.innerHTML = panel({
+    title: "ENTITY GRAPH", id: "gph-panel", flush: true,
+    meta: `<span class="controls">
+        <input class="in" id="gph-q" size="30" spellcheck="false"
+               placeholder="any entity: RELIANCE · LIC · Mukesh Ambani · SBI Small Cap"
+               value="${esc(params.q || "")}">
+        <button class="btn" id="gph-go">RESOLVE</button></span> <span id="gph-upd">—</span>`,
+    body: loading("reading the graph"),
+  });
+  const body = () => $("#gph-panel .panel-body");
+
+  const openNode = async (id) => {
+    const b = body(); if (!b) return;
+    b.innerHTML = loading("walking the graph");
+    const d = await getJSON(`/api/graph/node?id=${encodeURIComponent(id)}&limit=400`);
+    const n = d.node;
+    const groups = new Map();
+    for (const e of d.neighbours) {
+      const key = `${e.rel}·${e.direction}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
+    }
+    const meta = n.meta || {};
+    b.innerHTML = `
+      <div class="kv-strip">
+        <div class="kv"><div class="k">ENTITY</div><div class="v sm"
+          style="color:${GPH_KIND_COLOUR[n.kind] || "inherit"}">${esc(n.name)}</div></div>
+        <div class="kv"><div class="k">KIND</div><div class="v sm">${esc(n.kind)}</div></div>
+        <div class="kv"><div class="k">EDGES</div><div class="v">${d.neighbours.length}</div></div>
+        ${Object.entries(meta).slice(0, 3).map(([k, v]) =>
+          `<div class="kv"><div class="k">${esc(k.toUpperCase())}</div><div class="v sm">${esc(String(v).slice(0, 24))}</div></div>`).join("")}
+      </div>
+      ${[...groups.entries()].sort((a, b2) => b2[1].length - a[1].length).map(([key, rows]) => {
+        const [rel, dir] = key.split("·");
+        return `<div class="news-sect">${esc(rel.replace(/_/g, " ").toUpperCase())}
+          <span class="faint">· ${dir === "out" ? "outbound" : "inbound"} · ${rows.length}</span></div>
+        <table class="tbl"><thead><tr><th class="txt">ENTITY</th><th class="txt">KIND</th>
+          <th>WEIGHT</th><th class="txt">AS OF</th><th class="txt">SOURCE</th></tr></thead><tbody>
+          ${rows.slice(0, 40).map((e) => `<tr data-id="${esc(e.id)}" style="cursor:pointer">
+            <td class="txt sym" style="color:${GPH_KIND_COLOUR[e.kind] || "inherit"}">${esc(e.name)}</td>
+            <td class="txt faint">${esc(e.kind)}</td>
+            <td>${e.weight != null ? e.weight.toFixed(2) + (e.unit === "pct" ? "%" : "") : "—"}</td>
+            <td class="txt faint">${esc(e.as_of || "")}</td>
+            <td class="txt faint" style="font-size:10px">${esc(e.source)}</td>
+          </tr>`).join("")}
+          ${rows.length > 40 ? `<tr><td colspan="5" class="faint">…and ${rows.length - 40} more</td></tr>` : ""}
+        </tbody></table>`;
+      }).join("")}
+      ${n.kind === "company" ? `<div class="news-sect">CROWDING — WHAT THIS STOCK'S SCHEMES ALSO HOLD</div>
+        <div id="gph-co">${loading("two hops")}</div>` : ""}`;
+    b.querySelectorAll("[data-id]").forEach((tr) => tr.onclick = () => openNode(tr.dataset.id));
+    if (n.kind === "company") {
+      try {
+        const sym = n.id.split(":")[1];
+        const co = await getJSON(`/api/graph/coheld/${encodeURIComponent(sym)}`);
+        const host = $("#gph-co");
+        if (host) host.innerHTML = `<div class="map-grid">
+          ${co.rows.map((r) => `<div class="map-tile" data-id="${esc(r.id)}">
+            <div class="mt-sym">${esc(r.name.slice(0, 20))}</div>
+            <div class="mt-chg faint">${r.shared} schemes</div></div>`).join("")}</div>`;
+        host?.querySelectorAll("[data-id]").forEach((el) => el.onclick = () => openNode(el.dataset.id));
+      } catch { /* crowding is a bonus */ }
+    }
+  };
+
+  const resolve = async (q) => {
+    const b = body(); if (!b) return;
+    if (!q) { b.innerHTML = `<div class="empty" style="padding:12px 14px">type an entity — any spelling; the mapping service resolves it</div>`; return; }
+    b.innerHTML = loading(`resolving “${esc(q)}”`);
+    const d = await getJSON(`/api/graph/resolve?q=${encodeURIComponent(q)}`);
+    if (d.node_id) { openNode(d.node_id); return; }
+    b.innerHTML = d.candidates.length ? `
+      <div class="empty" style="padding:8px 14px">no exact match for “${esc(q)}” — closest entities:</div>
+      <table class="tbl"><tbody>${d.candidates.map((c) => `<tr data-id="${esc(c.id)}" style="cursor:pointer">
+        <td class="txt sym" style="color:${GPH_KIND_COLOUR[c.kind] || "inherit"}">${esc(c.name)}</td>
+        <td class="txt faint">${esc(c.kind)}</td></tr>`).join("")}</tbody></table>`
+      : `<div class="empty" style="padding:12px 14px">nothing in the graph matches “${esc(q)}”</div>`;
+    b.querySelectorAll("[data-id]").forEach((tr) => tr.onclick = () => openNode(tr.dataset.id));
+  };
+
+  $("#gph-go").onclick = () => resolve($("#gph-q").value.trim());
+  $("#gph-q").onkeydown = (e) => { if (e.key === "Enter") $("#gph-go").click(); };
+  try {
+    const st = await getJSON("/api/graph");
+    $("#gph-upd").innerHTML = stamp(`${fmt.compact(st.nodes)} NODES · ${fmt.compact(st.edges)} EDGES · ${(st.db_bytes / 1e6).toFixed(0)} MB`)
+      + " " + ageStamp(null);
+    body().innerHTML = `
+      <div class="feed-note">every edge carries its source · ${Object.entries(st.by_kind).map(([k, v]) =>
+        `<span style="color:${GPH_KIND_COLOUR[k] || "inherit"}">${esc(k)} ${v}</span>`).join(" · ")}</div>
+      <div class="empty" style="padding:10px 14px">resolve an entity above — try
+        <b class="hl">RELIANCE</b>, <b class="hl">LIC</b>, <b class="hl">Mukesh Ambani</b>,
+        or an AMC like <b class="hl">SBI</b></div>`;
+  } catch (e) {
+    body().innerHTML = `<div class="empty" style="padding:12px 14px">${esc(e.message)}</div>`;
+  }
+  if (params.q) resolve(params.q);
+}
+
 /* ---------- MSCI INDEX REVIEW (MSC) ----------
    Index membership is a flow event first: an addition forces every tracking
    fund to buy on one date at one price. These are the local rule engine's
@@ -2629,6 +2741,7 @@ async function renderFunds(view, params = {}) {
       <input class="in" id="mfd-q" placeholder="scheme, AMC, or stock symbol" size="26" value="${esc(q0)}">
       <button class="btn" id="mfd-go">SEARCH</button>
       <button class="btn ghost" id="mfd-stock">WHO HOLDS ▸ STOCK</button>
+      <button class="btn ghost" id="mfd-cat">RANK CATEGORY</button>
       </span> <span id="mfd-upd">—</span>`,
     body: loading("reading the fund store"),
   });
@@ -2684,6 +2797,7 @@ async function renderFunds(view, params = {}) {
         ${bar("MID", d.midcap_pct, "var(--blue, #5fa8dc)")}
         ${bar("SMALL", d.smallcap_pct, "var(--up, #23d18b)")}
       </div>
+      <div id="mfd-perf"></div>
       ${(d.sectors || []).length ? `<div class="news-sect">SECTOR MIX</div>
         <div class="map-grid">${d.sectors.map((x) => `<div class="map-tile">
           <div class="mt-sym">${esc(x.sector.slice(0, 18))}</div>
@@ -2702,6 +2816,67 @@ async function renderFunds(view, params = {}) {
     b.querySelectorAll("[data-sym]").forEach((el) => {
       el.onclick = () => show("company", { symbol: el.dataset.sym });
     });
+    drawPerf(isin);
+  };
+
+  const drawPerf = async (isin) => {
+    const host = $("#mfd-perf");
+    if (!host) return;
+    try {
+      const p = await getJSON(`/api/funds/perf/${encodeURIComponent(isin)}`);
+      if (p.error) {
+        host.innerHTML = `<div class="empty" style="padding:6px 14px">${esc(p.error)}</div>`;
+        return;
+      }
+      const W = ["1m", "3m", "6m", "1y", "3y", "5y"];
+      const cell = (v) => v == null ? `<td class="faint">—</td>`
+        : `<td class="${cls(v)}">${v >= 0 ? "+" : ""}${v.toFixed(1)}%</td>`;
+      host.innerHTML = `
+        <div class="news-sect">PERFORMANCE <span class="faint">· ${p.points} NAV points · ${esc(p.first)} → ${esc(p.last)}</span></div>
+        <div class="kv-strip">
+          <div class="kv"><div class="k">NAV</div><div class="v sm">${fmt.n(p.nav)}</div></div>
+          <div class="kv"><div class="k">VOL 1Y</div><div class="v sm">${p.vol_1y_pct != null ? p.vol_1y_pct.toFixed(1) + "%" : "—"}</div></div>
+          <div class="kv"><div class="k">MAX DRAWDOWN</div><div class="v sm down">${p.max_drawdown_pct}%</div></div>
+          <div class="kv"><div class="k">BENCHMARK</div><div class="v sm">${esc(p.benchmark || "—")}</div></div>
+        </div>
+        <table class="tbl"><thead><tr><th class="txt">SERIES</th>${W.map((w) => `<th>${w.toUpperCase()}</th>`).join("")}</tr></thead>
+        <tbody>
+          <tr><td class="txt sym">FUND</td>${W.map((w) => cell(p.returns_pct[w])).join("")}</tr>
+          ${p.benchmark_returns_pct ? `<tr><td class="txt faint">BENCHMARK</td>${W.map((w) => cell(p.benchmark_returns_pct[w])).join("")}</tr>
+          <tr><td class="txt amber">EXCESS</td>${W.map((w) => cell(p.excess_pct ? p.excess_pct[w] : null)).join("")}</tr>` : ""}
+        </tbody></table>
+        <div style="padding:6px 12px"><canvas class="plot" id="mfd-nav" style="height:150px"></canvas></div>
+        <div class="empty" style="padding:0 14px 6px"><span class="faint">${esc(p.note)}</span></div>`;
+      if ((p.series || []).length > 2) {
+        linePlot($("#mfd-nav"), [{ points: p.series.map((x) => ({ x: Date.parse(x.date), y: x.nav })),
+                                   color: "#ffa62b", width: 1.4 }],
+          { height: 150, fmtY: (v) => fmt.n(v, 0), fmtX: (v) => new Date(v).getFullYear() });
+      }
+    } catch (e) {
+      host.innerHTML = `<div class="empty" style="padding:6px 14px">${esc(e.message)}</div>`;
+    }
+  };
+
+  const showCategory = async (cat) => {
+    const b = body(); if (!b) return;
+    b.innerHTML = loading(`ranking ${esc(cat)}`);
+    try {
+      const d = await getJSON(`/api/funds/category/${encodeURIComponent(cat)}?window=1y`);
+      b.innerHTML = `
+        <div class="feed-note">${esc(d.note)}</div>
+        <table class="tbl"><thead><tr><th>#</th><th>Q</th><th class="txt">SCHEME</th>
+          <th class="txt">AMC</th><th>AUM ₹Cr</th><th>1Y</th></tr></thead><tbody>
+          ${d.rows.map((r) => `<tr data-isin="${esc(r.isin)}" style="cursor:pointer">
+            <td class="faint">${r.rank}</td>
+            <td class="${r.quartile === 1 ? "up" : r.quartile === 4 ? "down" : "faint"}">Q${r.quartile}</td>
+            <td class="txt sym">${esc(r.name)}</td><td class="txt faint">${esc(r.amc || "")}</td>
+            <td>${r.aum_cr != null ? fmt.n(r.aum_cr, 0) : "—"}</td>
+            <td class="${cls(r.return_pct)}">${r.return_pct >= 0 ? "+" : ""}${r.return_pct.toFixed(1)}%</td>
+          </tr>`).join("")}</tbody></table>`;
+      b.querySelectorAll("[data-isin]").forEach((tr) => tr.onclick = () => openScheme(tr.dataset.isin));
+    } catch (e) {
+      b.innerHTML = `<div class="empty" style="padding:10px 14px">${esc(e.message)}</div>`;
+    }
   };
 
   const whoHolds = async (sym) => {
@@ -2742,6 +2917,7 @@ async function renderFunds(view, params = {}) {
   $("#mfd-go").onclick = () => searchSchemes($("#mfd-q").value.trim());
   $("#mfd-q").onkeydown = (e) => { if (e.key === "Enter") $("#mfd-go").click(); };
   $("#mfd-stock").onclick = () => whoHolds($("#mfd-q").value.trim().toUpperCase());
+  $("#mfd-cat").onclick = () => showCategory($("#mfd-q").value.trim() || "Small Cap");
 
   try {
     const st = await getJSON("/api/funds");
@@ -3166,6 +3342,7 @@ const ANL_GROUPS = [
     ["company", "CMP", "Company intelligence", "business, promoters, management, financials, NSE peers — refusals where no source exists"],
     ["funds", "MFD", "Mutual funds", "1,095 schemes, disclosed portfolios, and which schemes hold a stock"],
     ["msci", "MSC", "MSCI index review", "predicted additions, deletions and migrations — forced passive flow, dated"],
+    ["graph", "GPH", "Entity graph", "companies, holders, schemes, people — every edge names its source"],
     ["news", "NWS", "News intelligence", "time-sorted, sector-grouped wires with sentiment provenance"],
     ["calendar", "CAL", "Calendar", "expiries from the contract master; refusals where no source exists"],
     ["workspace", "WSP", "Workspace", "saved layouts and notes"],
@@ -5341,7 +5518,7 @@ const RENDER = {
   tape: renderTape, screener: renderScreener, signals: renderSignals,
   fiidii: renderFiiDii, oicharts: renderOICharts, heatmap: renderHeatmap,
   calendar: renderCalendar, analyse: renderAnalyse, company: renderCompany,
-  funds: renderFunds, msci: renderMSCI,
+  funds: renderFunds, msci: renderMSCI, graph: renderGraph,
   portfolio: renderPortfolio, alerts: renderAlerts,
   datastore: renderDatastore, workspace: renderWorkspace, viz: renderViz,
   mlstudio: renderMLStudio, brief: renderBrief,
@@ -5590,7 +5767,7 @@ const CODE_ALIAS = { OPT: "oc", PRT: "portfolio", PLS: "pulse", ANL: "analyse",
                      ANA: "brief", BRF: "brief", QNT: "qnt", SCR: "screener",
                      SIG: "signals", FII: "fiidii", OIC: "oicharts",
                      MAP: "heatmap", CAL: "calendar", WSP: "workspace",
-                     CMP: "company", MFD: "funds", MF: "funds", MSC: "msci",
+                     CMP: "company", MFD: "funds", MF: "funds", MSC: "msci", GPH: "graph",
                      VOL: "iv", FLW: "volume", NWS: "news", BTL: "backtest",
                      MLS: "mlstudio", PAY: "payoff" };
 
