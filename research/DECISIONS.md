@@ -376,3 +376,16 @@ exited on the clock. The signal's live ledger is now open: 1 draw,
 
 Book: equity ₹106,352.15 (wall spread still carried, 2 legs, marks
 green with the market's bounce). Lifetime realized ₹1,321.15.
+
+## 2026-08-24 13:52 — wall spread closed at 77% of max
+
+NIFTY 24,167 = 167 pts above the short strike with 1 day to expiry.
+Realized **+₹5,512** of ₹7,163 max. Left the last ₹1,638 on the table
+deliberately: holding short gamma through an expiry-day gap to collect
+23% more is picking up pennies, and our own research says the VRP at
+this VIX is thin — we got paid because the WALL held (the framework's
+13/14 record), not because the last day of decay was an edge.
+
+Book flat. Lifetime realized ₹6,833.15 on ₹1L (+6.83%), across: pair
++582, shock basket +495, wall spread +5,512. Three ideas, three greens,
+n=3 — noted as a small sample, not a system.

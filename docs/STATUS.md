@@ -239,6 +239,36 @@ in /api/status under feed_keepalive.futures. Bus routing resolves symbols
 the feed already streams by identity, so NIFTYFUT is subscribable even
 though no cash resolver knows it.
 
+## Company intelligence and the SPLC map (2026-08-24)
+
+The Bloomberg comparison, answered with what Indian disclosure actually
+forces into the open.
+
+**Ownership is no longer a refusal.** SEBI LODR Reg 31 publishes the
+quarterly shareholding pattern as XBRL on nsearchives, not as a PDF, so
+the promoter group is nameable entity by entity - individuals, family
+trusts, holding companies - with public holders above 1% alongside.
+Balrampur renders 30 named holders (Saraogi Family Trust 24.83%, SBI MF
+6.96%...). The earlier "no free structured source" refusal was honest
+when written and is retired now that the source is real.
+
+**The SPLC map is evidence retrieval, not inference.** Annual reports
+(LODR Reg 34) are on nsearchives back a decade; 400 pages parse in ~13s.
+Every node on the map - input, output, customer, facility, family member
+- carries the verbatim sentence it came from, and a node whose quote is
+page furniture is dropped rather than shown. Nothing is summarised from
+model knowledge: if the report does not say it, the map does not show it.
+Verified on two unlike businesses (sugar and refining/telecom): the
+Balrampur map finds ethanol going to oil marketing companies, industrial
+alcohol to institutional buyers, and cogenerated power to UPPCL via the
+State Electricity Grid; the Reliance map finds crude oil and natural gas
+inputs, Jamnagar/Dahej/Hazira, and the Jio/Meta corporate family.
+
+Known limits, stated on the page: third-party supplier NAMES with cost
+shares are genuinely absent from Indian disclosure, so no supplier node
+appears unless the report names one; and the extractor reads text, so an
+image-only scanned report yields a named miss rather than a blank map.
+
 ## Research findings
 
 **News-reaction study (2026-08-18).** First study off the news archive, 51
