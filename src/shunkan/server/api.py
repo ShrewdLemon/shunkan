@@ -107,6 +107,7 @@ harvest_status: dict = {"runs": 0, "failed": 0}
 participant_status: dict = {"failed": 0}
 news_status: dict = {"failed": 0}
 journal_status: dict = {"written": 0}
+graph_status: dict = {"failed": 0}
 keepalive_status: dict = {"active": False}
 
 
@@ -491,6 +492,27 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                     keepalive_status["last_error"] = str(exc)[:160]
                 await asyncio.sleep(60.0)
 
+        async def graph_loop():
+            """Keep the knowledge graph current with the parquet stores.
+
+            Cheap (seconds) and idempotent, so it runs on a slow cycle and
+            after startup - the terminal should never open a company page
+            against a graph that predates this morning's scans."""
+            from shunkan.data.ingest import rebuild
+
+            await asyncio.sleep(45.0)
+            while True:
+                try:
+                    r = await asyncio.to_thread(rebuild)
+                    graph_status.update({k: v for k, v in r.items() if k != "stats"})
+                    graph_status["nodes"] = r["stats"]["nodes"]
+                    graph_status["edges"] = r["stats"]["edges"]
+                    graph_status["last_ok"] = _now_iso()
+                except Exception as exc:
+                    graph_status["failed"] = graph_status.get("failed", 0) + 1
+                    graph_status["last_error"] = str(exc)[:160]
+                await asyncio.sleep(6 * 3600.0)
+
         async def analysis_journal_loop():
             """Record what the terminal said at each close, once per day.
 
@@ -629,7 +651,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         tasks = [asyncio.create_task(t()) for t in
                  (alert_loop, bar_flush_loop, chain_capture_loop, history_sync_loop,
                   instruments_archive_loop, harvest_loop, participant_loop,
-                  news_archive_loop, feed_keepalive_loop, analysis_journal_loop)]
+                  news_archive_loop, feed_keepalive_loop, analysis_journal_loop,
+                  graph_loop)]
         yield
         for t in tasks:
             t.cancel()
@@ -813,6 +836,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             "ticks": hub.stats(),
             "feed_keepalive": dict(keepalive_status),
             "analysis_journal": dict(journal_status),
+            "graph": dict(graph_status),
             "server_time": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -2186,6 +2210,25 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
     _scan_cache: dict = {}
 
+    def _disk_get(key: str, max_age_s: float):
+        """Read-through cache that survives restarts. The in-memory dict
+        only ever knew about this process; a terminal that forgets a
+        400-page annual report on restart is a terminal that refetches it."""
+        try:
+            from shunkan.store.graph import graph
+
+            return graph().cache_get(key, max_age_s)
+        except Exception:
+            return None
+
+    def _disk_put(key: str, payload, kind: str = "", ttl_s: float = 21600):
+        try:
+            from shunkan.store.graph import graph
+
+            graph().cache_put(key, payload, kind, ttl_s)
+        except Exception:
+            pass
+
     @app.get("/api/calendar")
     def calendar():
         """The expiry calendar, from the instruments dumps - real listings,
@@ -2271,6 +2314,55 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         from shunkan.data.filings import registry_stats
 
         return _clean({**_own_scan, "registry": registry_stats()})
+
+    # -- knowledge graph ---------------------------------------------------
+
+    @app.get("/api/graph")
+    def graph_stats():
+        from shunkan.store.graph import graph
+
+        return _clean(graph().stats())
+
+    @app.post("/api/graph/rebuild")
+    def graph_rebuild():
+        """Rebuild the graph from every parquet store. Seconds, idempotent."""
+        from shunkan.data.ingest import rebuild
+
+        return _clean(rebuild())
+
+    @app.get("/api/graph/resolve")
+    def graph_resolve(q: str, kind: str | None = None):
+        """The mapping service: any spelling of an entity, one canonical id."""
+        from shunkan.store.graph import graph
+
+        g = graph()
+        nid = g.resolve(q, kind)
+        return _clean({"query": q, "node_id": nid,
+                       "node": g.node(nid) if nid else None,
+                       "candidates": g.search(q, kind, 12) if not nid else []})
+
+    @app.get("/api/graph/node")
+    def graph_node(id: str, rel: str | None = None, limit: int = 200):
+        from shunkan.store.graph import graph
+
+        g = graph()
+        n = g.node(id)
+        if n is None:
+            raise HTTPException(404, f"no node {id}")
+        nb = g.neighbours(id, rel, "both", limit)
+        return _clean({"node": n, "neighbours": [vars(x) for x in nb]})
+
+    @app.get("/api/graph/coheld/{symbol}")
+    def graph_coheld(symbol: str, rel: str = "scheme_holds", limit: int = 25):
+        """What else do this stock's holders hold - crowding, in one hop."""
+        from shunkan.store.graph import graph
+
+        g = graph()
+        nid = g.resolve(symbol, "company")
+        if not nid:
+            raise HTTPException(404, f"{symbol} is not in the graph")
+        return _clean({"symbol": symbol.upper(), "rel": rel,
+                       "rows": g.co_held(nid, rel, limit)})
 
     # -- MSCI index review -------------------------------------------------
 
@@ -2370,6 +2462,11 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         hit = _scan_cache.get(ck)
         if hit and not refresh and _time.monotonic() - hit[0] < 86400:
             return hit[1]
+        if not refresh:
+            disk = _disk_get(ck, 7 * 86400)
+            if disk is not None:
+                _scan_cache[ck] = (_time.monotonic(), disk)
+                return disk
         b = _supply_builds.get(sym)
         if b:
             return {"building": True, "stage": b.get("stage", "starting"), "symbol": sym}
@@ -2403,6 +2500,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                               "available_years": [f"{r['from_year']}-{r['to_year']}"
                                                   for r in ars[:12]]})
                 _scan_cache[ck] = (_time.monotonic(), out)
+                _disk_put(ck, out, "supply", 7 * 86400)
             except Exception as exc:
                 _scan_cache[ck] = (_time.monotonic(),
                                    {"error": str(exc)[:200], "symbol": sym})
@@ -2430,6 +2528,10 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         hit = _scan_cache.get(ck)
         if hit and _time.monotonic() - hit[0] < 3600:
             return hit[1]
+        disk = _disk_get(ck, 6 * 3600)
+        if disk is not None:
+            _scan_cache[ck] = (_time.monotonic(), disk)
+            return disk
         if is_offline():
             raise HTTPException(502, "company intelligence needs the network "
                                      "(SHUNKAN_OFFLINE=1 is set)")
@@ -2579,6 +2681,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         }
         out = _clean(out)
         _scan_cache[ck] = (_time.monotonic(), out)
+        _disk_put(ck, out, "company", 6 * 3600)
         return out
 
     def _maybe_holders_count(t) -> float | None:
