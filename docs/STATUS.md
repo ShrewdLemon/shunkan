@@ -239,6 +239,38 @@ in /api/status under feed_keepalive.futures. Bus routing resolves symbols
 the feed already streams by identity, so NIFTYFUT is subscribable even
 though no cash resolver knows it.
 
+## Mutual funds and MSCI: the flow layer (2026-08-24)
+
+Two sibling projects on this machine already solved problems Shunkan was
+about to re-solve, so the terminal imports their output into its own store
+rather than duplicating their pipelines.
+
+**Funds.** SEBI's shareholding pattern names the AMC ("SBI Mutual Fund,
+6.96%") - the legal owner. The economic owner is a SCHEME, with a mandate
+and a manager, and it is the scheme that trades. `data/funds.py` imports
+the mfresearch pipeline's stores: 1,095 schemes, 1,087 disclosed
+portfolios, 76,417 holding rows, of which 71,815 (94%) resolve to NSE
+symbols through AMFI's own cap-classification list. The 4,602 that do not
+are Treps, net receivables and repo - cash, not stocks - and they stay in
+the store with a null symbol rather than being dropped, because a join
+that hides its misses cannot be trusted. The payoff is the reverse
+question: RELIANCE is held by 452 schemes worth Rs 1.35 lakh crore (index
+ETFs on top, correctly); BALRAMCHIN by 68 worth Rs 2,967 crore (small-cap
+funds, correctly). Company pages carry it beside the SEBI registry.
+
+**MSCI.** Index membership is a flow event before it is anything else: an
+addition forces every tracking fund to buy on one date at one price.
+`data/msci.py` imports the local rule engine's constituent lists and
+review predictions - 669 names screened, 103 moves called, each carrying
+the rule that decided it (ADANIGREEN standard addition p=0.98; LAURUSLABS
+small->standard migration). "hold" is filtered out of the move list
+because 566 of them would bury the 103 that matter. The engine's call is
+not MSCI's announcement and the page says so.
+
+Both importers read from the sibling projects on the HOST; the container
+sees the result through the shared store, and says exactly that when run
+where the sources are not mounted.
+
 ## Ownership registry, and the reverse map (2026-08-24)
 
 The first cut of the ownership panel had a real arithmetic bug, caught by
