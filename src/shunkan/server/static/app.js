@@ -2568,6 +2568,194 @@ function drawTape() {
 
 /* ---------- SCREENER ---------- */
 
+/* ---------- MSCI INDEX REVIEW (MSC) ----------
+   Index membership is a flow event first: an addition forces every tracking
+   fund to buy on one date at one price. These are the local rule engine's
+   calls, each carrying the rule that decided it. MSCI's own announcement is
+   the only authority; this is not it. */
+
+async function renderMSCI(view) {
+  view.innerHTML = panel({
+    title: "MSCI INDEX REVIEW — PREDICTED MOVES", id: "msc-panel", flush: true,
+    meta: `<span id="msc-upd">—</span>`, body: loading("reading the rule engine"),
+  });
+  try {
+    const d = await getJSON("/api/msci/changes");
+    const b = $("#msc-panel .panel-body");
+    if (!b) return;
+    $("#msc-upd").innerHTML = stamp(`${d.n_calls} MOVES OF ${d.n_universe} SCREENED`) + " " + ageStamp(null);
+    const tone = (c) => /ADDITION|MIGRATION/i.test(c) ? "up" : /DELETION/i.test(c) ? "down" : "warn";
+    b.innerHTML = `
+      <div class="feed-note">${esc(d.note)}</div>
+      <table class="tbl"><thead><tr>
+        <th class="txt">SYMBOL</th><th class="txt">CALL</th><th class="txt">NOW</th>
+        <th>p(IN)</th><th>MCAP $bn</th><th>× CUTOFF</th><th>ATVR 12M</th>
+        <th class="txt">DECISIVE RULE</th>
+      </tr></thead><tbody>
+        ${d.rows.map((r) => `<tr data-sym="${esc(r.symbol)}" style="cursor:pointer">
+          <td class="txt sym">${esc(r.symbol)}</td>
+          <td class="txt ${tone(r.call || "")}">${esc(r.call || "")}</td>
+          <td class="txt faint">${esc(r.current_index || "—")}</td>
+          <td>${r.p_in_index != null ? r.p_in_index.toFixed(2) : "—"}</td>
+          <td>${r.full_mcap_usd_bn != null ? r.full_mcap_usd_bn.toFixed(2) : "—"}</td>
+          <td>${r.x_cutoff != null ? r.x_cutoff.toFixed(2) + "×" : "—"}</td>
+          <td class="faint">${r.atvr_12m_pct != null ? r.atvr_12m_pct.toFixed(0) + "%" : "—"}</td>
+          <td class="txt faint" style="font-size:10px">${esc(String(r.reason || "").slice(0, 90))}</td>
+        </tr>`).join("")}
+      </tbody></table>`;
+    b.querySelectorAll("[data-sym]").forEach((tr) => {
+      tr.onclick = () => show("company", { symbol: tr.dataset.sym });
+    });
+  } catch (e) {
+    const b = $("#msc-panel .panel-body");
+    if (b) b.innerHTML = `<div class="empty" style="padding:10px 14px">${esc(e.message)}
+      <br><span class="faint">POST /api/msci/import to load the rule engine's output</span></div>`;
+  }
+}
+
+/* ---------- MUTUAL FUNDS (MFD) ----------
+   The scheme layer under the AMC names that appear in shareholding
+   patterns. Search schemes, open one for its disclosed portfolio, or ask
+   which schemes hold a given stock. */
+
+let mfdMode = "schemes";
+
+async function renderFunds(view, params = {}) {
+  const q0 = params.q || "";
+  view.innerHTML = panel({
+    title: "MUTUAL FUNDS — SCHEMES & DISCLOSED PORTFOLIOS",
+    id: "mfd-panel", flush: true,
+    meta: `<span class="controls">
+      <input class="in" id="mfd-q" placeholder="scheme, AMC, or stock symbol" size="26" value="${esc(q0)}">
+      <button class="btn" id="mfd-go">SEARCH</button>
+      <button class="btn ghost" id="mfd-stock">WHO HOLDS ▸ STOCK</button>
+      </span> <span id="mfd-upd">—</span>`,
+    body: loading("reading the fund store"),
+  });
+  const body = () => $("#mfd-panel .panel-body");
+
+  const searchSchemes = async (q) => {
+    const d = await getJSON(`/api/funds/search?q=${encodeURIComponent(q)}`);
+    const b = body(); if (!b) return;
+    b.innerHTML = d.rows.length ? `
+      <table class="tbl"><thead><tr>
+        <th class="txt">SCHEME</th><th class="txt">AMC</th><th class="txt">CATEGORY</th>
+        <th>AUM ₹Cr</th><th class="txt">BENCHMARK</th>
+      </tr></thead><tbody>
+        ${d.rows.map((r) => `<tr data-isin="${esc(r.isin)}" style="cursor:pointer">
+          <td class="txt sym">${esc(r.name)}</td>
+          <td class="txt">${esc(r.amc || "")}</td>
+          <td class="txt faint">${esc(r.category || "")}</td>
+          <td>${r.aum_cr ? fmt.n(r.aum_cr, 0) : "—"}</td>
+          <td class="txt faint" style="font-size:10px">${esc(r.benchmark || "")}</td>
+        </tr>`).join("")}
+      </tbody></table>`
+      : `<div class="empty" style="padding:10px 14px">no scheme matches “${esc(q)}”</div>`;
+    b.querySelectorAll("[data-isin]").forEach((tr) => {
+      tr.onclick = () => openScheme(tr.dataset.isin);
+    });
+  };
+
+  const openScheme = async (isin) => {
+    const b = body(); if (!b) return;
+    b.innerHTML = loading("opening the scheme");
+    const d = await getJSON(`/api/funds/${encodeURIComponent(isin)}`);
+    const bar = (label, v, colour) => v == null ? "" : `
+      <div class="own-row"><span>${label}</span>
+        <div class="own-track"><div class="own-fill" style="width:${Math.min(v, 100)}%;background:${colour}"></div></div>
+        <b>${v.toFixed(1)}%</b></div>`;
+    b.innerHTML = `
+      <div class="kv-strip">
+        <div class="kv"><div class="k">AMC</div><div class="v sm">${esc(d.amc || "—")}</div></div>
+        <div class="kv"><div class="k">CATEGORY</div><div class="v sm">${esc(d.category || "—")}</div></div>
+        <div class="kv"><div class="k">AUM</div><div class="v sm">₹${d.aum ? fmt.n(d.aum, 0) : "—"} Cr</div></div>
+        <div class="kv"><div class="k">HOLDINGS</div><div class="v sm">${d.n_holdings ?? "—"}</div></div>
+        <div class="kv"><div class="k">TOP 10</div><div class="v sm">${d.top10_pct ? d.top10_pct.toFixed(1) + "%" : "—"}</div></div>
+        <div class="kv"><div class="k">AS OF</div><div class="v sm">${esc(d.fetched || "—")}</div></div>
+      </div>
+      <div class="empty" style="padding:4px 14px"><b class="hl">${esc(d.name || d.scheme_name || "")}</b>
+        ${d.managers ? ` · managers: ${esc(d.managers)}` : ""} · benchmark ${esc(d.benchmark || "—")}</div>
+      <div style="padding:6px 14px;max-width:60ch">
+        ${bar("EQUITY", d.equity_pct, "var(--up, #23d18b)")}
+        ${bar("DEBT", d.debt_pct, "var(--blue, #5fa8dc)")}
+        ${bar("CASH", d.cash_pct, "var(--text-faint, #63605a)")}
+        <div class="own-sub">market-cap mix:</div>
+        ${bar("LARGE", d.largecap_pct, "var(--amber, #ffa62b)")}
+        ${bar("MID", d.midcap_pct, "var(--blue, #5fa8dc)")}
+        ${bar("SMALL", d.smallcap_pct, "var(--up, #23d18b)")}
+      </div>
+      ${(d.sectors || []).length ? `<div class="news-sect">SECTOR MIX</div>
+        <div class="map-grid">${d.sectors.map((x) => `<div class="map-tile">
+          <div class="mt-sym">${esc(x.sector.slice(0, 18))}</div>
+          <div class="mt-chg">${x.weight_pct.toFixed(1)}%</div></div>`).join("")}</div>` : ""}
+      <div class="news-sect">HOLDINGS <span class="faint">${(d.holdings || []).length}</span></div>
+      <table class="tbl"><thead><tr><th class="txt">HOLDING</th><th class="txt">SYMBOL</th>
+        <th class="txt">SECTOR</th><th>₹Cr</th><th>WEIGHT</th><th>Δ1M</th></tr></thead><tbody>
+        ${(d.holdings || []).map((h) => `<tr>
+          <td class="txt">${esc(h.holding)}</td>
+          <td class="txt sym" ${h.symbol ? `data-sym="${esc(h.symbol)}" style="cursor:pointer"` : ""}>${esc(h.symbol || "—")}</td>
+          <td class="txt faint">${esc(h.sector || "")}</td>
+          <td>${h.market_value_cr != null ? fmt.n(h.market_value_cr, 0) : "—"}</td>
+          <td>${h.weight_pct != null ? h.weight_pct.toFixed(2) + "%" : "—"}</td>
+          <td class="${cls(h.change_1m_pct)}">${h.change_1m_pct != null ? h.change_1m_pct.toFixed(2) : "—"}</td>
+        </tr>`).join("")}</tbody></table>`;
+    b.querySelectorAll("[data-sym]").forEach((el) => {
+      el.onclick = () => show("company", { symbol: el.dataset.sym });
+    });
+  };
+
+  const whoHolds = async (sym) => {
+    const b = body(); if (!b) return;
+    b.innerHTML = loading(`schemes holding ${esc(sym)}`);
+    try {
+      const d = await getJSON(`/api/funds/holders/${encodeURIComponent(sym)}`);
+      b.innerHTML = `
+        <div class="kv-strip">
+          <div class="kv"><div class="k">STOCK</div><div class="v sm">${esc(d.symbol)}</div></div>
+          <div class="kv"><div class="k">SCHEMES</div><div class="v">${d.n_schemes}</div></div>
+          <div class="kv"><div class="k">DISCLOSED VALUE</div><div class="v">₹${fmt.n(d.total_value_cr, 0)} Cr</div></div>
+          <div class="kv"><div class="k">AS OF</div><div class="v sm">${esc(d.as_of || "—")}</div></div>
+        </div>
+        ${d.by_amc.length ? `<div class="news-sect">BY AMC</div><div class="map-grid">
+          ${d.by_amc.map((a) => `<div class="map-tile"><div class="mt-sym">${esc(a.amc)}</div>
+            <div class="mt-chg amber">₹${fmt.compact(a.value_cr * 1e7)}</div></div>`).join("")}</div>` : ""}
+        <div class="news-sect">SCHEMES</div>
+        <table class="tbl"><thead><tr><th class="txt">SCHEME</th><th class="txt">AMC</th>
+          <th class="txt">CATEGORY</th><th>WEIGHT</th><th>₹Cr</th><th>Δ1M</th></tr></thead><tbody>
+          ${d.schemes.map((x) => `<tr data-isin="${esc(x.isin)}" style="cursor:pointer">
+            <td class="txt sym">${esc(x.scheme || "")}</td>
+            <td class="txt">${esc(x.amc || "")}</td>
+            <td class="txt faint" style="font-size:10px">${esc(x.category || "")}</td>
+            <td>${x.weight_pct != null ? x.weight_pct.toFixed(2) + "%" : "—"}</td>
+            <td>${x.value_cr != null ? fmt.n(x.value_cr, 0) : "—"}</td>
+            <td class="${cls(x.change_1m_pct)}">${x.change_1m_pct != null ? x.change_1m_pct.toFixed(2) : "—"}</td>
+          </tr>`).join("")}</tbody></table>
+        <div class="empty" style="padding:4px 14px"><span class="faint">${esc(d.note)}</span></div>`;
+      b.querySelectorAll("[data-isin]").forEach((tr) => {
+        tr.onclick = () => openScheme(tr.dataset.isin);
+      });
+    } catch (e) {
+      b.innerHTML = `<div class="empty" style="padding:10px 14px">${esc(e.message)}</div>`;
+    }
+  };
+
+  $("#mfd-go").onclick = () => searchSchemes($("#mfd-q").value.trim());
+  $("#mfd-q").onkeydown = (e) => { if (e.key === "Enter") $("#mfd-go").click(); };
+  $("#mfd-stock").onclick = () => whoHolds($("#mfd-q").value.trim().toUpperCase());
+
+  try {
+    const st = await getJSON("/api/funds");
+    $("#mfd-upd").innerHTML = stamp(`${fmt.n(st.schemes || 0, 0)} SCHEMES · ${fmt.compact(st.holdings || 0)} HOLDINGS · ${st.symbols_resolved || 0} STOCKS`)
+      + " " + ageStamp(null);
+    if (!st.schemes) {
+      body().innerHTML = `<div class="empty" style="padding:12px 14px">
+        fund store is empty — POST /api/funds/import to load it from the mfresearch pipeline</div>`;
+      return;
+    }
+  } catch { /* stats are a nicety */ }
+  if (q0) searchSchemes(q0); else searchSchemes("");
+}
+
 /* ---------- COMPANY INTELLIGENCE (CMP) ----------
    The DES page, honestly sourced: every section names where it came from,
    and the two things only licensed data carries - the holder registry and
@@ -2608,6 +2796,9 @@ async function renderCompany(view, params = {}) {
         <div class="kv"><div class="k">DIV YLD</div><div class="v sm">${pr.dividend_yield_pct != null ? pr.dividend_yield_pct.toFixed(2) + "%" : "—"}</div></div>
         <div class="kv"><div class="k">52W</div><div class="v sm">${pr["52w_low"] ? fmt.n(pr["52w_low"]) + "–" + fmt.n(pr["52w_high"]) : "—"}</div></div>
       </div>
+      ${d.msci && d.msci.call && d.msci.call.toLowerCase() !== "hold" ? `
+        <div class="empty" style="padding:4px 12px"><span class="badge amb">MSCI · ${esc(String(d.msci.call).toUpperCase())}</span>
+          <span class="faint"> p=${d.msci.p_in_index ?? "—"} · mcap $${d.msci.full_mcap_usd_bn ?? "—"}bn · ${esc(String(d.msci.reason || "").slice(0, 130))}</span></div>` : ""}
       <div class="empty" style="padding:2px 12px"><span class="faint">${esc(pr.yahoo_sector || "")} · ${esc(pr.yahoo_industry || "")} · ${pr.website ? `<a href="${esc(pr.website)}" target="_blank" rel="noopener">${esc(pr.website)}</a>` : ""} · ${esc(pr.source)}</span></div>
 
       <div class="news-sect">BUSINESS — WHAT IT MAKES, FROM WHAT, FOR WHOM</div>
@@ -2670,9 +2861,12 @@ async function renderCompany(view, params = {}) {
       </div>
       <div class="empty" style="padding:2px 14px"><span class="faint">${esc(peers.source)} · click a tile for that company</span></div>`}
 
+      <div class="news-sect">MUTUAL FUND OWNERSHIP — SCHEME LEVEL</div>
+      <div id="cmp-mf"><div class="empty" style="padding:8px 14px">checking the fund store…</div></div>
       <div class="news-sect">SUPPLY CHAIN — FROM THE FILED ANNUAL REPORT</div>
       <div id="cmp-splc"><div class="empty" style="padding:8px 14px">loading the map…</div></div>`;
     drawSupplyMap(sym, view);
+    drawFundOwnership(sym, view);
     host.querySelectorAll(".map-tile").forEach((el) => {
       el.onclick = () => show("company", { symbol: el.dataset.sym });
     });
@@ -2750,6 +2944,37 @@ async function showHolderPositions(name) {
   } catch (e) {
     const el = $("#hp-box");
     if (el) el.textContent = e.message;
+  }
+}
+
+async function drawFundOwnership(sym, view) {
+  const host = $("#cmp-mf");
+  if (!host) return;
+  try {
+    const d = await getJSON(`/api/funds/holders/${encodeURIComponent(sym)}`);
+    if (!document.body.contains(view)) return;
+    if (!d.n_schemes) {
+      host.innerHTML = `<div class="empty" style="padding:8px 14px">no disclosed scheme holds this name in the fund store</div>`;
+      return;
+    }
+    host.innerHTML = `
+      <div class="empty" style="padding:6px 14px">
+        <b class="hl">${d.n_schemes} schemes</b> hold ${esc(sym)},
+        <b class="amber">₹${fmt.n(d.total_value_cr, 0)} Cr</b> disclosed
+        <span class="faint">· as of ${esc(d.as_of || "—")} · the economic owners behind the AMC names above</span>
+      </div>
+      <table class="tbl"><thead><tr><th class="txt">SCHEME</th><th class="txt">AMC</th>
+        <th>WEIGHT</th><th>₹Cr</th><th>Δ1M</th></tr></thead><tbody>
+        ${d.schemes.slice(0, 12).map((x) => `<tr>
+          <td class="txt sym">${esc(x.scheme || "")}</td>
+          <td class="txt faint">${esc(x.amc || "")}</td>
+          <td>${x.weight_pct != null ? x.weight_pct.toFixed(2) + "%" : "—"}</td>
+          <td>${x.value_cr != null ? fmt.n(x.value_cr, 0) : "—"}</td>
+          <td class="${cls(x.change_1m_pct)}">${x.change_1m_pct != null ? x.change_1m_pct.toFixed(2) : "—"}</td>
+        </tr>`).join("")}</tbody></table>
+      <div class="empty" style="padding:2px 14px"><span class="faint">top 12 of ${d.n_schemes} · full list in MFD</span></div>`;
+  } catch (e) {
+    host.innerHTML = `<div class="empty" style="padding:8px 14px">fund store: ${esc(e.message)}</div>`;
   }
 }
 
@@ -2939,6 +3164,8 @@ const ANL_GROUPS = [
   ]],
   ["CONTEXT", [
     ["company", "CMP", "Company intelligence", "business, promoters, management, financials, NSE peers — refusals where no source exists"],
+    ["funds", "MFD", "Mutual funds", "1,095 schemes, disclosed portfolios, and which schemes hold a stock"],
+    ["msci", "MSC", "MSCI index review", "predicted additions, deletions and migrations — forced passive flow, dated"],
     ["news", "NWS", "News intelligence", "time-sorted, sector-grouped wires with sentiment provenance"],
     ["calendar", "CAL", "Calendar", "expiries from the contract master; refusals where no source exists"],
     ["workspace", "WSP", "Workspace", "saved layouts and notes"],
@@ -5114,6 +5341,7 @@ const RENDER = {
   tape: renderTape, screener: renderScreener, signals: renderSignals,
   fiidii: renderFiiDii, oicharts: renderOICharts, heatmap: renderHeatmap,
   calendar: renderCalendar, analyse: renderAnalyse, company: renderCompany,
+  funds: renderFunds, msci: renderMSCI,
   portfolio: renderPortfolio, alerts: renderAlerts,
   datastore: renderDatastore, workspace: renderWorkspace, viz: renderViz,
   mlstudio: renderMLStudio, brief: renderBrief,
@@ -5362,7 +5590,7 @@ const CODE_ALIAS = { OPT: "oc", PRT: "portfolio", PLS: "pulse", ANL: "analyse",
                      ANA: "brief", BRF: "brief", QNT: "qnt", SCR: "screener",
                      SIG: "signals", FII: "fiidii", OIC: "oicharts",
                      MAP: "heatmap", CAL: "calendar", WSP: "workspace",
-                     CMP: "company",
+                     CMP: "company", MFD: "funds", MF: "funds", MSC: "msci",
                      VOL: "iv", FLW: "volume", NWS: "news", BTL: "backtest",
                      MLS: "mlstudio", PAY: "payoff" };
 
@@ -5394,6 +5622,8 @@ function runCommand(line) {
   const sym = tok[1] ? tok[1].toUpperCase() : undefined;
   const route = {
     cmp: () => show("company", { symbol: sym }), des: () => show("company", { symbol: sym }),
+    mf: () => show("funds", { q: tok.slice(1).join(" ") }),
+    fund: () => show("funds", { q: tok.slice(1).join(" ") }),
     pulse: () => show("pulse"), p: () => show("pulse"),
     c: () => { if (tok[2]) state.chartPeriod = tok[2]; show("chart", { symbol: sym }); },
     chart: () => show("chart", { symbol: sym }), q: () => show("chart", { symbol: sym }),

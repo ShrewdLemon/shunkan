@@ -2272,6 +2272,75 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
         return _clean({**_own_scan, "registry": registry_stats()})
 
+    # -- MSCI index review -------------------------------------------------
+
+    @app.post("/api/msci/import")
+    def msci_import(source: str | None = None):
+        from shunkan.data.msci import import_msci
+
+        try:
+            return _clean(import_msci(source))
+        except DataError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/msci/changes")
+    def msci_changes():
+        """Names the local rule engine expects to move at the next review -
+        forced passive flow, dated."""
+        from shunkan.data.msci import review_changes
+
+        try:
+            return _clean(review_changes())
+        except DataError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    # -- mutual funds ------------------------------------------------------
+
+    @app.post("/api/funds/import")
+    def funds_import(source: str | None = None):
+        """Pull the mfresearch pipeline's stores into Shunkan's own."""
+        from shunkan.data.funds import import_from_pipeline
+
+        try:
+            return _clean(import_from_pipeline(source))
+        except DataError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/funds")
+    def funds_stats():
+        from shunkan.data.funds import store_stats
+
+        return _clean(store_stats())
+
+    @app.get("/api/funds/search")
+    def funds_search(q: str = "", limit: int = 40):
+        from shunkan.data.funds import search_schemes
+
+        try:
+            return {"rows": search_schemes(q, limit)}
+        except DataError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.get("/api/funds/holders/{symbol}")
+    def funds_holders(symbol: str):
+        """Which SCHEMES hold this stock - the economic owner behind the
+        AMC name that appears in the SEBI shareholding pattern."""
+        from shunkan.data.funds import schemes_holding
+
+        try:
+            return _clean(schemes_holding(symbol))
+        except DataError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.get("/api/funds/{isin}")
+    def funds_detail(isin: str):
+        from shunkan.data.funds import scheme_detail
+
+        try:
+            return _clean(scheme_detail(isin))
+        except DataError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
     @app.get("/api/holder")
     def holder_lookup(q: str):
         """Reverse ownership: every company in the local registry this holder
@@ -2496,6 +2565,13 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             }
         except Exception as exc:
             out["peers"] = {"error": str(exc)[:120]}
+
+        try:
+            from shunkan.data.msci import status_for
+
+            out["msci"] = status_for(sym)
+        except Exception:
+            out["msci"] = None
 
         out["supply_chain"] = {
             "hint": "GET /api/company/{symbol}/supply — built from the filed "
