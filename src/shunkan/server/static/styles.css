@@ -1268,3 +1268,19 @@ main { padding: 0; }
 .own-row b { text-align: right; }
 .own-track { height: 8px; background: var(--bg-panel-2, #101010); }
 .own-fill { height: 100%; }
+
+/* SPLC map: four columns, evidence under every node */
+.splc-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+  background: var(--stroke-soft, #16181c); padding: 1px 0; }
+.splc-col { background: var(--bg-panel, #080808); padding: 0 0 6px; }
+.splc-head { padding: 6px 10px 5px; font-size: 9.5px; letter-spacing: 0.1em;
+  border-bottom: 1px solid var(--stroke-soft, #16181c); color: var(--text-dim, #9b968c); }
+.splc-head.up { color: var(--up, #23d18b); }
+.splc-head.down { color: var(--down, #ff5c5c); }
+.splc-head.amber { color: var(--amber, #ffa62b); }
+.splc-head.hl { color: var(--blue, #5fa8dc); }
+.splc-node { padding: 5px 10px; border-bottom: 1px solid var(--stroke-soft, #16181c); }
+.splc-node:hover { background: var(--bg-panel-2, #101010); }
+.splc-term { font-size: 11px; color: var(--text, #e6e1d6); letter-spacing: 0.04em; }
+.splc-ev { font-size: 9.5px; color: var(--text-faint, #63605a); line-height: 1.45; margin-top: 2px; }
+@media (max-width: 1200px) { .splc-grid { grid-template-columns: repeat(2, 1fr); } }

@@ -2221,6 +2221,67 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                                   "refusing to guess dates money depends on"},
         })
 
+    _supply_builds: dict = {}
+
+    @app.get("/api/company/{symbol}/supply")
+    def company_supply(symbol: str, refresh: int = 0):
+        """The SPLC map, built from the company's own annual report.
+
+        Bloomberg draws this from licensed supplier/customer data. No such
+        feed exists for NSE names, so the map is EVIDENCE RETRIEVAL from
+        the filed report: every node carries the sentence it came from and
+        nothing is inferred. Downloads and parses a 200-400 page PDF, so it
+        builds in the background and the client polls."""
+        import time as _time
+        import threading
+
+        sym = symbol.upper().replace(".NS", "")
+        ck = f"supply:{sym}"
+        hit = _scan_cache.get(ck)
+        if hit and not refresh and _time.monotonic() - hit[0] < 86400:
+            return hit[1]
+        b = _supply_builds.get(sym)
+        if b:
+            return {"building": True, "stage": b.get("stage", "starting"), "symbol": sym}
+        if is_offline():
+            raise HTTPException(502, "supply map needs the network")
+
+        _supply_builds[sym] = {"stage": "locating the annual report"}
+
+        def build():
+            try:
+                from shunkan.data.filings import annual_reports, fetch_report_text
+                from shunkan.data.supply_chain import build_supply_map
+
+                ars = annual_reports(sym)
+                ar = ars[0]
+                _supply_builds[sym]["stage"] = (
+                    f"downloading FY{ar['to_year']} report ({ar['size']})")
+                text, pages = fetch_report_text(ar["url"])
+                _supply_builds[sym]["stage"] = f"reading {pages} pages"
+                name = ""
+                try:
+                    name = (_scan_cache.get(f"company:{sym}", (0, {}))[1]
+                            .get("profile", {}).get("name") or "")
+                except Exception:
+                    pass
+                m = build_supply_map(sym, text, ar["url"], pages, name)
+                out = _clean({**m.to_dict(),
+                              "report_year": f"{ar['from_year']}-{ar['to_year']}",
+                              "report_size": ar["size"],
+                              "filed": ar.get("filed"),
+                              "available_years": [f"{r['from_year']}-{r['to_year']}"
+                                                  for r in ars[:12]]})
+                _scan_cache[ck] = (_time.monotonic(), out)
+            except Exception as exc:
+                _scan_cache[ck] = (_time.monotonic(),
+                                   {"error": str(exc)[:200], "symbol": sym})
+            finally:
+                _supply_builds.pop(sym, None)
+
+        threading.Thread(target=build, daemon=True).start()
+        return {"building": True, "stage": "locating the annual report", "symbol": sym}
+
     @app.get("/api/company/{symbol}")
     def company(symbol: str):
         """Company intelligence, Bloomberg-DES style, honestly sourced.
@@ -2282,25 +2343,45 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                          for o in (info.get("companyOfficers") or [])[:12]],
             "source": "Yahoo Finance companyOfficers",
         }
+        # The holder registry: SEBI's quarterly shareholding pattern, filed as
+        # XBRL. This view used to refuse a holder table for want of a source -
+        # the source turned out to be public all along, so the refusal is
+        # retired and the exchange filing is what renders. Yahoo's estimate
+        # stays only as the fallback when a filing cannot be read.
         ins = info.get("heldPercentInsiders")
         inst = info.get("heldPercentInstitutions")
-        out["ownership"] = _clean({
-            "promoter_pct": ins * 100 if ins is not None else None,
-            "institutions_pct": inst * 100 if inst is not None else None,
-            "public_other_pct": ((1 - ins - inst) * 100
-                                 if ins is not None and inst is not None else None),
-            "institutions_count": info.get("heldPercentInstitutions") is not None
-                                  and (t.major_holders is not None
-                                       and _maybe_holders_count(t)) or None,
-            "label_note": ("Yahoo reports the promoter group under 'insiders' "
-                           "for Indian names; percentages are their latest "
-                           "reported figures, not a live registry"),
-            "holder_table": {"error": "holder-level registry is not published "
-                                      "by any free structured source for NSE "
-                                      "names - refusing to invent one; the "
-                                      "quarterly shareholding pattern lives in "
-                                      "exchange filings"},
-        })
+        try:
+            from shunkan.data.filings import latest_shareholding
+
+            sh = latest_shareholding(sym)
+            out["ownership"] = _clean({
+                "promoter_pct": sh.promoter_pct,
+                "institutions_pct": sum(v for k, v in sh.categories.items()
+                                        if k not in ("Promoter & promoter group",
+                                                     "Public")) or None,
+                "public_other_pct": sh.public_pct,
+                "as_of": sh.as_of,
+                "categories": sh.categories,
+                "holders": [{"name": h.name, "group": h.group,
+                             "category": h.category, "shares": h.shares,
+                             "pct": h.pct, "pledged_pct": h.pledged_pct}
+                            for h in sh.holders[:30]],
+                "source": f"NSE shareholding pattern XBRL, {sh.as_of}",
+                "source_url": sh.source_url,
+                "label_note": ("filed quarterly under SEBI LODR Reg 31; "
+                               "promoter entities are named individually, "
+                               "public holders appear above 1%"),
+            })
+        except Exception as exc:
+            out["ownership"] = _clean({
+                "promoter_pct": ins * 100 if ins is not None else None,
+                "institutions_pct": inst * 100 if inst is not None else None,
+                "public_other_pct": ((1 - ins - inst) * 100
+                                     if ins is not None and inst is not None else None),
+                "holders": [],
+                "source": "Yahoo Finance estimate (exchange filing unavailable)",
+                "label_note": f"NSE filing unreadable: {str(exc)[:110]}",
+            })
         try:
             fin = t.financials
             rows = {}
@@ -2348,11 +2429,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             out["peers"] = {"error": str(exc)[:120]}
 
         out["supply_chain"] = {
-            "error": ("no free structured supplier/customer graph exists for "
-                      "NSE names (Bloomberg SPLC is licensed data) - the "
-                      "BUSINESS text above is the sourced description of "
-                      "inputs, segments and end-markets; annual-report "
-                      "parsing is the honest future path"),
+            "hint": "GET /api/company/{symbol}/supply — built from the filed "
+                    "annual report, every node quoting its sentence",
         }
         out = _clean(out)
         _scan_cache[ck] = (_time.monotonic(), out)

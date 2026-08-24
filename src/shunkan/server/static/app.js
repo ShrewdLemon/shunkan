@@ -2614,14 +2614,25 @@ async function renderCompany(view, params = {}) {
       <div style="padding:8px 14px;max-width:88ch;line-height:1.6;font-size:12px">${esc(d.business.summary)}</div>
       <div class="empty" style="padding:0 14px 6px"><span class="faint">${esc(d.business.source)}</span></div>
 
-      <div class="news-sect">OWNERSHIP</div>
+      <div class="news-sect">OWNERSHIP${own.as_of ? ` <span class="faint">· AS OF ${esc(own.as_of)}</span>` : ""}</div>
       <div style="padding:8px 14px;max-width:60ch">
         ${ownBar("PROMOTERS", own.promoter_pct, "var(--amber, #ffa62b)")}
         ${ownBar("INSTITUTIONS", own.institutions_pct, "var(--blue, #5fa8dc)")}
         ${ownBar("PUBLIC & OTHER", own.public_other_pct, "var(--text-faint, #63605a)")}
       </div>
-      <div class="empty" style="padding:0 14px 4px"><span class="faint">${esc(own.label_note)}</span></div>
-      <div class="empty" style="padding:0 14px 8px"><span class="faint">holder table: ${esc(own.holder_table.error)}</span></div>
+      ${(own.holders && own.holders.length) ? `
+        <table class="tbl"><thead><tr>
+          <th class="txt">HOLDER</th><th class="txt">GROUP</th><th>SHARES</th><th>%</th><th>PLEDGED</th>
+        </tr></thead><tbody>
+          ${own.holders.map((h) => `<tr>
+            <td class="txt sym">${esc(h.name)}</td>
+            <td class="txt ${h.group === "promoter" ? "amber" : h.group === "institution" ? "hl" : "faint"}">${esc(h.group)}</td>
+            <td>${h.shares ? fmt.compact(h.shares) : "—"}</td>
+            <td>${h.pct != null ? h.pct.toFixed(2) + "%" : "—"}</td>
+            <td class="${h.pledged_pct ? "down" : "faint"}">${h.pledged_pct ? h.pledged_pct.toFixed(2) + "%" : "—"}</td>
+          </tr>`).join("")}
+        </tbody></table>` : ""}
+      <div class="empty" style="padding:2px 14px 8px"><span class="faint">${esc(own.source || "")} · ${esc(own.label_note || "")}</span></div>
 
       <div class="news-sect">MANAGEMENT</div>
       <table class="tbl"><tbody>
@@ -2657,14 +2668,63 @@ async function renderCompany(view, params = {}) {
       </div>
       <div class="empty" style="padding:2px 14px"><span class="faint">${esc(peers.source)} · click a tile for that company</span></div>`}
 
-      <div class="news-sect">SUPPLY CHAIN</div>
-      <div class="empty" style="padding:8px 14px">${esc(d.supply_chain.error)}</div>`;
+      <div class="news-sect">SUPPLY CHAIN — FROM THE FILED ANNUAL REPORT</div>
+      <div id="cmp-splc"><div class="empty" style="padding:8px 14px">loading the map…</div></div>`;
+    drawSupplyMap(sym, view);
     host.querySelectorAll(".map-tile").forEach((el) => {
       el.onclick = () => show("company", { symbol: el.dataset.sym });
     });
   } catch (e) {
     const host = $("#cmp-panel .panel-body");
     if (host) host.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+async function drawSupplyMap(sym, view) {
+  const host = () => $("#cmp-splc");
+  const col = (title, nodes, cls_) => `
+    <div class="splc-col">
+      <div class="splc-head ${cls_}">${title} <span class="faint">${nodes.length}</span></div>
+      ${nodes.length ? nodes.map((n) => `
+        <div class="splc-node" title="${esc(n.evidence)}">
+          <div class="splc-term">${esc(n.term.toUpperCase())}${n.mentions > 1 ? ` <span class="faint">×${n.mentions}</span>` : ""}</div>
+          <div class="splc-ev">${esc(n.evidence.slice(0, 190))}${n.evidence.length > 190 ? "…" : ""}</div>
+        </div>`).join("")
+        : `<div class="empty" style="padding:6px 8px">the report names none in this class</div>`}
+    </div>`;
+  try {
+    let d = await getJSON(`/api/company/${encodeURIComponent(sym)}/supply`);
+    while (d.building) {
+      if (!document.body.contains(view)) return;
+      const h = host();
+      if (h) h.innerHTML = loading(esc(d.stage || "building the map"));
+      await new Promise((r) => setTimeout(r, 4000));
+      d = await getJSON(`/api/company/${encodeURIComponent(sym)}/supply`);
+    }
+    const h = host();
+    if (!h) return;
+    if (d.error) { h.innerHTML = `<div class="empty" style="padding:8px 14px">${esc(d.error)}</div>`; return; }
+    h.innerHTML = `
+      <div class="splc-grid">
+        ${col("UPSTREAM · INPUTS", d.inputs || [], "up")}
+        ${col("OPERATIONS · CAPACITY", d.facilities || [], "hl")}
+        ${col("OUTPUTS · PRODUCTS", d.outputs || [], "amber")}
+        ${col("DOWNSTREAM · CUSTOMERS", d.customers || [], "down")}
+      </div>
+      ${(d.family || []).length ? `
+        <div class="news-sect">CORPORATE FAMILY — SUBSIDIARIES / JV / ASSOCIATES</div>
+        <table class="tbl"><tbody>${d.family.map((f) => `<tr>
+          <td class="txt sym">${esc(f.term)}</td>
+          <td class="txt faint" style="font-size:10px">${esc(f.evidence.slice(0, 170))}…</td>
+        </tr>`).join("")}</tbody></table>` : ""}
+      ${(d.locations || []).length ? `<div class="empty" style="padding:6px 14px">
+        <b class="hl">LOCATIONS NAMED:</b> ${d.locations.map(esc).join(" · ")}</div>` : ""}
+      <div class="empty" style="padding:4px 14px 10px"><span class="faint">
+        source: <a href="${esc(d.document)}" target="_blank" rel="noopener">annual report FY${esc(d.report_year || "")}</a>
+        · ${d.pages_read} pages read · ${(d.notes || []).map(esc).join(" · ")}</span></div>`;
+  } catch (e) {
+    const h = host();
+    if (h) h.innerHTML = `<div class="empty" style="padding:8px 14px">${esc(e.message)}</div>`;
   }
 }
 
