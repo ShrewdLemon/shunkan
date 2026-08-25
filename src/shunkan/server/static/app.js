@@ -3053,6 +3053,72 @@ async function renderCompany(view, params = {}) {
       </div>
       <div class="empty" style="padding:2px 14px"><span class="faint">${esc(peers.source)} · click a tile for that company</span></div>`)}
 
+      ${secBlock("INSIDER DEALING — PIT REG 7", Array.isArray(d.insider) ? d.insider.length : null,
+        !Array.isArray(d.insider) || !d.insider.length
+          ? `<div class="empty" style="padding:8px 14px">no insider filing on record</div>`
+          : `<table class="tbl"><thead><tr><th class="txt">DATE</th><th class="txt">PERSON</th>
+              <th class="txt">RELATION</th><th class="txt">DEAL</th><th>QTY</th><th>VALUE</th>
+              <th>STAKE BEFORE→AFTER</th></tr></thead><tbody>
+            ${d.insider.map((x) => `<tr>
+              <td class="txt faint">${esc(String(x.date || "").slice(0, 11))}</td>
+              <td class="txt sym">${esc(x.name || "")}</td>
+              <td class="txt faint">${esc(x.category || "")}</td>
+              <td class="txt ${/buy/i.test(x.type || "") ? "up" : /sell/i.test(x.type || "") ? "down" : ""}">${esc(x.type || "")}</td>
+              <td>${fmt.compact(x.buy_qty || x.sell_qty || 0)}</td>
+              <td>${x.value ? fmt.compact(x.value) : "—"}</td>
+              <td class="faint">${x.pct_before != null ? x.pct_before + "% → " + x.pct_after + "%" : "—"}</td>
+            </tr>`).join("")}</tbody></table>`)}
+
+      ${secBlock("CALENDAR — BOARD MEETINGS & CORPORATE ACTIONS",
+        (Array.isArray(d.board_meetings) ? d.board_meetings.length : 0)
+        + (Array.isArray(d.corporate_actions) ? d.corporate_actions.length : 0), `
+        <table class="tbl"><thead><tr><th class="txt">DATE</th><th class="txt">EVENT</th><th class="txt">DETAIL</th></tr></thead><tbody>
+        ${(Array.isArray(d.board_meetings) ? d.board_meetings : []).map((x) => `<tr>
+          <td class="txt sym">${esc(x.date || "")}</td>
+          <td class="txt ${x.is_results ? "amber" : "faint"}">${x.is_results ? "RESULTS" : "BOARD MEETING"}</td>
+          <td class="txt faint" style="font-size:10px">${esc(String(x.description || x.purpose || "").slice(0, 120))}</td></tr>`).join("")}
+        ${(Array.isArray(d.corporate_actions) ? d.corporate_actions : []).map((x) => `<tr>
+          <td class="txt sym">${esc(x.ex_date || "")}</td>
+          <td class="txt up">EX-DATE</td>
+          <td class="txt">${esc(String(x.purpose || "").slice(0, 120))}</td></tr>`).join("")}
+        </tbody></table>`)}
+
+      ${secBlock("CREDIT & ENCUMBRANCE",
+        (Array.isArray(d.credit_ratings) ? d.credit_ratings.length : 0), `
+        ${d.pledge ? `<div class="empty" style="padding:6px 14px">
+          promoter pledge: <b class="${d.pledge.pledged_shares ? "down" : "up"}">${fmt.n(d.pledge.pledged_shares || 0, 0)}</b> shares
+          <span class="faint">· SAST Reg 31 · as of ${esc(String(d.pledge.as_of || "").slice(0, 11))}</span></div>`
+          : `<div class="empty" style="padding:6px 14px"><span class="faint">no encumbrance filing on record — not the same as zero</span></div>`}
+        ${(Array.isArray(d.credit_ratings) && d.credit_ratings.length) ? `<table class="tbl"><thead><tr>
+          <th class="txt">DATE</th><th class="txt">AGENCY</th><th class="txt">RATING</th><th class="txt">ACTION</th>
+        </tr></thead><tbody>${d.credit_ratings.map((x) => `<tr>
+          <td class="txt faint">${esc(String(x.date || "").slice(0, 11))}</td>
+          <td class="txt">${esc(x.agency || "")}</td>
+          <td class="txt sym">${esc(x.rating || "")}</td>
+          <td class="txt faint">${esc(x.action || "")}</td></tr>`).join("")}</tbody></table>` : ""}`)}
+
+      ${secBlock("QUARTERLY FILINGS — IND AS", Array.isArray(d.quarterly) ? d.quarterly.length : null,
+        !Array.isArray(d.quarterly) || !d.quarterly.length
+          ? `<div class="empty" style="padding:8px 14px">no quarterly filing listed</div>`
+          : `<table class="tbl"><thead><tr><th class="txt">PERIOD</th><th class="txt">BASIS</th>
+              <th class="txt">AUDITED</th><th class="txt">FILED</th><th class="txt">XBRL</th></tr></thead><tbody>
+            ${d.quarterly.map((x) => `<tr>
+              <td class="txt sym">${esc(x.to || "")}</td>
+              <td class="txt faint">${esc(x.basis || "")}</td>
+              <td class="txt faint">${esc(x.audited || "")}</td>
+              <td class="txt faint">${esc(String(x.filed || "").slice(0, 11))}</td>
+              <td class="txt">${x.xbrl ? `<a href="${esc(x.xbrl)}" target="_blank" rel="noopener">filing</a>` : "—"}</td>
+            </tr>`).join("")}</tbody></table>`)}
+
+      ${secBlock("ANNOUNCEMENTS — LODR REG 30", Array.isArray(d.announcements) ? d.announcements.length : null,
+        !Array.isArray(d.announcements) || !d.announcements.length
+          ? `<div class="empty" style="padding:8px 14px">no announcement on record</div>`
+          : `<table class="tbl"><tbody>${d.announcements.map((x) => `<tr>
+              <td class="txt faint" style="width:110px">${esc(String(x.date || "").slice(0, 11))}</td>
+              <td class="txt">${esc(x.subject || "")}
+                ${x.detail ? `<div class="faint" style="font-size:10px">${esc(x.detail.slice(0, 150))}</div>` : ""}</td>
+            </tr>`).join("")}</tbody></table>`)}
+
       <details class="sec"><summary class="news-sect">MUTUAL FUND OWNERSHIP — SCHEME LEVEL <span class="faint" id="cmp-mf-count"></span></summary>
         <div class="sec-body tbl-scroll" id="cmp-mf"><div class="empty" style="padding:8px 14px">checking the fund store…</div></div></details>
       <details class="sec"><summary class="news-sect">SUPPLY CHAIN — FROM THE FILED ANNUAL REPORT <span class="faint" id="cmp-splc-count"></span></summary>

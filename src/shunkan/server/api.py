@@ -2710,6 +2710,22 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         except Exception:
             out["msci"] = None
 
+        # The rest of the compelled record. Each block fails to a named
+        # reason on its own, so one dead endpoint cannot blank the page.
+        from shunkan.data import filings as _f
+
+        for key, fn in (("insider", lambda: _f.insider_trades(sym, 40)),
+                        ("board_meetings", lambda: _f.board_meetings(sym, 12)),
+                        ("corporate_actions", lambda: _f.corporate_actions(sym, 15)),
+                        ("credit_ratings", lambda: _f.credit_ratings(sym, 10)),
+                        ("pledge", lambda: _f.promoter_pledge(sym)),
+                        ("quarterly", lambda: _f.quarterly_results(sym, 8)),
+                        ("announcements", lambda: _f.announcements(sym, 25))):
+            try:
+                out[key] = fn()
+            except Exception as exc:
+                out[key] = {"error": str(exc)[:140]}
+
         out["supply_chain"] = {
             "hint": "GET /api/company/{symbol}/supply — built from the filed "
                     "annual report, every node quoting its sentence",
