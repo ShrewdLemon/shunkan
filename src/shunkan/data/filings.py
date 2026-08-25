@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -424,3 +425,150 @@ def registry_stats(root=None) -> dict:
             "holders": int(df["holder"].nunique()),
             "rows": int(len(df)),
             "as_of_dates": sorted(df["as_of"].dropna().unique().tolist())[-3:]}
+
+
+# ---------------------------------------------------------------------------
+# The rest of the mandatory disclosure surface
+# ---------------------------------------------------------------------------
+#
+# Everything below is filed under a regulation that compels it, which is why
+# it exists at all and why it can be trusted: PIT Reg 7 (insider dealing),
+# LODR Reg 29/33 (board meetings and results), LODR Reg 30 (announcements),
+# SEBI's credit-rating disclosure, and SAST Reg 31 (pledge). A terminal that
+# reads the shareholding pattern and stops is leaving most of the compelled
+# record on the table.
+
+
+def _rows(path: str, params: dict) -> list:
+    c = _client()
+    try:
+        d = c.get(f"{_BASE}{path}", params=params).json()
+    except Exception as exc:
+        raise DataError(f"{path} unavailable: {str(exc)[:110]}") from exc
+    finally:
+        c.close()
+    if isinstance(d, dict):
+        d = d.get("data", [])
+    return d if isinstance(d, list) else []
+
+
+def insider_trades(symbol: str, limit: int = 40) -> list[dict]:
+    """PIT Reg 7 disclosures: who inside the company bought or sold.
+
+    The signal here is the PERSON CATEGORY, not the size - a promoter
+    buying is a different fact from an employee exercising ESOPs, and the
+    filing distinguishes them."""
+    sym = symbol.upper().replace(".NS", "")
+    out = []
+    for r in _rows("/api/corporates-pit", {"index": "equities", "symbol": sym})[:limit]:
+        buy = _num(r.get("buyQuantity")) or 0
+        sell = _num(r.get("sellquantity") or r.get("sellQuantity")) or 0
+        out.append({
+            "date": r.get("date"),
+            "name": r.get("acqName"),
+            "category": r.get("personCategory"),
+            "mode": r.get("acqMode"),
+            "type": r.get("tdpTransactionType"),
+            "security": r.get("secType"),
+            "buy_qty": buy or None,
+            "sell_qty": sell or None,
+            "value": _num(r.get("secVal")),
+            "pct_before": _num(r.get("befAcqSharesPer")),
+            "pct_after": _num(r.get("afterAcqSharesPer")),
+        })
+    return out
+
+
+def board_meetings(symbol: str, limit: int = 12) -> list[dict]:
+    """LODR Reg 29 intimations - which is where an earnings DATE comes from.
+
+    The company view used to refuse an earnings calendar for want of a
+    source. This is the source: the company itself telling the exchange
+    when its board will consider results."""
+    sym = symbol.upper().replace(".NS", "")
+    out = []
+    for r in _rows("/api/corporate-board-meetings", {"index": "equities", "symbol": sym})[:limit]:
+        desc = str(r.get("bm_desc") or "")
+        out.append({
+            "date": r.get("bm_date"),
+            "purpose": r.get("bm_purpose"),
+            "description": desc[:300],
+            "is_results": bool(re.search(r"result|financial", desc + str(r.get("bm_purpose")), re.I)),
+        })
+    return out
+
+
+def corporate_actions(symbol: str, limit: int = 15) -> list[dict]:
+    """Dividends, splits, bonuses - with the ex-date that actually matters."""
+    sym = symbol.upper().replace(".NS", "")
+    out = []
+    for r in _rows("/api/corporates-corporateActions", {"index": "equities", "symbol": sym})[:limit]:
+        out.append({"ex_date": r.get("exDate"), "purpose": r.get("subject"),
+                    "record_date": r.get("recDate"), "series": r.get("series")})
+    return out
+
+
+def credit_ratings(symbol: str, limit: int = 10) -> list[dict]:
+    """Rating actions. NSE serves a market-wide feed here, so it is filtered
+    to the company by name - an unfiltered feed would attribute another
+    issuer's downgrade to this one."""
+    sym = symbol.upper().replace(".NS", "")
+    out = []
+    for r in _rows("/api/corporate-credit-rating", {"index": "equities", "symbol": sym}):
+        if str(r.get("Symbol", "")).upper() not in (sym, ""):
+            continue
+        out.append({"date": r.get("DateofCR"), "agency": r.get("NameOfCRAgency"),
+                    "rating": r.get("CreditRating"), "action": r.get("RatingAction"),
+                    "subject": r.get("Subject")})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def promoter_pledge(symbol: str) -> dict | None:
+    """SAST Reg 31 encumbrance. Zero is a real and good answer; the absence
+    of a filing is not the same as zero and is reported as unknown."""
+    sym = symbol.upper().replace(".NS", "")
+    rows = _rows("/api/corporate-pledgedata", {"index": "equities", "symbol": sym})
+    if not rows:
+        return None
+    r = rows[0]
+    return {"as_of": r.get("broadcastDt"),
+            "pledged_shares": _num(r.get("noOfPledgeShare")),
+            "promoter_nbfc_shares": _num(r.get("nbfcPromoShare")),
+            "company": r.get("comName")}
+
+
+def announcements(symbol: str, limit: int = 25) -> list[dict]:
+    """LODR Reg 30 - the running record of everything material."""
+    sym = symbol.upper().replace(".NS", "")
+    out = []
+    for r in _rows("/api/corporate-announcements", {"index": "equities", "symbol": sym})[:limit]:
+        out.append({"date": r.get("an_dt") or r.get("sort_date"),
+                    "subject": (r.get("desc") or r.get("subject") or "")[:160],
+                    "detail": (r.get("attchmntText") or "")[:400],
+                    "attachment": r.get("attchmntFile")})
+    return out
+
+
+def quarterly_results(symbol: str, limit: int = 8) -> list[dict]:
+    """Ind AS quarterly filings, newest first, with their XBRL link.
+
+    Yahoo serves ANNUAL statements only; the exchange has every quarter,
+    and the XBRL behind each one carries segment reporting (Ind AS 108)."""
+    sym = symbol.upper().replace(".NS", "")
+    rows = _rows("/api/corporates-financial-results",
+                 {"index": "equities", "symbol": sym, "period": "Quarterly"})
+
+    def key(r):
+        try:
+            return datetime.strptime(str(r.get("broadCastDate"))[:11], "%d-%b-%Y")
+        except Exception:
+            return datetime(1970, 1, 1)
+
+    rows.sort(key=key, reverse=True)
+    return [{"from": r.get("fromDate"), "to": r.get("toDate"),
+             "financial_year": r.get("financialYear"),
+             "basis": r.get("consolidated"), "audited": r.get("audited"),
+             "filed": r.get("broadCastDate"), "xbrl": r.get("xbrl")}
+            for r in rows[:limit]]
