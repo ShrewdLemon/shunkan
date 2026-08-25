@@ -1294,8 +1294,14 @@ main { padding: 0; }
   overflow: hidden;
 }
 .fam-row.clip .fam-ev { -webkit-line-clamp: 1; }
+/* Undo the clamp completely on open. `-webkit-line-clamp: unset` leaves the
+   element as a -webkit-box in some engines and the last line still gets an
+   ellipsis, so drop back to plain block layout instead. */
 .splc-node.clip.open .splc-ev,
-.fam-row.clip.open .fam-ev { -webkit-line-clamp: unset; overflow: visible; }
+.fam-row.clip.open .fam-ev {
+  display: block; -webkit-line-clamp: none; overflow: visible;
+  white-space: normal; word-break: break-word;
+}
 .splc-node.clip .splc-term::after,
 .fam-row.clip td.sym::after { content: " ▸"; color: var(--text-faint, #63605a); font-size: 9px; }
 .splc-node.clip.open .splc-term::after,
@@ -1361,3 +1367,14 @@ main { padding: 0; }
 .seg-bar { display: inline-block; width: 90px; height: 7px; background: var(--bg-panel-2);
   vertical-align: middle; margin-right: 6px; }
 .seg-fill { height: 100%; background: var(--amber); }
+
+/* Horizontal escape hatch for tables with more columns than a laptop has
+   pixels. The company page has several; without this the right-hand columns
+   are simply unreachable - not clipped-but-scrollable, gone. Paired with
+   nowrap so a wide table scrolls rather than crushing every column to one
+   character per line. */
+.x-scroll { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+.x-scroll > table.tbl { min-width: max-content; }
+.x-scroll::-webkit-scrollbar { height: 8px; }
+.x-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 4px; }
+.x-scroll::-webkit-scrollbar-track { background: transparent; }

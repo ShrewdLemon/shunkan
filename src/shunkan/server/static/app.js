@@ -3056,18 +3056,28 @@ async function renderCompany(view, params = {}) {
       ${secBlock("INSIDER DEALING — PIT REG 7", Array.isArray(d.insider) ? d.insider.length : null,
         !Array.isArray(d.insider) || !d.insider.length
           ? `<div class="empty" style="padding:8px 14px">no insider filing on record</div>`
-          : `<table class="tbl"><thead><tr><th class="txt">DATE</th><th class="txt">PERSON</th>
+          : `<div class="x-scroll"><table class="tbl"><thead><tr><th class="txt">DATE</th><th class="txt">PERSON</th>
               <th class="txt">RELATION</th><th class="txt">DEAL</th><th>QTY</th><th>VALUE</th>
-              <th>STAKE BEFORE→AFTER</th></tr></thead><tbody>
+              <th>SHARES BEFORE→AFTER</th><th>STAKE</th></tr></thead><tbody>
             ${d.insider.map((x) => `<tr>
               <td class="txt faint">${esc(String(x.date || "").slice(0, 11))}</td>
               <td class="txt sym">${esc(x.name || "")}</td>
               <td class="txt faint">${esc(x.category || "")}</td>
               <td class="txt ${/buy/i.test(x.type || "") ? "up" : /sell/i.test(x.type || "") ? "down" : ""}">${esc(x.type || "")}</td>
-              <td>${fmt.compact(x.buy_qty || x.sell_qty || 0)}</td>
+              <td>${x.qty ? fmt.compact(x.qty) : "—"}</td>
               <td>${x.value ? fmt.compact(x.value) : "—"}</td>
-              <td class="faint">${x.pct_before != null ? x.pct_before + "% → " + x.pct_after + "%" : "—"}</td>
-            </tr>`).join("")}</tbody></table>`)}
+              <td class="faint">${x.shares_before != null && x.shares_after != null
+                  ? fmt.compact(x.shares_before) + " → " + fmt.compact(x.shares_after) : "—"}</td>
+              <td class="faint" title="${x.pct_before == null
+                  ? "the filing rounds this holding to 0% - the share counts are the fact" : ""}">${
+                  x.pct_before != null ? x.pct_before + "% → " + (x.pct_after ?? "—") + "%" : "—"}</td>
+            </tr>`).join("")}</tbody></table></div>
+            <div class="empty" style="padding:4px 14px 8px"><span class="faint">
+              SEBI (Prohibition of Insider Trading) Reg 7(2) via NSE /api/corporates-pit — a designated
+              person, promoter or immediate relative must file any trade above ₹10 lakh within two
+              trading days. Quantity is the filing's own secAcq. A stake shown as “—” means the feed
+              rounds that holding to 0%, not that the person holds nothing — read the share counts.
+            </span></div>`)}
 
       ${secBlock("CALENDAR — BOARD MEETINGS & CORPORATE ACTIONS",
         (Array.isArray(d.board_meetings) ? d.board_meetings.length : 0)

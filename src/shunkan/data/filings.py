@@ -472,14 +472,44 @@ def _rows(path: str, params: dict) -> list:
 def insider_trades(symbol: str, limit: int = 40) -> list[dict]:
     """PIT Reg 7 disclosures: who inside the company bought or sold.
 
-    The signal here is the PERSON CATEGORY, not the size - a promoter
-    buying is a different fact from an employee exercising ESOPs, and the
-    filing distinguishes them."""
+    Source: NSE /api/corporates-pit, the exchange's own filing of SEBI
+    (Prohibition of Insider Trading) Regulations 2015, Reg 7(2) - a
+    designated person, promoter or immediate relative must disclose any
+    trade above Rs 10 lakh within two trading days. It is compelled
+    disclosure, not a vendor feed.
+
+    The signal is the PERSON CATEGORY, not the size - a promoter buying is a
+    different fact from an employee exercising ESOPs, and the filing
+    distinguishes them.
+
+    FIELD TRAP, measured against RELIANCE on 2026-08-25: buyQuantity and
+    sellquantity are '0' in 20 of 20 rows. The real transaction size lives in
+    secAcq, and it reconciles: 3920 (befAcqSharesNo) - 2320 (secAcq) = 1600
+    (afterAcqSharesNo). Reading the buy/sell pair rendered a column of zeros
+    that looked like data and was not.
+
+    The percentage fields are a second trap. befAcqSharesPer is '0' for 14 of
+    20 rows - not because the person owns nothing, but because their holding
+    rounds to zero against a 676-crore share count. Nasib Kapoor holds 2,500
+    shares and the feed calls it 0%. So percentages are returned ONLY when
+    non-zero, and the SHARE COUNTS are returned alongside, because those are
+    the numbers the filing actually asserts.
+    """
     sym = symbol.upper().replace(".NS", "")
     out = []
     for r in _rows("/api/corporates-pit", {"index": "equities", "symbol": sym})[:limit]:
-        buy = _num(r.get("buyQuantity")) or 0
-        sell = _num(r.get("sellquantity") or r.get("sellQuantity")) or 0
+        # 'Nil' is how this feed says zero holding; _num would return None and
+        # the caller could not tell it apart from a missing field.
+        def _shares(v):
+            if str(v).strip().lower() in ("nil", "-", "", "none"):
+                return 0.0
+            return _num(v)
+
+        qty = _num(r.get("secAcq"))
+        if not qty:   # older rows do populate the buy/sell pair
+            qty = (_num(r.get("buyQuantity")) or 0) or (
+                _num(r.get("sellquantity") or r.get("sellQuantity")) or 0) or None
+        pct_b, pct_a = _num(r.get("befAcqSharesPer")), _num(r.get("afterAcqSharesPer"))
         out.append({
             "date": r.get("date"),
             "name": r.get("acqName"),
@@ -487,11 +517,14 @@ def insider_trades(symbol: str, limit: int = 40) -> list[dict]:
             "mode": r.get("acqMode"),
             "type": r.get("tdpTransactionType"),
             "security": r.get("secType"),
-            "buy_qty": buy or None,
-            "sell_qty": sell or None,
+            "qty": qty,
             "value": _num(r.get("secVal")),
-            "pct_before": _num(r.get("befAcqSharesPer")),
-            "pct_after": _num(r.get("afterAcqSharesPer")),
+            "shares_before": _shares(r.get("befAcqSharesNo")),
+            "shares_after": _shares(r.get("afterAcqSharesNo")),
+            # a rounded-to-zero percentage is not a fact about ownership
+            "pct_before": pct_b or None,
+            "pct_after": pct_a or None,
+            "xbrl": r.get("xbrl") or None,
         })
     return out
 
