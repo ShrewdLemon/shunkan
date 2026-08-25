@@ -3121,10 +3121,13 @@ async function renderCompany(view, params = {}) {
 
       <details class="sec"><summary class="news-sect">MUTUAL FUND OWNERSHIP — SCHEME LEVEL <span class="faint" id="cmp-mf-count"></span></summary>
         <div class="sec-body tbl-scroll" id="cmp-mf"><div class="empty" style="padding:8px 14px">checking the fund store…</div></div></details>
+      <details class="sec"><summary class="news-sect">SEGMENTS — IND AS 108 <span class="faint" id="cmp-seg-count"></span></summary>
+        <div class="sec-body" id="cmp-seg"><div class="empty" style="padding:8px 14px">reading the quarterly filing…</div></div></details>
       <details class="sec"><summary class="news-sect">SUPPLY CHAIN — FROM THE FILED ANNUAL REPORT <span class="faint" id="cmp-splc-count"></span></summary>
         <div class="sec-body" id="cmp-splc"><div class="empty" style="padding:8px 14px">loading the map…</div></div></details>`;
     drawSupplyMap(sym, view);
     drawFundOwnership(sym, view);
+    drawSegments(sym, view);
     host.querySelectorAll(".map-tile").forEach((el) => {
       el.onclick = () => show("company", { symbol: el.dataset.sym });
     });
@@ -3206,6 +3209,48 @@ async function renderCompany(view, params = {}) {
 let ownTab = "promoter";
 
 
+
+async function drawSegments(sym, view) {
+  const host = $("#cmp-seg");
+  if (!host) return;
+  try {
+    const d = await getJSON(`/api/company/${encodeURIComponent(sym)}/segments`);
+    if (!document.body.contains(view)) return;
+    if (d.error || !(d.segments || []).length) {
+      host.innerHTML = `<div class="empty" style="padding:8px 14px">${esc(d.error || "the filing carries no segment table")}</div>`;
+      return;
+    }
+    const cr = (v) => v == null ? "—" : `₹${fmt.n(v / 1e7, 0)} Cr`;
+    const total = d.segments.reduce((a, s2) => a + (s2.revenue || 0), 0);
+    const cnt = $("#cmp-seg-count");
+    if (cnt) cnt.textContent = `· ${d.segments.length} segments · quarter to ${d.period_to || ""}`;
+    host.innerHTML = `
+      <div class="empty" style="padding:6px 14px"><span class="faint">
+        ${esc(d.basis || "")} · quarter to ${esc(d.period_to || "")} · filed ${esc(String(d.filed || "").slice(0, 11))}
+        · headline revenue ${cr(d.headline && d.headline.RevenueFromOperations)}
+        ${d.reconciliation ? ` · segment/headline residual ${d.reconciliation.residual_pct}%` : ""}</span></div>
+      <table class="tbl"><thead><tr><th class="txt">SEGMENT</th><th>REVENUE</th><th>SHARE</th>
+        <th>PROFIT</th><th>MARGIN</th></tr></thead><tbody>
+        ${d.segments.map((x) => {
+          const rev = x.revenue || 0, pro = x.profit;
+          const share = total ? (rev / total * 100) : 0;
+          const margin = rev && pro != null ? (pro / rev * 100) : null;
+          return `<tr>
+            <td class="txt sym">${esc(x.segment)}</td>
+            <td>${cr(rev)}</td>
+            <td><div class="seg-bar"><div class="seg-fill" style="width:${share.toFixed(1)}%"></div></div>
+                <span class="faint">${share.toFixed(1)}%</span></td>
+            <td class="${cls(pro)}">${cr(pro)}</td>
+            <td class="${margin != null && margin < 0 ? "down" : ""}">${margin != null ? margin.toFixed(1) + "%" : "—"}</td>
+          </tr>`;
+        }).join("")}
+      </tbody></table>
+      <div class="empty" style="padding:4px 14px"><span class="faint">${esc(d.note)}
+        · <a href="${esc(d.source || "")}" target="_blank" rel="noopener">the filing</a></span></div>`;
+  } catch (e) {
+    host.innerHTML = `<div class="empty" style="padding:8px 14px">${esc(e.message)}</div>`;
+  }
+}
 
 async function drawFundOwnership(sym, view) {
   const host = $("#cmp-mf");

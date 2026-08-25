@@ -2474,6 +2474,83 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
     _supply_builds: dict = {}
 
+    _warm: dict = {"running": False}
+
+    @app.post("/api/company/warm")
+    def warm_companies(universe: str = "core", segments: int = 1):
+        """Pre-build the structured layers for a whole universe.
+
+        Profile, filings, ownership and segments per company, written to the
+        disk cache and the graph, so every company page afterwards opens
+        from local storage. Annual reports are deliberately NOT included -
+        they are 15 MB each and change once a year, so they stay lazy."""
+        import threading
+        import time as _time
+
+        if _warm.get("running"):
+            return {"running": True, **_warm}
+        if universe not in HEAT_UNIVERSES:
+            raise HTTPException(400, f"universe must be one of {sorted(HEAT_UNIVERSES)}")
+        try:
+            from shunkan.data.constituents import universe as _uni
+
+            symbols = [c.symbol for c in _uni(HEAT_UNIVERSES[universe])]
+        except Exception as exc:
+            raise HTTPException(502, f"constituents unavailable: {str(exc)[:110]}") from exc
+
+        _warm.update({"running": True, "done": 0, "total": len(symbols),
+                      "ok": 0, "failed": 0, "universe": universe,
+                      "started": _now_iso()})
+
+        def run():
+            for i, sym in enumerate(symbols, 1):
+                try:
+                    company(sym)                     # profile + all filings
+                    if segments:
+                        company_segments(sym)        # Ind AS 108
+                    _warm["ok"] += 1
+                except Exception as exc:
+                    _warm["failed"] += 1
+                    _warm["last_error"] = f"{sym}: {str(exc)[:80]}"
+                _warm["done"] = i
+                _warm["current"] = sym
+                _time.sleep(0.4)
+            _warm["running"] = False
+            _warm["finished"] = _now_iso()
+            try:
+                from shunkan.data.ingest import rebuild
+
+                rebuild()
+            except Exception:
+                pass
+
+        threading.Thread(target=run, daemon=True).start()
+        return {"running": True, **_warm}
+
+    @app.get("/api/company/warm")
+    def warm_status():
+        return _clean(dict(_warm))
+
+    @app.get("/api/company/{symbol}/segments")
+    def company_segments(symbol: str):
+        """Ind AS 108 segment reporting from the newest quarterly filing -
+        revenue and profit by the businesses the company actually runs."""
+        import time as _time
+
+        sym = symbol.upper().replace(".NS", "")
+        ck = f"segments:{sym}"
+        disk = _disk_get(ck, 7 * 86400)
+        if disk is not None:
+            return disk
+        try:
+            from shunkan.data.indas import segments_for
+
+            out = _clean(segments_for(sym))
+        except DataError as exc:
+            out = {"error": str(exc)[:200], "symbol": sym}
+        _disk_put(ck, out, "segments", 7 * 86400)
+        return out
+
     @app.get("/api/company/{symbol}/supply")
     def company_supply(symbol: str, refresh: int = 0):
         """The SPLC map, built from the company's own annual report.

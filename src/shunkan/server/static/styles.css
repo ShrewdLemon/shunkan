@@ -1338,3 +1338,6 @@ main { padding: 0; }
 .hp-pos { display: inline-block; border: 1px solid var(--stroke); padding: 0 6px;
   margin: 1px 3px 1px 0; cursor: pointer; font-size: 10.5px; }
 .hp-pos:hover { border-color: var(--amber); color: var(--amber); }
+.seg-bar { display: inline-block; width: 90px; height: 7px; background: var(--bg-panel-2);
+  vertical-align: middle; margin-right: 6px; }
+.seg-fill { height: 100%; background: var(--amber); }
