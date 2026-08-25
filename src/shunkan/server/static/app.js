@@ -3291,9 +3291,10 @@ async function drawSupplyMap(sym, view) {
     <div class="splc-col">
       <div class="splc-head ${cls_}">${title} <span class="faint">${nodes.length}</span></div>
       ${nodes.length ? nodes.map((n) => `
-        <div class="splc-node" title="${esc(n.evidence)}">
+        <div class="splc-node${n.evidence.length > 150 ? " clip" : ""}" tabindex="0" role="button"
+             aria-expanded="false">
           <div class="splc-term">${esc(n.term.toUpperCase())}${n.mentions > 1 ? ` <span class="faint">×${n.mentions}</span>` : ""}</div>
-          <div class="splc-ev">${esc(n.evidence.slice(0, 190))}${n.evidence.length > 190 ? "…" : ""}</div>
+          <div class="splc-ev">${esc(n.evidence)}</div>
         </div>`).join("")
         : `<div class="empty" style="padding:6px 8px">the report names none in this class</div>`}
     </div>`;
@@ -3319,15 +3320,41 @@ async function drawSupplyMap(sym, view) {
         ${col("DOWNSTREAM · CUSTOMERS", d.customers || [], "down")}
       </div>
       ${(d.family || []).length ? secBlock("CORPORATE FAMILY — SUBSIDIARIES / JV / ASSOCIATES", d.family.length, `
-        <table class="tbl"><tbody>${d.family.map((f) => `<tr>
-          <td class="txt sym">${esc(f.term)}</td>
-          <td class="txt faint" style="font-size:10px">${esc(f.evidence.slice(0, 170))}…</td>
+        <table class="tbl fam-tbl" style="table-layout:fixed">
+          <colgroup><col style="width:22%"><col></colgroup>
+          <tbody>${d.family.map((f) => `<tr class="fam-row${f.evidence.length > 150 ? " clip" : ""}"
+              tabindex="0" role="button" aria-expanded="false">
+          <td class="txt sym" style="text-align:left;word-break:break-word">${esc(f.term)}</td>
+          <td class="txt faint fam-ev" style="text-align:left;font-size:10px">${esc(f.evidence)}</td>
         </tr>`).join("")}</tbody></table>`) : ""}
       ${(d.locations || []).length ? `<div class="empty" style="padding:6px 14px">
         <b class="hl">LOCATIONS NAMED:</b> ${d.locations.map(esc).join(" · ")}</div>` : ""}
       <div class="empty" style="padding:4px 14px 10px"><span class="faint">
         source: <a href="${esc(d.document)}" target="_blank" rel="noopener">annual report FY${esc(d.report_year || "")}</a>
         · ${d.pages_read} pages read · ${(d.notes || []).map(esc).join(" · ")}</span></div>`;
+    // Click (or Enter/Space) anywhere on a tile or family row to show the whole
+    // sentence. The full text is always in the DOM and only CSS-clamped, so it
+    // stays searchable with the browser find bar and copies out intact - a
+    // slice(0,190) in the template loses the evidence for good.
+    const toggle = (el) => {
+      if (!el) return;
+      const open = el.classList.toggle("open");
+      el.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    if (h.dataset.splcBound !== "1") {
+      h.dataset.splcBound = "1";
+    h.addEventListener("click", (e) => {
+      const t = e.target.closest(".splc-node, .fam-row");
+      if (t && !e.target.closest("a")) toggle(t);
+    });
+    h.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const t = e.target.closest(".splc-node, .fam-row");
+      if (!t) return;
+      e.preventDefault();
+      toggle(t);
+    });
+    }
   } catch (e) {
     const h = host();
     if (h) h.innerHTML = `<div class="empty" style="padding:8px 14px">${esc(e.message)}</div>`;
