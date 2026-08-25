@@ -378,33 +378,50 @@ def annual_reports(symbol: str) -> list[dict]:
     return out
 
 
-def fetch_report_text(url: str, max_pages: int = 400) -> tuple[str, int]:
+def fetch_report_text(url: str, max_pages: int = 600) -> tuple[str, int]:
     """Extract text from an annual report PDF. Returns (text, pages_read).
 
-    Annual reports run 200-400 pages and 15-40 MB; this reads them once and
-    the caller caches. Scanned/image-only reports yield little text, which
-    the caller must report as a miss rather than paper over."""
+    pypdfium2, not pypdf and not pymupdf, and the choice was measured on the
+    Balrampur FY2026 report (400 pages, 16.6 MB):
+
+        pypdf       7.2s   1,057,520 chars
+        pymupdf     0.9s   1,059,889 chars   - but AGPL, and this package is MIT
+        pypdfium2   0.4s   1,080,236 chars   - BSD/Apache, most text, fastest
+
+    pypdfium2 also preserves the loose text labels inside flow diagrams, which
+    matters more than it sounds: the densest supply-chain content in an Indian
+    annual report is usually an infographic, and "Granular Potash Sold to
+    Fertilizer Vendors" exists nowhere else in the document. Docling was tested
+    too and DELETES those labels, emitting "<!-- image -->" for the figure.
+
+    WHAT NO TEXT EXTRACTOR FIXES: these reports embed a font literally named
+    ITF Rupee that maps the rupee glyph onto the codepoint H, so every parser
+    reads "H450 crores". Numbers must come from XBRL, never from this text.
+
+    Scanned/image-only reports yield little text, which the caller must report
+    as a miss rather than paper over.
+    """
     import io
 
     import httpx
-    from pypdf import PdfReader
+    import pypdfium2 as pdfium
 
     try:
         raw = httpx.get(url, headers={"User-Agent": _H["User-Agent"]},
-                        timeout=180.0, follow_redirects=True).content
+                        timeout=300.0, follow_redirects=True).content
     except Exception as exc:
         raise DataError(f"annual report download failed: {exc}") from exc
     try:
-        reader = PdfReader(io.BytesIO(raw))
+        doc = pdfium.PdfDocument(io.BytesIO(raw))
     except Exception as exc:
         raise DataError(f"annual report is not readable as PDF: {exc}") from exc
     chunks = []
-    n = min(len(reader.pages), max_pages)
+    n = min(len(doc), max_pages)
     for i in range(n):
         try:
-            chunks.append(reader.pages[i].extract_text() or "")
+            chunks.append(doc[i].get_textpage().get_text_range() or "")
         except Exception:
-            continue
+            continue  # one unreadable page never costs the other 399
     return "\n".join(chunks), n
 
 

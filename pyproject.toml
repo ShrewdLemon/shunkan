@@ -32,7 +32,7 @@ dependencies = [
     "pyarrow>=15.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
-    "pypdf>=5.0",          # annual-report text extraction for the supply map
+    "pypdfium2>=4.30",     # annual-report text extraction (BSD; 18x pypdf, keeps diagram labels)
 ]
 
 [project.optional-dependencies]

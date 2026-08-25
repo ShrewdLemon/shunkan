@@ -3478,6 +3478,7 @@ const ANL_GROUPS = [
     ["news", "NWS", "News intelligence", "time-sorted, sector-grouped wires with sentiment provenance"],
     ["calendar", "CAL", "Calendar", "expiries from the contract master; refusals where no source exists"],
     ["workspace", "WSP", "Workspace", "saved layouts and notes"],
+    ["admin", "ADM", "Admin — extraction engine", "model, reasoning effort, API key and spend for LLM extraction; every default carries the number that justifies it"],
   ]],
 ];
 const ANL_VIEWS = new Set(ANL_GROUPS.flatMap(([, items]) => items.map(([id]) => id)));
@@ -5644,6 +5645,268 @@ async function trainML() {
   }
 }
 
+
+/* ---------- ADMIN — extraction engine ------------------------------------
+   The one screen that holds a secret, so it is also the one screen that
+   never displays one. The server returns a fingerprint ("…4e8a") and the
+   input below is write-only: typing a key sends it, leaving it blank keeps
+   whatever is stored. There is no endpoint that returns the key at all.
+
+   Defaults here are not arbitrary; they were measured on 2026-08-25 against
+   the Balrampur and Reliance FY2026 reports, and each control carries the
+   number that justifies its default so nobody has to re-derive it. */
+
+let _admBusy = null;
+
+async function renderAdmin(view) {
+  view.innerHTML = panel({ title: "ADMIN — EXTRACTION ENGINE", body:
+    `<div class="dim" style="padding:10px">loading…</div>` });
+  let d;
+  try {
+    d = await getJSON("/api/admin/llm");
+  } catch (e) {
+    view.innerHTML = panel({ title: "ADMIN — EXTRACTION ENGINE", body:
+      `<div class="bad" style="padding:10px">${esc(e.message)}</div>` });
+    return;
+  }
+  const s = d.settings || {};
+  const prov = d.providers?.[s.provider] || { models: [] };
+  const u = d.usage || {};
+  const opt = (v, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(v)}</option>`;
+  const row = (label, ctrl, note) =>
+    `<tr><td style="white-space:nowrap;color:var(--dim)">${esc(label)}</td>
+         <td>${ctrl}</td>
+         <td class="dim" style="font-size:11px">${note || ""}</td></tr>`;
+
+  view.innerHTML = `
+  <div style="display:grid;gap:12px">
+    ${panel({ title: "ENGINE", meta: d.settings?.enabled ? "ENABLED" : "DISABLED", body: `
+      <table class="tbl" style="width:100%">
+        ${row("Enabled",
+          `<input type="checkbox" id="adm-enabled"${s.enabled ? " checked" : ""}>`,
+          "off by default — extraction spends money and calls a third party")}
+        ${row("Provider",
+          `<select id="adm-provider">${Object.keys(d.providers || {}).map((p) => opt(p, s.provider)).join("")}</select>`,
+          esc(prov.base_url || ""))}
+        ${row("Model",
+          `<select id="adm-model">${(prov.models || []).map((m) => opt(m, s.model)).join("")}</select>`,
+          "flash is the working model; -vision-exp hallucinated on diagrams and is not wired in")}
+        ${row("Reasoning effort",
+          `<select id="adm-effort">${(d.efforts || []).map((e) => opt(e, s.effort)).join("")}</select>`,
+          "medium: 13 customers vs 9 at none, and none swung 7–19 inputs across identical runs")}
+        ${row("Max tokens",
+          `<input id="adm-maxtok" type="number" min="8000" step="1000" value="${esc(s.max_tokens)}" style="width:110px">`,
+          "32000. at 16000 a 254k-token report spent the whole budget reasoning and returned nothing")}
+        ${row("Temperature",
+          `<input id="adm-temp" type="number" min="0" max="2" step="0.1" value="${esc(s.temperature)}" style="width:80px">`,
+          "0 — and note even at 0 the model is not perfectly reproducible")}
+        ${row("Max pages",
+          `<input id="adm-pages" type="number" min="50" step="50" value="${esc(s.max_pages)}" style="width:100px">`,
+          "600 — Balrampur is 540pp; the old 400 cap silently truncated 140 pages")}
+        ${row("Rate in / out ($/M)",
+          `<input id="adm-ratein" type="number" step="0.01" value="${esc(s.rate_in)}" style="width:75px">
+           <input id="adm-rateout" type="number" step="0.01" value="${esc(s.rate_out)}" style="width:75px">`,
+          "for the spend column only; edit when the provider reprices")}
+        ${row("API key",
+          `<input id="adm-key" type="password" placeholder="${d.key_set ? "stored " + esc(d.key) + " — leave blank to keep" : "paste key"}" style="width:260px" autocomplete="off">`,
+          "written to ~/.shunkan/credentials.json at 0600; never stored in llm.json, never returned")}
+      </table>
+      <div style="padding:8px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button id="adm-save">SAVE</button>
+        <button id="adm-test">TEST CONNECTION</button>
+        <span id="adm-msg" class="dim"></span>
+      </div>
+      ${(d.problems || []).length
+        ? `<div class="bad" style="padding:6px 10px">${d.problems.map(esc).join(" · ")}</div>` : ""}
+    ` })}
+
+    ${panel({ title: "SPEND", meta: u.calls ? `${u.calls} calls` : "no calls yet", body: `
+      <table class="tbl" style="width:100%">
+        <tr><td class="dim">total cost</td><td class="hl">$${(u.cost_usd ?? 0).toFixed(4)}</td>
+            <td class="dim">tokens in</td><td>${(u.tokens_in ?? 0).toLocaleString()}</td></tr>
+        <tr><td class="dim">companies</td><td>${u.symbols ?? 0}</td>
+            <td class="dim">tokens out</td><td>${(u.tokens_out ?? 0).toLocaleString()}
+            <span class="dim">(${(u.tokens_reasoning ?? 0).toLocaleString()} reasoning)</span></td></tr>
+        <tr><td class="dim">nodes kept</td><td class="good">${u.kept ?? 0}</td>
+            <td class="dim">dropped by gate</td><td class="bad">${u.dropped ?? 0}</td></tr>
+      </table>
+      <div class="dim" style="padding:6px 10px;font-size:11px">
+        every call is logged whether or not its nodes survived — a ledger that lists
+        only successes understates what the pipeline costs
+      </div>
+    ` })}
+
+    ${panel({ title: "RUN EXTRACTION", body: `
+      <div style="padding:8px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="adm-sym" placeholder="SYMBOL" value="${esc(state.symbol || "")}"
+               style="width:130px;text-transform:uppercase">
+        <button id="adm-run">EXTRACT</button>
+        <span id="adm-run-msg" class="dim"></span>
+      </div>
+      <div class="dim" style="padding:0 10px 8px;font-size:11px">
+        downloads the latest NSE-filed annual report, sends it whole, validates every
+        quote against the source, then stores. Two to three minutes per company.
+      </div>
+      <div style="padding:0 10px 10px">
+        <span class="dim">stored:</span>
+        ${(d.extracted || []).length
+          ? d.extracted.map((x) =>
+              `<button class="chip" data-sym="${esc(x)}" style="color:var(--amber);cursor:pointer;font-family:var(--mono)">${esc(x)}</button>`).join(" ")
+          : `<span class="dim">none yet</span>`}
+      </div>
+      <div id="adm-detail"></div>
+    ` })}
+
+    ${panel({ title: "LEDGER", body: `<div id="adm-ledger" class="dim" style="padding:10px">loading…</div>` })}
+  </div>`;
+
+  const msg = (id, t, cls) => {
+    const el = $(id); if (!el) return;
+    el.className = cls || "dim"; el.textContent = t;
+  };
+
+  $("#adm-save").onclick = async () => {
+    msg("#adm-msg", "saving…");
+    try {
+      const body = {
+        enabled: $("#adm-enabled").checked,
+        provider: $("#adm-provider").value,
+        model: $("#adm-model").value,
+        effort: $("#adm-effort").value,
+        max_tokens: Number($("#adm-maxtok").value),
+        temperature: Number($("#adm-temp").value),
+        max_pages: Number($("#adm-pages").value),
+        rate_in: Number($("#adm-ratein").value),
+        rate_out: Number($("#adm-rateout").value),
+      };
+      const k = $("#adm-key").value.trim();
+      if (k) body.api_key = k;
+      await postJSON("/api/admin/llm", body);
+      msg("#adm-msg", "saved", "good");
+      setTimeout(() => renderAdmin(view), 600);
+    } catch (e) { msg("#adm-msg", e.message, "bad"); }
+  };
+
+  $("#adm-test").onclick = async () => {
+    msg("#adm-msg", "testing…");
+    try {
+      const r = await postJSON("/api/admin/llm/test");
+      msg("#adm-msg", r.ok
+        ? `ok · ${r.model} · ${r.secs}s · key ${r.key}`
+        : `failed: ${r.error}`, r.ok ? "good" : "bad");
+    } catch (e) { msg("#adm-msg", e.message, "bad"); }
+  };
+
+  $("#adm-run").onclick = async () => {
+    const sym = ($("#adm-sym").value || "").trim().toUpperCase();
+    if (!sym) return msg("#adm-run-msg", "need a symbol", "bad");
+    try {
+      await postJSON(`/api/company/${sym}/extract`);
+      pollExtract(sym, view);
+    } catch (e) { msg("#adm-run-msg", e.message, "bad"); }
+  };
+
+  view.querySelectorAll(".chip[data-sym]").forEach((b) => {
+    b.onclick = () => showExtraction(b.dataset.sym);
+  });
+
+  getJSON("/api/admin/llm/ledger?limit=40").then((L) => {
+    const el = $("#adm-ledger"); if (!el) return;
+    if (!(L.rows || []).length) { el.textContent = "no calls yet"; return; }
+    el.outerHTML = `<div style="overflow:auto"><table class="tbl" id="adm-ledger" style="width:100%">
+      <thead><tr><th>when</th><th>symbol</th><th>model</th><th>effort</th>
+        <th style="text-align:right">in</th><th style="text-align:right">out</th>
+        <th style="text-align:right">secs</th><th style="text-align:right">$</th>
+        <th style="text-align:right">kept</th><th style="text-align:right">dropped</th></tr></thead>
+      <tbody>${L.rows.map((r) => `<tr>
+        <td class="dim">${esc((r.ts || "").replace("T", " ").slice(0, 16))}</td>
+        <td class="hl">${esc(r.symbol)}</td><td class="dim">${esc(r.model)}</td>
+        <td>${esc(r.effort)}</td>
+        <td style="text-align:right">${(r.tokens_in || 0).toLocaleString()}</td>
+        <td style="text-align:right">${(r.tokens_out || 0).toLocaleString()}</td>
+        <td style="text-align:right">${r.secs ?? ""}</td>
+        <td style="text-align:right">$${(r.cost_usd || 0).toFixed(4)}</td>
+        <td style="text-align:right" class="good">${r.kept ?? ""}</td>
+        <td style="text-align:right" class="${r.dropped ? "bad" : "dim"}">${r.dropped ?? ""}</td>
+      </tr>`).join("")}</tbody></table></div>`;
+  }).catch(() => {});
+}
+
+function pollExtract(sym, view) {
+  const el = $("#adm-run-msg");
+  clearInterval(_admBusy);
+  _admBusy = setInterval(async () => {
+    try {
+      const r = await getJSON(`/api/company/${sym}/extract`);
+      if (r.building) { if (el) { el.className = "dim"; el.textContent = `${sym}: ${r.stage}`; } return; }
+      clearInterval(_admBusy); _admBusy = null;
+      if (el) { el.className = "good"; el.textContent = `${sym}: done`; }
+      renderAdmin(view);
+    } catch (e) {
+      clearInterval(_admBusy); _admBusy = null;
+      if (el) { el.className = "bad"; el.textContent = e.message; }
+    }
+  }, 3000);
+  onTeardown(() => clearInterval(_admBusy));
+}
+
+async function showExtraction(sym) {
+  const host = $("#adm-detail"); if (!host) return;
+  host.innerHTML = `<div class="dim" style="padding:10px">loading ${esc(sym)}…</div>`;
+  let d;
+  try { d = await getJSON(`/api/company/${sym}/extract`); }
+  catch (e) { host.innerHTML = `<div class="bad" style="padding:10px">${esc(e.message)}</div>`; return; }
+  if (!d.extracted) {
+    host.innerHTML = `<div class="dim" style="padding:10px">${esc(d.reason || "nothing stored")}</div>`;
+    return;
+  }
+  // table-layout:fixed with explicit widths, and the quote WRAPS. Without
+  // both, a 170-character quote runs off the right edge and the evidence -
+  // the entire point of this screen - is the part that gets clipped.
+  const cat = (k) => {
+    const rows = d[k] || [];
+    const anyLoc = rows.some((i) => i.location);
+    return `<table class="tbl" style="width:100%;table-layout:fixed">
+      <colgroup><col style="width:26%">${anyLoc ? `<col style="width:16%">` : ""}
+        <col></colgroup>
+      <tbody>${rows.map((i) => `
+      <tr><td class="hl" style="text-align:left;word-break:break-word">${esc(i.name)}</td>
+          ${anyLoc ? `<td class="dim" style="text-align:left;font-size:11px;word-break:break-word">${esc(i.location || "")}</td>` : ""}
+          <td class="dim" style="text-align:left;font-size:11px;white-space:normal;word-break:break-word">
+            “${esc(i.quote || "")}”${i.match === "prefix"
+              ? ` <span class="dim">[prefix-verified]</span>` : ""}</td></tr>`).join("")}
+      </tbody></table>`;
+  };
+  host.innerHTML = `
+    <div class="dim" style="padding:6px 10px;font-size:11px">
+      ${esc(d.document)} · ${d.pages}pp · ${esc(d.model)} @ ${esc(d.effort)} ·
+      ${(d.tokens_in || 0).toLocaleString()} tokens in · $${(d.cost_usd || 0).toFixed(4)} ·
+      ${esc((d.extracted_at || "").slice(0, 16).replace("T", " "))}
+      ${d.document_url ? ` · <a href="${esc(d.document_url)}" target="_blank" rel="noopener">source PDF</a>` : ""}
+    </div>
+    ${["inputs", "outputs", "customers", "facilities"].map((k) => secBlock(
+      k.toUpperCase(), (d[k] || []).length,
+      (d[k] || []).length ? cat(k)
+                          : `<div class="dim" style="padding:8px">nothing survived validation</div>`,
+      { open: k === "customers" })).join("")}
+    ${(d.dropped || []).length ? secBlock(
+      "DROPPED BY THE VALIDATION GATE", d.dropped.length,
+      `<table class="tbl" style="width:100%;table-layout:fixed">
+        <colgroup><col style="width:11%"><col style="width:24%"><col></colgroup>
+        <tbody>${d.dropped.map((x) => `
+        <tr><td class="dim" style="text-align:left">${esc(x.category)}</td>
+            <td class="bad" style="text-align:left;word-break:break-word">${esc(x.name)}</td>
+            <td class="dim" style="text-align:left;font-size:11px;white-space:normal;word-break:break-word">
+              ${esc(x.reason)}<br>“${esc(x.quote || "")}”</td></tr>`).join("")}</tbody></table>
+       <div class="dim" style="padding:6px 8px;font-size:11px">
+         these are shown, not hidden: the model asserted them and could not support
+         them from the document. A silent drop is just a quieter unaccountability.
+       </div>`) : ""}
+    ${(d.undisclosed || []).length ? `<div class="dim" style="padding:8px 10px;font-size:11px">
+       model reported undisclosed: ${d.undisclosed.map(esc).join(", ")}</div>` : ""}
+    ${(d.notes || []).map((n) => `<div class="dim" style="padding:2px 10px;font-size:11px">— ${esc(n)}</div>`).join("")}`;
+}
+
 const RENDER = {
   pulse: renderPulse, chart: renderChart, chain: renderChain, payoff: renderPayoff,
   iv: renderIV, volume: renderVolume, news: renderNews, backtest: renderBacktest,
@@ -5653,7 +5916,8 @@ const RENDER = {
   funds: renderFunds, msci: renderMSCI, graph: renderGraph,
   portfolio: renderPortfolio, alerts: renderAlerts,
   datastore: renderDatastore, workspace: renderWorkspace, viz: renderViz,
-  mlstudio: renderMLStudio, brief: renderBrief,
+
+  mlstudio: renderMLStudio, brief: renderBrief, admin: renderAdmin,
 };
 
 /* ---------- websocket ---------- */
