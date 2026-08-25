@@ -2616,6 +2616,128 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         threading.Thread(target=build, daemon=True).start()
         return {"building": True, "stage": "locating the annual report", "symbol": sym}
 
+    # ---- LLM extraction -------------------------------------------------
+    # Registered BEFORE /api/company/{symbol}: FastAPI matches in declaration
+    # order and the bare path would otherwise swallow /extract as a symbol.
+    # That exact bug already cost us /api/candles/scan once.
+
+    _extract_builds: dict = {}
+
+    @app.get("/api/company/{symbol}/extract")
+    def company_extract_get(symbol: str):
+        """The stored extraction for a symbol, or what it is currently doing."""
+        from shunkan.data.llm import load_extraction
+
+        sym = symbol.upper().replace(".NS", "")
+        b = _extract_builds.get(sym)
+        if b:
+            return {"building": True, "stage": b.get("stage", "starting"), "symbol": sym}
+        ex = load_extraction(sym)
+        if ex is None:
+            return {"symbol": sym, "extracted": False,
+                    "reason": "no extraction stored - run one from the ADMIN tab"}
+        from dataclasses import asdict as _asdict
+
+        out = _asdict(ex)
+        out["extracted"] = True
+        out["counts"] = ex.counts()
+        return out
+
+    @app.post("/api/company/{symbol}/extract")
+    def company_extract_run(symbol: str):
+        """Run an extraction in the background; the client polls the GET.
+
+        Background because a 500-page download plus a medium-effort call runs
+        two to three minutes, which is well past any sane request timeout.
+        """
+        import threading
+
+        from shunkan.data.llm import extract_company, load_settings
+
+        sym = symbol.upper().replace(".NS", "")
+        if _extract_builds.get(sym):
+            return {"building": True, "stage": _extract_builds[sym].get("stage"),
+                    "symbol": sym}
+        s = load_settings()
+        if not s.enabled:
+            raise HTTPException(400, "LLM extraction is disabled - enable it in ADMIN")
+        if is_offline():
+            raise HTTPException(502, "extraction needs the network")
+        _extract_builds[sym] = {"stage": "queued"}
+
+        def run():
+            try:
+                extract_company(
+                    sym, settings=s,
+                    progress=lambda m: _extract_builds.setdefault(sym, {}).update(stage=m))
+            except Exception as exc:
+                _extract_builds[sym] = {"stage": f"failed: {str(exc)[:180]}"}
+                import time as _t
+                _t.sleep(20)   # leave the error visible to one poll cycle
+            finally:
+                _extract_builds.pop(sym, None)
+
+        threading.Thread(target=run, daemon=True).start()
+        return {"building": True, "stage": "queued", "symbol": sym}
+
+    @app.get("/api/admin/llm")
+    def admin_llm_get():
+        """Settings, provider catalogue and spend. Never returns the key."""
+        from dataclasses import asdict as _asdict
+
+        from shunkan.data.llm import (EFFORTS, PROVIDERS, key_fingerprint,
+                                      ledger_stats, load_settings, stored_symbols)
+
+        s = load_settings()
+        return {
+            "settings": _asdict(s),
+            "key": key_fingerprint(s.provider),      # "…8e4c" or "" - never the key
+            "key_set": bool(key_fingerprint(s.provider)),
+            "providers": {k: {"models": v["models"], "env": v["env"],
+                              "base_url": v["base_url"]}
+                          for k, v in PROVIDERS.items()},
+            "efforts": EFFORTS,
+            "problems": s.validate(),
+            "usage": ledger_stats(),
+            "extracted": stored_symbols(),
+        }
+
+    @app.post("/api/admin/llm")
+    async def admin_llm_set(request: Request):
+        """Update settings and/or the API key. The key goes to credentials.json
+        at 0600 and never into llm.json, which is world-readable by design."""
+        from dataclasses import asdict as _asdict
+
+        from shunkan.data.llm import (key_fingerprint, load_settings,
+                                      save_settings, set_api_key)
+
+        body = await request.json()
+        key = (body.pop("api_key", "") or "").strip()
+        if key:
+            set_api_key(key, body.get("provider") or load_settings().provider)
+        try:
+            s = save_settings(**{k: v for k, v in body.items()})
+        except Exception as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"ok": True, "settings": _asdict(s), "key": key_fingerprint(s.provider)}
+
+    @app.post("/api/admin/llm/test")
+    def admin_llm_test():
+        """Cheap round-trip, so a bad key fails in two seconds rather than
+        after a 500-page download."""
+        from shunkan.data.llm import test_connection
+
+        try:
+            return test_connection()
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:300]}
+
+    @app.get("/api/admin/llm/ledger")
+    def admin_llm_ledger(limit: int = 100):
+        from shunkan.data.llm import ledger, ledger_stats
+
+        return {"rows": ledger(limit), "stats": ledger_stats()}
+
     @app.get("/api/company/{symbol}")
     def company(symbol: str):
         """Company intelligence, Bloomberg-DES style, honestly sourced.
