@@ -36,3 +36,8 @@ llm_ledger.jsonl
 /portfolio.json
 /watchlist.json
 /alerts.json
+
+# jsdom for the front-end DOM test; installed with
+# npm install --no-save jsdom, never vendored
+node_modules/
+package-lock.json
