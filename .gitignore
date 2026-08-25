@@ -23,6 +23,9 @@ dist/
 # also matches src/shunkan/store/, which is a source package, and silently
 # drops it from the repo. CI caught that; a local editable install did not.
 credentials.json
+llm.json
+llm_ledger.jsonl
+/extraction/
 *.token
 .env
 .env.*
