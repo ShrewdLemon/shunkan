@@ -297,8 +297,18 @@ _MAX_CHARS = 1_600_000
 
 # Running heads, folios and the page furniture that a PDF text layer splices
 # into the middle of a sentence that happens to straddle a page break.
+#
+# EVERY BRANCH MUST BE BOUNDED. The first one was written as
+# "integrated annual report[^|]*\|\s*\d+", and [^|]* is greedy and crosses
+# newlines: on Bharti Airtel FY2026 the phrase appears in the covering letter
+# on page 1 and the next "| <digits>" is 367,618 characters later, so _norm
+# deleted a QUARTER OF THE DOCUMENT from the haystack. True quotes taken from
+# the middle of that report - the tower count, the fibre roll-out, the Bloom
+# Energy line - were then dropped as unverifiable. A gate that erases the
+# evidence and blames the citation is the exact failure this module exists to
+# prevent, so the head is capped at one line of plausible running-head text.
 _FURNITURE = re.compile(
-    r"(integrated annual report[^|]*\|\s*\d+"
+    r"(integrated annual report[^|\n]{0,60}\|\s*\d+"
     r"|annual report \d{4}-\d{2}"
     r"|\|\s*\d{1,3}\s*\|"
     r"|page \d{1,3} of \d{1,3})", re.I)
