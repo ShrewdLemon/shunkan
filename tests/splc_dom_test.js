@@ -8,8 +8,18 @@ const src = fs.readFileSync("src/shunkan/server/static/app.js", "utf8");
 
 // Pull the exact toggle + listener block that ships, so this test fails if
 // someone edits it.
-const start = src.indexOf("    const toggle = (el) => {");
-const end = src.indexOf("    }\n", src.indexOf("      toggle(t);\n    });", start)) + 6;
+// Brace-match from `const toggle` to the end of the splcBound guard, so the
+// extraction survives re-indentation. Anchoring on literal whitespace made
+// this test fail the moment the handler moved a level deeper.
+const start = src.indexOf("const toggle = (el) => {");
+if (start < 0) { console.error("FAIL: no toggle() in app.js"); process.exit(1); }
+const guard = src.indexOf("dataset.splcBound", start);
+let i = src.indexOf("{", guard), depth = 0, end = -1;
+for (; i < src.length; i++) {
+  if (src[i] === "{") depth++;
+  else if (src[i] === "}") { depth--; if (depth === 0) { end = i + 1; break; } }
+}
+if (end < 0) { console.error("FAIL: unbalanced braces after splcBound"); process.exit(1); }
 const block = src.slice(start, end);
 if (!block.includes("classList.toggle(\"open\")")) {
   console.error("FAIL: could not extract the toggle block from app.js"); process.exit(1);
