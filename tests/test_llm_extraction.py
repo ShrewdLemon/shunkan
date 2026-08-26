@@ -180,3 +180,66 @@ def test_recovered_quote_is_bounded():
 
     got = _recover_sentence("Kisan Credit Card", DOC2, N(DOC2))
     assert got and 25 <= len(got) <= 600
+
+
+# --- the quote must mention the node --------------------------------------
+# Found by auditing 809 seeded nodes: the gate verified that a quote OCCURS in
+# the filing and never that it MENTIONS what it was cited for. 56 nodes had a
+# quote sharing under a third of the name's content words; 11 shared none.
+# Every case below is verbatim from that audit.
+
+def _gate(name, quote, doc, cat="facilities"):
+    payload = {c: [] for c in ("inputs", "outputs", "customers", "facilities")}
+    payload[cat] = [{"name": name, "quote": quote}]
+    return validate_against_source(payload, doc)
+
+
+def test_share_capital_sentence_cannot_establish_a_facility():
+    """BAJAJ-AUTO: a share-capital line was cited for an Engineering Design
+    Centre. It establishes a subsidiary and never a building."""
+    doc = ("Bajaj Auto (Thailand) Ltd is a wholly owned subsidiary in Thailand "
+           "with an issued and subscribed share capital of Thai Baht (THB) 45 "
+           "million. Other matters follow.")
+    kept, dropped = _gate("Bajaj Auto (Thailand) Engineering Design Centre",
+                          doc.split(". ")[0] + ".", doc)
+    names = [x["name"] for x in kept["facilities"]]
+    # it may be recovered on the shared name tokens, but it must NOT be
+    # accepted as an exact citation for a design centre
+    assert all(x.get("match") != "exact" for x in kept["facilities"]), names
+
+
+def test_related_party_boilerplate_naming_nobody_is_not_evidence():
+    """AXISBANK: one sentence naming no entity was cited for both LIC Housing
+    Finance and IDBI Bank."""
+    doc = ("These services are offered to all customers (related / unrelated) "
+           "in the ordinary course of business. Service charges from related "
+           "party are recognised accordingly.")
+    kept, dropped = _gate("LIC Housing Finance Limited",
+                          doc.split(". ")[0] + ".", doc, cat="customers")
+    assert kept["customers"] == []
+    assert dropped and "neither" in dropped[0]["reason"]
+
+
+def test_a_residual_expense_row_is_not_a_raw_material():
+    """BALRAMCHIN: 'Others 3066.55 566.93' was cited for 'Other raw materials'."""
+    doc = "Consumption of stores. Others 3066.55 566.93 and further lines."
+    kept, dropped = _gate("Sugarcane bagasse pellets", "Others 3066.55 566.93",
+                          doc, cat="inputs")
+    assert kept["inputs"] == []
+
+
+def test_morphology_is_tolerated_so_real_products_survive():
+    """'Gold Loans' must still be supported by 'gold loan portfolio' - the
+    target is boilerplate, not paraphrase."""
+    doc = ("The Bank grew its gold loan portfolio substantially during the "
+           "year under review across rural branches.")
+    kept, _ = _gate("Gold Loans", doc, doc, cat="outputs")
+    assert [x["name"] for x in kept["outputs"]] == ["Gold Loans"]
+    assert kept["outputs"][0]["match"] == "exact"
+
+
+def test_a_name_with_no_content_words_still_passes_other_rules():
+    doc = "The and for with from its our their. A second sentence entirely."
+    kept, _ = _gate("The and", "The and for with from its our their.", doc,
+                    cat="outputs")
+    assert len(kept["outputs"]) == 1
