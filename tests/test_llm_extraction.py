@@ -74,7 +74,7 @@ def test_gate_keeps_real_and_drops_fabricated():
     assert [i["name"] for i in kept["outputs"]] == ["Sugar"]
     assert len(dropped) == 1
     assert dropped[0]["name"] == "Molasses"
-    assert "not found" in dropped[0]["reason"]
+    assert "neither the quote nor the name" in dropped[0]["reason"]
     # the rejected claim is retained verbatim so the UI can show what was tried
     assert "molasses, bagasse and pressmud" in dropped[0]["quote"]
 
@@ -129,3 +129,54 @@ def test_oversize_document_is_truncated_loudly_not_silently():
     from shunkan.data import llm
 
     assert llm._MAX_CHARS > 1_000_000
+
+
+# --- the recovery tier -----------------------------------------------------
+# On AXISBANK the gate rejected 18 of 66 nodes. The ENTITIES were real - "Kisan
+# Credit Card", "neo by Axis Bank", "Axis House" all appear in the filing - and
+# the sentences the model wrote around them were not. Dropping those threw away
+# true facts over a bad citation; keeping the model's sentence would publish a
+# fabricated quote. The gate now does neither.
+
+DOC2 = ("The Bank offers many things. Our product suite includes crop loans "
+        "under Kisan Credit Card (KCC) and investment credit for farm "
+        "infrastructure. Other matters follow.")
+
+
+def test_a_real_entity_with_a_paraphrased_quote_is_recovered_not_dropped():
+    payload = {"outputs": [{"name": "Kisan Credit Card",
+                            "quote": "The Bank provides Kisan Credit Card to "
+                                     "farmers across rural India as part of its "
+                                     "agricultural lending programme."}],
+               "inputs": [], "customers": [], "facilities": []}
+    kept, dropped = validate_against_source(payload, DOC2)
+    assert not dropped
+    node = kept["outputs"][0]
+    assert node["match"] == "recovered"
+    # the model's sentence is NEVER kept - the document's own sentence replaces it
+    assert "agricultural lending programme" not in node["quote"]
+    assert "Kisan Credit Card" in node["quote"]
+    assert node["quote"] in DOC2 or _norm(node["quote"]) in _norm(DOC2)
+
+
+def test_recovery_still_drops_an_entity_the_document_never_names():
+    payload = {"outputs": [{"name": "Cryptocurrency Custody",
+                            "quote": "The Bank offers cryptocurrency custody."}],
+               "inputs": [], "customers": [], "facilities": []}
+    kept, dropped = validate_against_source(payload, DOC2)
+    assert kept["outputs"] == []
+    assert dropped[0]["reason"].startswith("neither")
+
+
+def test_recovery_will_not_fire_on_a_name_too_short_to_be_deliberate():
+    """A two-character name matches almost any document."""
+    from shunkan.data.llm import _recover_sentence, _norm as N
+
+    assert _recover_sentence("KC", DOC2, N(DOC2)) is None
+
+
+def test_recovered_quote_is_bounded():
+    from shunkan.data.llm import _recover_sentence, _norm as N
+
+    got = _recover_sentence("Kisan Credit Card", DOC2, N(DOC2))
+    assert got and 25 <= len(got) <= 600
