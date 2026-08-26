@@ -311,6 +311,45 @@ _FURNITURE = re.compile(
 _PREFIX_MIN = 80
 
 
+def _loads_lenient(raw: str):
+    """Parse the model's JSON, repairing the cheap failures.
+
+    APOLLOHOSP cost a full ~300k-token call and then failed on "Expecting ','
+    delimiter" at character 14,914. Re-buying an entire extraction because of
+    one stray comma is not a reasonable trade, and a hard failure here is
+    indistinguishable to the caller from "the company disclosed nothing".
+
+    Repairs attempted, in order, each strictly syntactic - no field is ever
+    invented and no value is ever altered:
+      1. as-is
+      2. trailing commas before } or ] removed
+      3. truncated output closed by balancing open brackets, then re-parsed;
+         the partial objects at the tail are discarded by the schema walk
+    Anything still unparseable raises, because guessing at the content of a
+    broken answer is exactly the behaviour this module exists to prevent.
+    """
+    m = re.search(r"\{.*\}", raw, re.S)
+    candidate = m.group(0) if m else raw
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+    stripped = re.sub(r",\s*([}\]])", r"\1", candidate)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    # close what is open, dropping a dangling partial object first
+    frag = re.sub(r",\s*\{[^{}]*$", "", raw[raw.find("{"):] if "{" in raw else raw)
+    depth_c = frag.count("{") - frag.count("}")
+    depth_b = frag.count("[") - frag.count("]")
+    if frag.rstrip().endswith(","):
+        frag = frag.rstrip()[:-1]
+    frag += "]" * max(0, depth_b) + "}" * max(0, depth_c)
+    frag = re.sub(r",\s*([}\]])", r"\1", frag)
+    return json.loads(frag)   # raises if still broken, which is correct
+
+
 def _norm(s: str) -> str:
     """Whitespace-insensitive form for quote matching.
 
@@ -342,6 +381,48 @@ def _locate(quote: str, hay: str) -> str | None:
     if len(nq) >= _PREFIX_MIN and nq[:_PREFIX_MIN] in hay:
         return "prefix"
     return None
+
+
+def _recover_sentence(name: str, text: str, hay: str) -> str | None:
+    """Find a real sentence in the document that names this entity.
+
+    WHY THIS EXISTS. On AXISBANK the gate rejected 18 of 66 nodes for
+    unverifiable quotes. Checking by hand, the ENTITIES were real - "Kisan
+    Credit Card", "neo by Axis Bank" and "Axis House" all appear in the
+    filing - while the sentences the model wrote around them did not. The
+    model reliably finds what a company sells and unreliably reproduces the
+    prose it found it in.
+
+    Dropping those nodes throws away true facts over a bad citation. Keeping
+    the model's sentence would publish a fabricated quote. So do neither:
+    take the entity, go back to the document, and lift the real sentence that
+    contains it. The model becomes the finder and the code stays the witness.
+
+    Returns None when the name itself is absent, which is the case that should
+    still be dropped - there is nothing in the filing to cite.
+    """
+    nn = _norm(name)
+    # A one- or two-character name matches everything; require something that
+    # could only be deliberate.
+    if len(nn) < 4:
+        return None
+    pos = hay.find(nn)
+    if pos < 0:
+        return None
+    # Map back into the original text by re-normalising a widening window,
+    # which is cheaper and more robust than maintaining an index map.
+    flat = re.sub(r"\s+", " ", _FURNITURE.sub(" ", text))
+    lo = flat.lower().find(nn)
+    if lo < 0:
+        return None
+    start = max(0, flat.rfind(". ", 0, lo) + 2)
+    end = flat.find(". ", lo + len(nn))
+    end = len(flat) if end < 0 else end + 1
+    sent = flat[start:end].strip()
+    if len(sent) < 25 or len(sent) > 600:
+        # a sentence boundary was not found; fall back to a bounded window
+        sent = flat[max(0, lo - 140):lo + len(nn) + 160].strip()
+    return sent or None
 
 
 @dataclass
@@ -402,11 +483,21 @@ def validate_against_source(payload: dict, text: str) -> tuple[dict, list]:
                 continue
             how = _locate(quote, hay)
             if how is None:
-                dropped.append({"category": cat, "name": name, "quote": quote[:400],
-                                "reason": ("quote too short to verify"
-                                           if len(_norm(quote)) < 12
-                                           else "quote not found in the document")})
-                continue
+                # The citation failed. Before discarding a possibly-true node,
+                # ask whether the DOCUMENT names this entity at all, and if it
+                # does, cite the document's own sentence instead of the
+                # model's. The model's sentence is never kept - publishing an
+                # unverifiable quote is the one thing this gate exists to stop.
+                rec = _recover_sentence(name, text, hay)
+                if rec:
+                    quote, how = rec, "recovered"
+                else:
+                    dropped.append({"category": cat, "name": name, "quote": quote[:400],
+                                    "reason": ("quote too short to verify"
+                                               if len(_norm(quote)) < 12
+                                               else "neither the quote nor the name "
+                                                    "occurs in the document")})
+                    continue
             key = _norm(name)
             if key in seen:
                 continue  # the model repeats a counterparty under variant spellings
@@ -433,14 +524,13 @@ def extract_from_text(symbol: str, text: str, *, document: str = "",
                 f"to fit the model context - the tail was NOT read")
         text = text[:_MAX_CHARS]
     out = chat([{"role": "user", "content": PROMPT + text}], s)
-    m = re.search(r"\{.*\}", out["content"], re.S)
-    if not m:
-        raise DataError("model did not return JSON "
-                        f"(finish={out['finish']}, {out['tokens_out']:,} output tokens)")
     try:
-        payload = json.loads(m.group(0))
+        payload = _loads_lenient(out["content"])
     except json.JSONDecodeError as exc:
-        raise DataError(f"model returned malformed JSON: {exc}") from exc
+        raise DataError(
+            f"model returned unparseable JSON even after repair: {exc} "
+            f"(finish={out['finish']}, {out['tokens_out']:,} output tokens - "
+            "if finish=length, raise max_tokens)") from exc
 
     kept, dropped = validate_against_source(payload, text)
     ex = Extraction(
@@ -693,3 +783,46 @@ def bulk_extract(symbols: list[str], *, workers: int = 5,
             "skipped_already_had": sorted(have & {x.upper() for x in symbols}),
             "skipped_over_budget": skipped_budget,
             "spent_usd": round(spent, 4)}
+
+
+def revalidate(symbol: str, *, settings: LLMSettings | None = None) -> dict:
+    """Re-run the gate over a stored extraction. Costs NO tokens.
+
+    The model's answer is kept verbatim on disk, so improving the validator
+    does not mean re-buying every extraction. This re-reads the filing, puts
+    the stored nodes back through the current gate, and rewrites the file.
+
+    Returns a before/after so a validator change can be judged rather than
+    assumed - the first version of this gate silently discarded six true
+    Balrampur outputs, and nothing in the pipeline would have shown it.
+    """
+    from shunkan.data.filings import fetch_report_text
+
+    ex = load_extraction(symbol)
+    if ex is None:
+        raise DataError(f"no stored extraction for {symbol}")
+    s = settings or load_settings()
+    text, pages = fetch_report_text(ex.document_url, max_pages=s.max_pages)
+    if len(text) > _MAX_CHARS:
+        text = text[:_MAX_CHARS]
+
+    payload = {c: [dict(x) for x in getattr(ex, c)] for c in CATEGORIES}
+    for d in ex.dropped:
+        payload.setdefault(d.get("category", "outputs"), []).append(
+            {"name": d.get("name", ""), "quote": d.get("quote", "")})
+    before = {**ex.counts(), "dropped": len(ex.dropped)}
+
+    kept, dropped = validate_against_source(payload, text)
+    for c in CATEGORIES:
+        setattr(ex, c, kept[c])
+    ex.dropped = dropped
+    ex.notes = [n for n in ex.notes if "node(s) dropped" not in n]
+    if dropped:
+        ex.notes.append(f"{len(dropped)} node(s) dropped: neither the quote nor "
+                        "the name occurs in the filed document")
+    store_extraction(ex)
+    after = {**ex.counts(), "dropped": len(dropped)}
+    return {"symbol": ex.symbol, "before": before, "after": after,
+            "match_mix": {m: sum(1 for c in CATEGORIES for x in kept[c]
+                                 if x.get("match") == m)
+                          for m in ("exact", "prefix", "recovered")}}
