@@ -3,8 +3,9 @@
 Turning a 540-page NSE-filed annual report into a supply-chain map: what the
 company buys, what it makes, who buys it, and where its plants are.
 
-Every design choice below was measured on 2026-08-25 against the Balrampur
-Chini Mills and Reliance Industries FY2026 reports. The numbers are recorded
+Every design choice below was measured, on 2026-08-25/26, against the
+Balrampur, Reliance, AXISBANK and ASIANPAINT FY2026 filings and a 59-company
+seed of NIFTY 50 + BANKNIFTY. The numbers are recorded
 here so nobody has to re-derive them, and so a future change has something to
 argue against.
 
@@ -131,27 +132,114 @@ The model **inserted the parenthetical** to manufacture support for three
 nodes it wanted to create. The nodes are arguably true; the citation was
 invented. In an evidence-first system those are the same failure.
 
-### Matching is deliberately whitespace- and furniture-tolerant
+### The three tiers
 
-A strict whole-string match is wrong, and we know because it was tried: it
-dropped six **true** outputs (ethanol, co-generated power, agricultural
-fertilizers, and others) whose sentences cross a page boundary, where the text
-layer splices the running head into the middle of the sentence.
+A node survives only if the filing supports it. Three tiers, tried in order:
 
-So matching is layered:
+| tier | meaning | when |
+|---|---|---|
+| `exact` | the model's quote appears verbatim in the filing | best case |
+| `prefix` | its first 80 characters appear verbatim | the sentence crosses a page break and the running head is spliced in |
+| `recovered` | the quote did not verify, but the ENTITY is named — so the code lifts the document's own sentence | the model paraphrased its citation |
 
-1. Normalise — collapse whitespace, strip running heads and folios.
-2. Whole quote present → `match: "exact"`.
-3. Else first **80 characters** present verbatim → `match: "prefix"`.
-4. Else drop, keeping the claim and the reason.
+Anything that clears none of these is dropped, with the claim and the reason
+kept and shown on the page.
 
-80 characters is far past accident. A model does not share an 80-character
-exact prefix with a document it never read, but a real quote survives one
-spliced page header. Prefix-verified nodes are labelled as such in the UI.
+### It also checks the quote is about the right thing
 
-**Dropped nodes are shown, never hidden.** A silent drop is a quieter kind of
-unaccountability, and the drop list is also the fastest way to see a prompt
-regression.
+A citation must share **60% of the node name's content words**, stem-matched.
+This closes a hole found by auditing 809 seeded nodes: the gate verified a
+quote *occurred* in the filing and never that it *mentioned* what it was cited
+for, so generic prose sailed through as `exact`:
+
+- **BAJAJ-AUTO** — *"…wholly owned subsidiary in Thailand with an issued and
+  subscribed share capital of THB 45 million"* cited for an **Engineering
+  Design Centre**. It establishes a subsidiary, never a building.
+- **AXISBANK** — *"These services are offered to all customers (related /
+  unrelated) in the ordinary course of business"* cited for **both** LIC
+  Housing Finance **and** IDBI Bank. It names neither.
+- **BALRAMCHIN** — `"Others 3066.55 566.93"` cited as a raw material.
+
+56 of 809 nodes shared under a third of the name's content words; 11 shared
+none. Proportion rather than presence, because the Thailand sentence shares
+*bajaj/auto/thailand* and misses every word that makes it a design centre.
+Stems rather than exact tokens, because `Gold Loans` must still survive *"gold
+loan portfolio"* — the target is boilerplate, not paraphrase.
+
+### Why recovery exists
+
+On AXISBANK the strict gate rejected 18 of 66 nodes. Checked by hand the
+**entities** were real — *Kisan Credit Card*, *neo by Axis Bank*, *Axis House*
+all appear in the filing — while the sentences the model wrote around them did
+not. **The model finds what a company sells reliably and reproduces the prose
+unreliably.** Dropping those throws away true facts over a bad citation;
+keeping the model's sentence publishes a fabricated quote. So the gate does
+neither: the model is the finder, the code stays the witness. AXISBANK went
+48 kept/18 dropped → 59 kept/7 dropped.
+
+### revalidate() costs nothing
+
+The model's answer is stored verbatim, so improving the validator does not
+mean re-buying every extraction. `revalidate(symbol)` re-reads the filing,
+re-runs the current gate, and returns before/after so a validator change can
+be **judged rather than assumed** — the first version of this gate silently
+discarded six true Balrampur outputs and nothing in the pipeline showed it.
+
+## NSE serves truncated filings
+
+The `PDFium: Data format error` failures were never a parser problem. **NSE's
+archive serves incomplete PDF bodies with a `Content-Length` that matches the
+short body**, so httpx sees a clean 200 and raises nothing. Not HTML, not a
+redirect stub, not encrypted, and not a pypdfium2 defect — pymupdf fails
+identically on the same bytes.
+
+**Persistent (3 of 59).** AUBANK's FY2026 object declares `/L 22,660,544` and
+the API says 21.61 MB; the edge serves 130,516 or 424,177 bytes, and a `Range`
+request confirms the *origin* believes it is 424 KB. COALINDIA is 56.8% short,
+NTPC 17.5%. Unfixable client-side.
+
+**Transient (any symbol, any run).** NSE's edge replicas disagree with each
+other. AUBANK FY2025 pulled eight times returned a complete 21,318,690 bytes
+four times and a truncated 18,677,760 four times — `Content-Length` agreeing
+with the body every time. NTPC returned three *different* truncation lengths
+across three runs.
+
+Completeness is tested on the **`%%EOF` trailer**, not `/L` vs
+`Content-Length`: KOTAKBANK's `/L` is 20 bytes under its length and it parses
+fine at 522 pages, and APOLLOHOSP and PNB carry no `/L` at all. `%%EOF`
+flagged all three real cases with no false positives.
+
+`latest_readable_report()` walks **distinct** URLs newest-first — distinct
+because NSE returns a duplicated newest row for exactly the symbols whose
+newest upload is broken, so a naive `ars[1]` retries the identical bad URL. It
+returns the *report*, not just the text, because the extraction must be
+labelled with the year actually read. **Reading FY2025 and calling it FY2026
+would be worse than the download error it replaces.** Filings older than about
+FY2024 arrive as ZIPs holding one PDF; those are unwrapped so deep fallback
+does not dead-end.
+
+## PDFium is not thread-safe
+
+And it fails as though the input were bad. Five parallel extractions produced
+`Data format error` for BAJAJ-AUTO, BAJAJFINSV and BAJFINANCE, and 4,494
+characters from ASIANPAINT's 294 pages. All four parse perfectly alone —
+ASIANPAINT gives 64,387 chars in its first 20 pages. Taken at face value those
+look like corrupt or scanned filings, and the honest-refusal path would have
+recorded them as such and seeded a permanent hole. `fetch_report_text` holds a
+module lock and closes the handle inside it; parsing is 0.4s against a ~170s
+model call, so callers keep their concurrency.
+
+## What the keyword extractor did, for the record
+
+It listed **GOLD as a product of Reliance**, because `"gold"` was in its
+commodity list and the sentence read *"…IGMC **Gold** (IRIM), and IMeXI India
+Icon Kaizen Award."* That is an award. It also emitted `, PLANT` as a facility
+and put a share-capital table under CUSTOMERS. Every quote was real; every
+inference from it was wrong, and a keyword matcher cannot tell the difference.
+
+An audit of 809 LLM-extracted nodes found **no** node anywhere lifted from an
+award title. The eight surviving "Gold" nodes — `Gold Loans`, `Agri Gold`,
+`Digital Gold Loan`, `WoodTech PU Gold` — are all real products.
 
 ## What is stored, and where
 
