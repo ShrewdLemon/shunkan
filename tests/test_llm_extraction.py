@@ -267,3 +267,30 @@ def test_digest_extraction_validates_against_the_full_text_not_the_digest():
 
     src = inspect.getsource(llm.extract_from_digest)
     assert "validate_against_source(payload, text)" in src
+
+
+def test_quotes_are_sliced_byte_exact_not_retyped():
+    """These filings carry soft hyphens, non-breaking spaces and the U+FFFE
+    that pypdfium2 emits at line breaks. A retyped quote silently loses one
+    and the gate then rejects a TRUE node for an invisible typo."""
+    from shunkan.data.manual import build_payload, flatten, sentence_at
+
+    doc = ("Preamble here. The Business continues to procure wood, a key raw\n"
+           "mate￾rial, from sustainable sources. More text follows.")
+    got = sentence_at(flatten(doc), "procure wood")
+    assert "￾" in got, "the slice must preserve the source's odd characters"
+    payload, problems = build_payload(doc, {"inputs": [("Wood", "procure wood")]})
+    assert not problems
+    kept, dropped = validate_against_source(payload, doc)
+    assert [x["name"] for x in kept["inputs"]] == ["Wood"]
+    assert kept["inputs"][0]["match"] == "exact"
+
+
+def test_a_marker_that_is_absent_is_reported_not_dropped():
+    """A typo in the marker and a fact absent from the filing look identical
+    in the output and are very different mistakes."""
+    from shunkan.data.manual import build_payload
+
+    _, problems = build_payload("Some document text.",
+                                {"outputs": [("Widgets", "no such phrase")]})
+    assert problems and "marker not found" in problems[0]["problem"]

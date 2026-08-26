@@ -105,6 +105,12 @@ out of its own crushing operation. They are intermediates, not purchases.
 Titan's gold *is* an input — a jeweller buys gold. Ask "did money leave the
 company for this?"
 
+**Watch for an abbreviation that means something else here.** L&T's filing
+uses "M&M" for its **Minerals & Metals** business — *"M&M operates
+state-of-the-art manufacturing hubs in Kansbahal and Kancheepuram"* — which
+has nothing to do with Mahindra & Mahindra, a separate NIFTY 100 constituent.
+Name such nodes descriptively so the graph cannot conflate two companies.
+
 **An award is not a product.** The failure that started all of this: the old
 keyword extractor listed **GOLD** as a Reliance product because the filing
 said *"IGMC Gold (IRIM)"*, a prize. Certifications, rankings and awards
@@ -117,10 +123,29 @@ mention products without being products.
 refinery"* does not make bauxite an input today. If you keep it, the name must
 say it is proposed.
 
-**Copy the quote verbatim.** Do not tidy punctuation, expand an abbreviation
-or join two sentences. The gate normalises whitespace and strips running
-heads, and it tolerates an 80-character prefix when a sentence crosses a page
-break — but it will not tolerate a sentence you improved.
+**Do not retype a quote — SLICE it.** Use `manual.build_payload`, which takes
+`(name, marker)` pairs and cuts the sentence out of the document byte-exact:
+
+```python
+from shunkan.data.manual import build_payload, commit
+spec = {"inputs": [("Wood", "procure wood, a key raw material")],
+        "facilities": [("Bhadrachalam mill", "paper mill at Bhadrachalam", "Telangana")]}
+payload, problems = build_payload(text, spec, undisclosed=["customers"])
+```
+
+A retyped quote silently loses characters — these filings are full of soft
+hyphens, the `￾` that pypdfium2 emits at line breaks, and non-breaking spaces
+— and the gate then rejects a **true** node for a transcription error nobody
+can see. Slicing makes the citation exact by construction. A marker that is
+not in the document is reported in `problems`, because a typo in your marker
+and a fact that is not in the filing look identical in the output and are very
+different mistakes.
+
+Pass a `(back, fwd)` window when a sentence boundary is not nearby — bullet
+lists like "Major Orders Won" name the most counterparties and have the fewest
+full stops. Three NTPC quotes came back `prefix` rather than `exact` because a
+200-character window straddled a page-break running head; trimming the window
+to the bullet made all three exact.
 
 **Use `undisclosed` and mean it.** Reliance names no suppliers at all; its
 "Raw Material Security" section says only *"long-term supply arrangements and

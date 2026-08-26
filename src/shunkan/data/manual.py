@@ -185,3 +185,80 @@ def digest_text(text: str, per_category: int = 200) -> str:
     d = digest(text, per_category)
     return "\n\n".join(f"########## {c} ({len(v)}) ##########\n"
                         + "\n".join(f"- {x}" for x in v) for c, v in d.items())
+
+
+CATEGORIES_M = ("inputs", "outputs", "customers", "facilities")
+
+# ------------------------------------------------- byte-exact quote building
+
+def flatten(text: str) -> str:
+    """Whitespace-collapsed document, the form quotes are sliced from."""
+    return re.sub(r"\s+", " ", text)
+
+
+def sentence_at(flat: str, marker: str, back: int = 0, fwd: int = 0) -> str | None:
+    """The sentence in `flat` containing `marker`, sliced byte-exact.
+
+    An extraction agent working through NIFTY 100 found the better method and
+    it belongs here: do not RETYPE a quote, SLICE it. A retyped quote can
+    silently lose a character - these filings are full of soft hyphens, the
+    U+FFFE that pypdfium2 emits at line breaks, and non-breaking spaces - and
+    the gate then rejects a true node for a transcription error nobody can
+    see. Slicing makes the citation byte-exact by construction.
+
+    Falls back to a bounded window when no sentence boundary is nearby, which
+    happens constantly in bullet lists like "Major Orders Won" - the sections
+    that name the most counterparties and that the digest surfaces worst.
+
+    Pass `back`/`fwd` to force a window instead: three NTPC quotes came back
+    as `prefix` rather than `exact` because a 200-character window straddled a
+    page-break running head, and trimming the window to the bullet fixed all
+    three.
+    """
+    lo = flat.find(marker)
+    if lo < 0:
+        return None
+    if back or fwd:
+        return flat[max(0, lo - back):lo + len(marker) + fwd].strip()
+    start = flat.rfind(". ", 0, lo)
+    start = 0 if start < 0 else start + 2
+    end = flat.find(". ", lo + len(marker))
+    end = len(flat) if end < 0 else end + 1
+    out = flat[start:end].strip()
+    if len(out) > 600:
+        out = flat[max(0, lo - 200):lo + len(marker) + 200].strip()
+    return out or None
+
+
+def build_payload(text: str, spec: dict, undisclosed=()) -> tuple[dict, list]:
+    """Turn {category: [(name, marker[, location][, (back, fwd)])]} into a payload.
+
+    Returns (payload, problems). A marker that is not in the document is
+    reported rather than silently dropped, because a typo in a marker and a
+    fact that is not in the filing look identical in the output and are very
+    different mistakes.
+    """
+    flat = flatten(text)
+    payload: dict = {c: [] for c in CATEGORIES_M}
+    payload["undisclosed"] = list(undisclosed)
+    problems = []
+    for cat, items in spec.items():
+        for it in items:
+            name, marker = it[0], it[1]
+            loc, back, fwd = None, 0, 0
+            for extra in it[2:]:
+                if isinstance(extra, str):
+                    loc = extra
+                elif isinstance(extra, (list, tuple)):
+                    back, fwd = extra
+            q = sentence_at(flat, marker, back, fwd)
+            if q is None:
+                problems.append({"category": cat, "name": name,
+                                 "problem": f"marker not found in document: {marker[:70]!r}"})
+                continue
+            row = {"name": name, "quote": q}
+            if loc:
+                row["location"] = loc
+            payload[cat].append(row)
+    return payload, problems
+
