@@ -403,6 +403,19 @@ def _loads_lenient(raw: str):
     return json.loads(frag)   # raises if still broken, which is correct
 
 
+# Control characters that a PDF text layer emits and that str.isspace() does
+# NOT cover. MOTHERSON's top-customer chart is delimited by raw ESC (\x1b)
+# bytes; \s+ leaves them in place, so a quote sliced from the document and a
+# quote retyped from it stopped matching for a reason nobody could see.
+_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+")
+
+# Ligature-failure glyphs. These filings carry BOTH U+FFFD and U+FFFE, some-
+# times in adjacent sentences, wherever an embedded font failed to map "ffi"
+# or "ti". Retyping one as the other silently downgrades an exact match to a
+# recovered one, so they are folded to nothing before comparison.
+_LIGATURE_JUNK = re.compile("[\ufffd\ufffe\u00ad\u200b\u200c\u200d]")
+
+
 def _norm(s: str) -> str:
     """Whitespace-insensitive form for quote matching.
 
@@ -410,8 +423,13 @@ def _norm(s: str) -> str:
     'Ethanol sold to Oil\\nRefineries' while the model returns the sentence
     reflowed. Matching raw would reject almost every true quote, and a
     validator that rejects the truth gets switched off. Collapse instead.
+
+    Control characters and ligature-failure glyphs are folded out for the same
+    reason: they are artefacts of the extraction, not of the filing, and a
+    citation should not fail on a byte the author never wrote.
     """
-    return re.sub(r"\s+", " ", _FURNITURE.sub(" ", (s or ""))).strip().lower()
+    s = _LIGATURE_JUNK.sub("", _CTRL.sub(" ", s or ""))
+    return re.sub(r"\s+", " ", _FURNITURE.sub(" ", s)).strip().lower()
 
 
 def _locate(quote: str, hay: str, name: str = "") -> str | None:

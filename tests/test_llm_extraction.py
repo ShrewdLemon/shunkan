@@ -294,3 +294,39 @@ def test_a_marker_that_is_absent_is_reported_not_dropped():
     _, problems = build_payload("Some document text.",
                                 {"outputs": [("Widgets", "no such phrase")]})
     assert problems and "marker not found" in problems[0]["problem"]
+
+
+def test_furniture_stripping_cannot_eat_the_document():
+    """The first version was `integrated annual report[^|]*\\|\\s*\\d+`. `[^|]*`
+    is unbounded, so it ran from a running head to the next pipe character
+    ANYWHERE later in the filing. Measured: it deleted 66,155 characters
+    (3.69%) of HDFCBANK's text and 24,114 (1.17%) of TATAPOWER's from the
+    gate's view, which silently made TRUE, verbatim quotes uncitable. Bounded
+    now, and this test exists so nobody unbounds it again."""
+    from shunkan.data.llm import _FURNITURE
+
+    doc = ("Integrated Annual Report 2025-26 | 89 " + "x" * 5000
+           + " important sentence about hydro stations | 12 |")
+    stripped = _FURNITURE.sub(" ", doc)
+    assert "important sentence about hydro stations" in stripped
+    assert len(doc) - len(stripped) < 200, "furniture stripping ate the document"
+
+
+def test_control_characters_and_ligature_junk_fold_out():
+    """MOTHERSON's top-customer chart is delimited by raw ESC bytes, which
+    \\s+ does not touch. These filings also carry BOTH U+FFFD and U+FFFE as
+    ligature-failure glyphs, sometimes in adjacent sentences."""
+    from shunkan.data.llm import _norm
+
+    assert _norm("Top customers\x1bchart") == _norm("Top customers chart")
+    assert _norm("tari�ff") == _norm("tari￾ff") == "tariff"
+
+
+def test_abbreviations_do_not_split_a_sentence():
+    """'Dr. Fixit' appears 40 times in Pidilite's filing and grepping the
+    phrase returned nothing, because every occurrence had been cut in half."""
+    from shunkan.data.manual import _split_sentences
+
+    got = _split_sentences("We sell Dr. Fixit waterproofing. It is a brand.")
+    assert got[0].endswith("waterproofing.")
+    assert "Dr. Fixit" in got[0]
