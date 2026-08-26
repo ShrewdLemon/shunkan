@@ -330,3 +330,13 @@ def test_abbreviations_do_not_split_a_sentence():
     got = _split_sentences("We sell Dr. Fixit waterproofing. It is a brand.")
     assert got[0].endswith("waterproofing.")
     assert "Dr. Fixit" in got[0]
+
+
+def test_c1_bullet_glyph_folds():
+    """Adani and Apollo filings use U+0083 as the bullet. It renders as
+    NOTHING in a terminal, so a quote copied across a bullet looks
+    byte-identical to the source on screen and silently fails to match. Four
+    real nodes were lost to it before an agent tracked it down."""
+    from shunkan.data.llm import _norm
+
+    assert _norm("products\x83 include steel") == _norm("products include steel")
