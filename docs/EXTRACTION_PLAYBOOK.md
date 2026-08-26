@@ -180,8 +180,22 @@ Reading is ~9k tokens per company plus judgment. **NIFTY 100 is a long but
 real task. NIFTY 500 by hand is not** — 500 × 9k is 4.5M tokens of reading
 before a single node is written, and the judgment does not batch.
 
-For the long tail, use the API path in `llm.py` and spend the $0.08/company.
-Two things make that cheap now: the digest could feed the model too, and
+For the long tail, use `extract_from_text` (whole document) and spend the
+$0.08/company.
+
+**Do not feed the digest to the model to save money — it was tried and
+measured.** On RELIANCE the digest path cost $0.0105 against $0.1116 and
+returned 32 nodes against 68, missing Samsung C&T Corporation and India Gas
+Solutions as customers. The cause is not the sentence cap; raising it from 60
+to 250 gives a byte-identical digest. Only 152 of 2,407 candidate sentences
+match any cue pattern, so recall depends on whether a company's prose happens
+to use that vocabulary.
+
+The digest works for a **reader** because a reader compensates for the
+regex's blind spots — that is how ITC reached 47 nodes with zero drops. A
+model handed the same digest just inherits the blind spots. $40 for all of
+NIFTY 500 is not a saving worth half the data.
+
 `revalidate()` re-runs the gate for **zero tokens**, so improving the
 validator never means re-buying data.
 

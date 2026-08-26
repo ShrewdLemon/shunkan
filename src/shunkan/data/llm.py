@@ -356,6 +356,43 @@ def _quote_mentions_node(name: str, nq: str, need: float = 0.6) -> bool:
     return (hit / len(words)) >= need
 
 
+def _loads_lenient(raw: str):
+    """Parse the model's JSON, repairing the cheap failures.
+
+    APOLLOHOSP cost a full ~300k-token call and then failed on "Expecting ','
+    delimiter" at character 14,914. Re-buying an entire extraction because of
+    one stray comma is not a reasonable trade, and a hard failure here is
+    indistinguishable to the caller from "the company disclosed nothing".
+
+    Repairs are strictly syntactic - no field is invented, no value altered:
+      1. as-is
+      2. trailing commas before } or ] removed
+      3. a truncated reply closed by balancing brackets, dropping the dangling
+         partial object at the tail
+    Anything still unparseable raises, because guessing at the content of a
+    broken answer is exactly what this module exists to prevent.
+    """
+    m = re.search(r"\{.*\}", raw, re.S)
+    candidate = m.group(0) if m else raw
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+    stripped = re.sub(r",\s*([}\]])", r"\1", candidate)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    frag = re.sub(r",\s*\{[^{}]*$", "", raw[raw.find("{"):] if "{" in raw else raw)
+    depth_c = frag.count("{") - frag.count("}")
+    depth_b = frag.count("[") - frag.count("]")
+    if frag.rstrip().endswith(","):
+        frag = frag.rstrip()[:-1]
+    frag += "]" * max(0, depth_b) + "}" * max(0, depth_c)
+    frag = re.sub(r",\s*([}\]])", r"\1", frag)
+    return json.loads(frag)   # raises if still broken, which is correct
+
+
 def _norm(s: str) -> str:
     """Whitespace-insensitive form for quote matching.
 
@@ -515,6 +552,111 @@ def validate_against_source(payload: dict, text: str) -> tuple[dict, list]:
                 row["location"] = str(item["location"]).strip()
             kept[cat].append(row)
     return kept, dropped
+
+
+# The rules that decide whether a node survives, stated to the model in the
+# same words they are stated to a human agent in EXTRACTION_AGENT_SPEC.md.
+# Keeping one wording for both is the point: a bulk run and a hand-built row
+# should be the same KIND of artefact, differing in who produced it.
+RULES = (
+    " - Name each node as the DOCUMENT names it. A citation must share most of\n"
+    "   the name's words. 'Fabelle chocolates' cited to a sentence saying only\n"
+    "   'Fabelle' will be rejected; 'Fabelle' is accepted.\n"
+    " - A customer is a BUYER, not a channel. 'sells through wholesalers and\n"
+    "   distributors' makes the wholesalers a channel, not the customer.\n"
+    " - An input is BOUGHT, not produced. A sugar mill's molasses is its own\n"
+    "   output; a jeweller's gold is an input. Did money leave the company?\n"
+    " - An AWARD is not a product. 'IGMC Gold (IRIM)' is a prize, not gold.\n"
+    " - Not names: bare numbers ('1 in 3 households'), category labels\n"
+    "   ('raw materials'), plans ('is contemplating a refinery'), punctuation.\n"
+    " - One node, one claim. Split 'KCC, SHG financing, Agri Gold Loans'.\n"
+    " - 'undisclosed' is a REAL answer. Banks have no raw-material inputs and\n"
+    "   many companies never name a supplier. An empty category with the reason\n"
+    "   named beats a guessed one.\n")
+
+DIGEST_PROMPT = (
+    "Extract a supply-chain map for this company. Below are sentences taken\n"
+    "VERBATIM from its filed annual report, grouped by a keyword matcher.\n\n"
+    "THE GROUPING IS A HINT AND IT IS OFTEN WRONG - it is a recall aid, not a\n"
+    "classifier. Sentences under CUSTOMERS will include board-member\n"
+    "biographies because the word 'serves' matched. You decide which category\n"
+    "each fact belongs to, and you ignore the sentences that carry no\n"
+    "supply-chain fact at all.\n\n"
+    "RULES:\n" + RULES +
+    " - Every item MUST quote one of the sentences below, copied EXACTLY.\n"
+    "   Do not fix punctuation, expand abbreviations or merge sentences.\n"
+    " - Use ONLY these sentences. No outside knowledge about the company.\n\n"
+    f"Return STRICT JSON:\n{SCHEMA}\n\nSENTENCES FROM THE FILING:\n")
+
+
+def extract_from_digest(symbol: str, text: str, *, document: str = "",
+                        document_url: str = "", pages: int = 0,
+                        per_category: int = 60,
+                        settings: LLMSettings | None = None) -> Extraction:
+    """Extract from the DIGEST rather than the whole document.
+
+    WHY THIS IS NOT THE RAG MISTAKE. Retrieval-by-embedding lost badly here -
+    top-8 chunks found 7 customers where the whole document found 19 - because
+    similarity search cannot reach a fact mentioned once on page 217. The
+    digest is a different instrument: it is a deterministic sweep of EVERY
+    sentence in the filing against supply-chain cue patterns, so a
+    single-mention fact is kept as readily as a repeated one. It discards
+    prose, not coverage.
+
+    MEASURED, AND IT IS NOT A DROP-IN REPLACEMENT. On RELIANCE:
+
+        full context   355,044 input tokens   $0.1116   68 nodes
+        digest          5,937 input tokens   $0.0105   32 nodes
+
+    10x cheaper and it recovered under half the map. It missed Samsung C&T
+    Corporation and India Gas Solutions as customers, both of which the
+    full-context run found.
+
+    The cause is not the sentence cap - raising it from 60 to 250 produced a
+    BYTE-IDENTICAL digest. The ceiling is the cue patterns themselves: of
+    2,407 candidate sentences in Reliance's filing only 152 match any cue.
+    Recall therefore depends on whether a company's prose happens to use the
+    vocabulary in _CUES, which for a diversified oil/telecom/retail group it
+    largely does not.
+
+    So: this path is for an agent or a human who READS the digest and applies
+    judgment, compensating for the regex's blind spots - that produced 47
+    nodes for ITC with zero drops. Handing the same digest to a model just
+    inherits the blind spots at 10x less cost, and $40 for all of NIFTY 500 is
+    not a saving worth half the data. Use extract_from_text for bulk.
+
+    Validation is unchanged, and note the asymmetry that protects this: quotes
+    are checked against the FULL document text, not against the digest. A
+    sentence the digest dropped can still be recovered by _recover_sentence.
+    """
+    from shunkan.data.manual import digest_text
+
+    s = settings or load_settings()
+    d = digest_text(text, per_category)
+    out = chat([{"role": "user", "content": DIGEST_PROMPT + d}], s)
+    try:
+        payload = _loads_lenient(out["content"])
+    except json.JSONDecodeError as exc:
+        raise DataError(f"model returned unparseable JSON even after repair: {exc}") from exc
+
+    kept, dropped = validate_against_source(payload, text)   # FULL text, not the digest
+    ex = Extraction(
+        symbol=symbol.upper(), document=document, document_url=document_url,
+        pages=pages, chars=len(text),
+        undisclosed=[str(u) for u in (payload.get("undisclosed") or [])],
+        dropped=dropped, model=out["model"], effort=f"digest/{out['effort']}",
+        tokens_in=out["tokens_in"], tokens_out=out["tokens_out"],
+        tokens_reasoning=out["tokens_reasoning"], cost_usd=out["cost_usd"],
+        secs=out["secs"],
+        extracted_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        **kept)
+    ex.notes.append(f"extracted from a {len(d):,}-char digest of the "
+                    f"{len(text):,}-char filing; quotes validated against the FULL text")
+    if dropped:
+        ex.notes.append(f"{len(dropped)} node(s) dropped: neither the quote nor "
+                        "the name occurs in the filed document")
+    ledger_append(ex)
+    return ex
 
 
 def extract_from_text(symbol: str, text: str, *, document: str = "",
