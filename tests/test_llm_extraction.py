@@ -243,3 +243,27 @@ def test_a_name_with_no_content_words_still_passes_other_rules():
     kept, _ = _gate("The and", "The and for with from its our their.", doc,
                     cat="outputs")
     assert len(kept["outputs"]) == 1
+
+
+def test_lenient_json_survives_the_cheap_breakages():
+    """A ~300k-token call once failed on one stray comma. This helper was
+    silently deleted by a later edit and nothing caught it until a run
+    crashed, so it gets a test."""
+    from shunkan.data.llm import _loads_lenient
+
+    assert _loads_lenient('{"a": 1}')["a"] == 1
+    assert _loads_lenient('noise {"a": [1, 2,]} tail')["a"] == [1, 2]
+    # truncated mid-object, as a length-capped reply arrives
+    got = _loads_lenient('{"items": [{"name": "x", "quote": "y"}, {"name": "part')
+    assert got["items"][0]["name"] == "x"
+
+
+def test_digest_extraction_validates_against_the_full_text_not_the_digest():
+    """A sentence the digest dropped must still be recoverable, so the cheap
+    path can never be less honest than the expensive one."""
+    import inspect
+
+    from shunkan.data import llm
+
+    src = inspect.getsource(llm.extract_from_digest)
+    assert "validate_against_source(payload, text)" in src
