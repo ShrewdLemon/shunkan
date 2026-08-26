@@ -407,7 +407,11 @@ def _loads_lenient(raw: str):
 # NOT cover. MOTHERSON's top-customer chart is delimited by raw ESC (\x1b)
 # bytes; \s+ leaves them in place, so a quote sliced from the document and a
 # quote retyped from it stopped matching for a reason nobody could see.
-_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+")
+# C0 AND C1. The C1 range matters: Adani and Apollo filings use U+0083 as the
+# bullet glyph and it renders as NOTHING in a terminal, so a quote copied
+# across a bullet looks byte-identical to the source on screen and silently
+# fails to match. Four nodes were lost to it before it was found.
+_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]+")
 
 # Ligature-failure glyphs. These filings carry BOTH U+FFFD and U+FFFE, some-
 # times in adjacent sentences, wherever an embedded font failed to map "ffi"
