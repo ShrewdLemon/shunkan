@@ -55,6 +55,12 @@ def test_app_js_does_not_truncate_supply_chain_evidence():
     src = (ROOT / "src/shunkan/server/static/app.js").read_text()
     body = src[src.index("async function drawSupplyMap"):]
     body = body[:body.index("\n}\n")]
-    assert ".slice(0," not in body.replace("// slice(0,190)", ""), \
-        "drawSupplyMap truncates evidence again"
+    # Only the EVIDENCE must not be sliced. Slicing a timestamp to 16 chars is
+    # fine, and an earlier version of this test failed on exactly that.
+    for line in body.splitlines():
+        if ".slice(0," not in line:
+            continue
+        assert "quote" not in line and "evidence" not in line, \
+            f"drawSupplyMap truncates evidence again: {line.strip()}"
     assert 'classList.toggle("open")' in body
+    assert "/extract" in body, "supply map must read the validated extraction"

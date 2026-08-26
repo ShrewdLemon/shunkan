@@ -109,3 +109,23 @@ def test_settings_reject_unknown_effort():
 def test_extraction_counts():
     ex = Extraction("BALRAMCHIN", customers=[{"name": "IFFCO", "quote": "x"}])
     assert ex.counts() == {"inputs": 0, "outputs": 0, "customers": 1, "facilities": 0}
+
+
+def test_pdf_parsing_is_serialised_because_pdfium_is_not_thread_safe():
+    """Five parallel bulk extractions produced "PDFium: Data format error" for
+    BAJAJ-AUTO and 4,494 characters from ASIANPAINT's 294 pages. Both parse
+    perfectly alone. Read as a data problem those look like corrupt or scanned
+    filings, and the honest-refusal path would have recorded them as such and
+    seeded a permanent hole in the database."""
+    from shunkan.data import filings
+
+    assert hasattr(filings, "_PDF_LOCK")
+    src = filings.fetch_report_text.__doc__ or ""
+    body = __import__("inspect").getsource(filings.fetch_report_text)
+    assert "_PDF_LOCK" in body, "the parse must hold the lock"
+
+
+def test_oversize_document_is_truncated_loudly_not_silently():
+    from shunkan.data import llm
+
+    assert llm._MAX_CHARS > 1_000_000

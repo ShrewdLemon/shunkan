@@ -3296,56 +3296,81 @@ async function drawFundOwnership(sym, view) {
 }
 
 async function drawSupplyMap(sym, view) {
+  /* Reads the LLM extraction, NOT the old keyword extractor.
+     That extractor listed GOLD as a Reliance product because the word
+     appears in "IGMC Gold (IRIM)", an award; it put a share-capital table
+     under CUSTOMERS and emitted ", PLANT" as a facility. Every node here
+     instead carries a quote that was checked verbatim against the filed PDF,
+     and anything that failed that check is shown in its own section rather
+     than quietly dropped. */
   const host = () => $("#cmp-splc");
   const col = (title, nodes, cls_) => `
     <div class="splc-col">
       <div class="splc-head ${cls_}">${title} <span class="faint">${nodes.length}</span></div>
       ${nodes.length ? nodes.map((n) => `
-        <div class="splc-node${n.evidence.length > 150 ? " clip" : ""}" tabindex="0" role="button"
+        <div class="splc-node${(n.quote || "").length > 150 ? " clip" : ""}" tabindex="0" role="button"
              aria-expanded="false">
-          <div class="splc-term">${esc(n.term.toUpperCase())}${n.mentions > 1 ? ` <span class="faint">×${n.mentions}</span>` : ""}</div>
-          <div class="splc-ev">${esc(n.evidence)}</div>
+          <div class="splc-term">${esc(String(n.name || "").toUpperCase())}${
+            n.location ? ` <span class="faint">${esc(n.location)}</span>` : ""}${
+            n.match === "prefix" ? ` <span class="faint" title="verified on an 80-character verbatim prefix; the tail crosses a page break">≈</span>` : ""}</div>
+          <div class="splc-ev">${esc(n.quote || "")}</div>
         </div>`).join("")
         : `<div class="empty" style="padding:6px 8px">the report names none in this class</div>`}
     </div>`;
   try {
-    let d = await getJSON(`/api/company/${encodeURIComponent(sym)}/supply`);
-    while (d.building) {
-      if (!document.body.contains(view)) return;
-      const h = host();
-      if (h) h.innerHTML = loading(esc(d.stage || "building the map"));
-      await new Promise((r) => setTimeout(r, 4000));
-      d = await getJSON(`/api/company/${encodeURIComponent(sym)}/supply`);
-    }
+    const d = await getJSON(`/api/company/${encodeURIComponent(sym)}/extract`);
     const h = host();
     if (!h) return;
-    if (d.error) { h.innerHTML = `<div class="empty" style="padding:8px 14px">${esc(d.error)}</div>`; return; }
+    if (d.building) {
+      h.innerHTML = loading(esc(d.stage || "extracting"));
+      setTimeout(() => { if (document.body.contains(view)) drawSupplyMap(sym, view); }, 5000);
+      return;
+    }
+    if (!d.extracted) {
+      h.innerHTML = `<div class="empty" style="padding:10px 14px">
+        ${esc(d.reason || "no extraction stored")} —
+        <button id="splc-run" class="chip" style="color:var(--amber);cursor:pointer">EXTRACT NOW</button>
+        <div class="faint" style="margin-top:4px;font-size:11px">
+          reads the filed annual report whole and checks every quote against it. 2–3 minutes.</div></div>`;
+      const b = $("#splc-run");
+      if (b) b.onclick = async () => {
+        try { await postJSON(`/api/company/${sym}/extract`); drawSupplyMap(sym, view); }
+        catch (e) { h.innerHTML = `<div class="bad" style="padding:10px 14px">${esc(e.message)}</div>`; }
+      };
+      return;
+    }
+    const c = d.counts || {};
     const sc = $("#cmp-splc-count");
-    if (sc) sc.textContent = `· ${(d.inputs || []).length} inputs · ${(d.customers || []).length} customers · ${(d.facilities || []).length} facilities`;
+    if (sc) sc.textContent = `· ${c.inputs || 0} inputs · ${c.outputs || 0} outputs · ${c.customers || 0} customers · ${c.facilities || 0} facilities`;
     h.innerHTML = `
       <div class="splc-grid">
         ${col("UPSTREAM · INPUTS", d.inputs || [], "up")}
-        ${col("OPERATIONS · CAPACITY", d.facilities || [], "hl")}
+        ${col("OPERATIONS · FACILITIES", d.facilities || [], "hl")}
         ${col("OUTPUTS · PRODUCTS", d.outputs || [], "amber")}
         ${col("DOWNSTREAM · CUSTOMERS", d.customers || [], "down")}
       </div>
-      ${(d.family || []).length ? secBlock("CORPORATE FAMILY — SUBSIDIARIES / JV / ASSOCIATES", d.family.length, `
-        <table class="tbl fam-tbl" style="table-layout:fixed">
-          <colgroup><col style="width:22%"><col></colgroup>
-          <tbody>${d.family.map((f) => `<tr class="fam-row${f.evidence.length > 150 ? " clip" : ""}"
+      ${(d.undisclosed || []).length ? `<div class="empty" style="padding:6px 14px">
+        <b class="hl">NOT DISCLOSED:</b> <span class="faint">${d.undisclosed.map(esc).join(" · ")}
+        — the report does not name these; nothing is inferred to fill the gap</span></div>` : ""}
+      ${(d.dropped || []).length ? secBlock("REJECTED — QUOTE NOT FOUND IN THE FILING", d.dropped.length,
+        `<table class="tbl fam-tbl" style="table-layout:fixed">
+          <colgroup><col style="width:11%"><col style="width:22%"><col></colgroup>
+          <tbody>${d.dropped.map((x) => `<tr class="fam-row${(x.quote || "").length > 150 ? " clip" : ""}"
               tabindex="0" role="button" aria-expanded="false">
-          <td class="txt sym" style="text-align:left;word-break:break-word">${esc(f.term)}</td>
-          <td class="txt faint fam-ev" style="text-align:left;font-size:10px">${esc(f.evidence)}</td>
-        </tr>`).join("")}</tbody></table>`) : ""}
-      ${(d.locations || []).length ? `<div class="empty" style="padding:6px 14px">
-        <b class="hl">LOCATIONS NAMED:</b> ${d.locations.map(esc).join(" · ")}</div>` : ""}
+            <td class="txt faint" style="text-align:left">${esc(x.category || "")}</td>
+            <td class="txt bad sym" style="text-align:left;word-break:break-word">${esc(x.name || "")}</td>
+            <td class="txt faint fam-ev" style="text-align:left;font-size:10px">${esc(x.reason || "")} — “${esc(x.quote || "")}”</td>
+          </tr>`).join("")}</tbody></table>
+         <div class="empty" style="padding:6px 10px"><span class="faint">
+           the model asserted these and could not support them from the document, so they are
+           not in the map. Shown rather than hidden: a silent drop is a quieter unaccountability.
+         </span></div>`) : ""}
       <div class="empty" style="padding:4px 14px 10px"><span class="faint">
-        source: <a href="${esc(d.document)}" target="_blank" rel="noopener">annual report FY${esc(d.report_year || "")}</a>
-        · ${d.pages_read} pages read · ${(d.notes || []).map(esc).join(" · ")}</span></div>`;
-    // Click (or Enter/Space) anywhere on a tile or family row to show the whole
-    // sentence. The full text is always in the DOM and only CSS-clamped, so it
-    // stays searchable with the browser find bar and copies out intact - a
-    // slice(0,190) in the template loses the evidence for good.
+        ${esc(d.document || "")} ·
+        <a href="${esc(d.document_url || "#")}" target="_blank" rel="noopener">source PDF</a> ·
+        ${d.pages} pages read · ${esc(d.model || "")} @ ${esc(d.effort || "")} ·
+        ${esc(String(d.extracted_at || "").slice(0, 16).replace("T", " "))}
+        · ${(d.notes || []).map(esc).join(" · ")}</span></div>`;
     const toggle = (el) => {
       if (!el) return;
       const open = el.classList.toggle("open");
@@ -3353,21 +3378,21 @@ async function drawSupplyMap(sym, view) {
     };
     if (h.dataset.splcBound !== "1") {
       h.dataset.splcBound = "1";
-    h.addEventListener("click", (e) => {
-      const t = e.target.closest(".splc-node, .fam-row");
-      if (t && !e.target.closest("a")) toggle(t);
-    });
-    h.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" && e.key !== " ") return;
-      const t = e.target.closest(".splc-node, .fam-row");
-      if (!t) return;
-      e.preventDefault();
-      toggle(t);
-    });
+      h.addEventListener("click", (e) => {
+        const t = e.target.closest(".splc-node, .fam-row");
+        if (t && !e.target.closest("a") && !e.target.closest("button")) toggle(t);
+      });
+      h.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const t = e.target.closest(".splc-node, .fam-row");
+        if (!t) return;
+        e.preventDefault();
+        toggle(t);
+      });
     }
   } catch (e) {
     const h = host();
-    if (h) h.innerHTML = `<div class="empty" style="padding:8px 14px">${esc(e.message)}</div>`;
+    if (h) h.innerHTML = `<div class="bad" style="padding:10px 14px">${esc(e.message)}</div>`;
   }
 }
 

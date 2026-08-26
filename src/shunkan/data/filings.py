@@ -24,6 +24,7 @@ never summarised from the model's own knowledge of the company.
 from __future__ import annotations
 
 import re
+import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from collections import defaultdict
@@ -169,6 +170,9 @@ class Shareholding:
     categories: dict = field(default_factory=dict)  # fine-grained label -> pct
     holders: list = field(default_factory=list)
     total_shares: int | None = None
+
+
+_PDF_LOCK = threading.Lock()   # see fetch_report_text: PDFium is not thread-safe
 
 
 def _num(v):
@@ -411,17 +415,30 @@ def fetch_report_text(url: str, max_pages: int = 600) -> tuple[str, int]:
                         timeout=300.0, follow_redirects=True).content
     except Exception as exc:
         raise DataError(f"annual report download failed: {exc}") from exc
-    try:
-        doc = pdfium.PdfDocument(io.BytesIO(raw))
-    except Exception as exc:
-        raise DataError(f"annual report is not readable as PDF: {exc}") from exc
-    chunks = []
-    n = min(len(doc), max_pages)
-    for i in range(n):
+
+    # PDFium is NOT thread-safe, and it fails in a way that impersonates bad
+    # input rather than a race. Running five bulk extractions in parallel gave
+    # "PDFium: Data format error" for BAJAJ-AUTO and 4,494 characters from
+    # ASIANPAINT's 294 pages - both of which parse perfectly on their own
+    # (61,495 and 64,387 chars in the first 20 pages). Read as a data problem
+    # those look like corrupt or scanned filings, and the honest-refusal path
+    # would have recorded them as such and moved on, seeding the database with
+    # a permanent hole. Serialise instead.
+    #
+    # The cost is nil: parsing is 0.4s and the LLM call it feeds is ~170s, so
+    # callers keep essentially all of their concurrency.
+    with _PDF_LOCK:
         try:
-            chunks.append(doc[i].get_textpage().get_text_range() or "")
-        except Exception:
-            continue  # one unreadable page never costs the other 399
+            doc = pdfium.PdfDocument(io.BytesIO(raw))
+        except Exception as exc:
+            raise DataError(f"annual report is not readable as PDF: {exc}") from exc
+        chunks = []
+        n = min(len(doc), max_pages)
+        for i in range(n):
+            try:
+                chunks.append(doc[i].get_textpage().get_text_range() or "")
+            except Exception:
+                continue  # one unreadable page never costs the other 399
     return "\n".join(chunks), n
 
 

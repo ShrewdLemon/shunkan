@@ -288,6 +288,12 @@ PROMPT = (
 
 CATEGORIES = ("inputs", "outputs", "customers", "facilities")
 
+# ~4 chars/token, kept under a 300k-token window with room for the prompt and
+# the reply. Balrampur's 1.48M chars came in at 408k prompt tokens and was
+# accepted, so this is deliberately conservative rather than tuned to a limit
+# the provider has not published.
+_MAX_CHARS = 1_600_000
+
 
 # Running heads, folios and the page furniture that a PDF text layer splices
 # into the middle of a sentence that happens to straddle a page break.
@@ -417,6 +423,15 @@ def extract_from_text(symbol: str, text: str, *, document: str = "",
                       settings: LLMSettings | None = None) -> Extraction:
     """Whole document -> one call -> validated nodes. No chunking anywhere."""
     s = settings or load_settings()
+    # A 500-page report can exceed even a 300k-token window. Truncate and SAY
+    # SO, rather than letting the provider reject the call (which reads as a
+    # transport failure) or silently dropping the tail (which reads as "the
+    # company disclosed nothing about its customers").
+    note = None
+    if len(text) > _MAX_CHARS:
+        note = (f"document truncated to {_MAX_CHARS:,} of {len(text):,} characters "
+                f"to fit the model context - the tail was NOT read")
+        text = text[:_MAX_CHARS]
     out = chat([{"role": "user", "content": PROMPT + text}], s)
     m = re.search(r"\{.*\}", out["content"], re.S)
     if not m:
@@ -439,6 +454,8 @@ def extract_from_text(symbol: str, text: str, *, document: str = "",
         extracted_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         **kept)
 
+    if note:
+        ex.notes.append(note)
     if dropped:
         ex.notes.append(f"{len(dropped)} node(s) dropped: their quote does not "
                         "occur in the filed document")
@@ -608,3 +625,71 @@ def ledger_stats() -> dict:
         "secs": round(sum(r.get("secs", 0) for r in rows), 1),
         "last": rows[0].get("ts", ""),
     }
+
+
+# ------------------------------------------------------------- bulk seeding
+
+def bulk_extract(symbols: list[str], *, workers: int = 5,
+                 budget_usd: float | None = None, skip_existing: bool = True,
+                 settings: LLMSettings | None = None, progress=None) -> dict:
+    """Seed the database across a universe, concurrently and within a budget.
+
+    THE BUDGET GUARD IS NOT OPTIONAL. Each company is a ~300k-token call, and
+    a universe of 500 is real money. The guard is checked BEFORE each call is
+    dispatched, so the run stops cleanly rather than discovering the account
+    is empty halfway through and leaving a half-seeded database that looks
+    complete. What was skipped is returned, never silently dropped.
+
+    Concurrency is modest on purpose. These are minutes-long calls against a
+    third-party API; twenty parallel requests is how you get rate-limited into
+    a partial seed with no record of which companies failed.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    s = settings or load_settings()
+    if not s.enabled:
+        raise DataError("LLM extraction is disabled - enable it in the ADMIN tab")
+
+    have = set(stored_symbols()) if skip_existing else set()
+    todo = [x.upper() for x in symbols if x.upper() not in have]
+    spent = 0.0
+    done, failed, skipped_budget = [], [], []
+    lock = __import__("threading").Lock()
+
+    def say(m):
+        if progress:
+            progress(m)
+
+    say(f"bulk: {len(todo)} to extract, {len(have)} already stored, "
+        f"budget {'$%.2f' % budget_usd if budget_usd else 'none'}")
+
+    def one(sym):
+        nonlocal spent
+        with lock:
+            if budget_usd is not None and spent >= budget_usd:
+                skipped_budget.append(sym)
+                return None
+        try:
+            ex = extract_company(sym, settings=s)
+            with lock:
+                spent += ex.cost_usd
+                done.append(sym)
+                say(f"  [{len(done)}/{len(todo)}] {sym}: {ex.counts()} "
+                    f"dropped={len(ex.dropped)} ${ex.cost_usd:.4f} "
+                    f"(spent ${spent:.2f})")
+            return ex
+        except Exception as exc:
+            with lock:
+                failed.append({"symbol": sym, "error": str(exc)[:200]})
+                say(f"  [{len(done)}/{len(todo)}] {sym}: FAILED {str(exc)[:90]}")
+            return None
+
+    with ThreadPoolExecutor(max_workers=workers) as ex_:
+        futs = [ex_.submit(one, x) for x in todo]
+        for _ in as_completed(futs):
+            pass
+
+    return {"requested": len(symbols), "extracted": done, "failed": failed,
+            "skipped_already_had": sorted(have & {x.upper() for x in symbols}),
+            "skipped_over_budget": skipped_budget,
+            "spent_usd": round(spent, 4)}
