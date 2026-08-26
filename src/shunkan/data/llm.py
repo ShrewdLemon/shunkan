@@ -570,7 +570,7 @@ def extract_from_text(symbol: str, text: str, *, document: str = "",
 def extract_company(symbol: str, *, settings: LLMSettings | None = None,
                     progress=None) -> Extraction:
     """Locate the latest annual report, read it, extract, validate, store."""
-    from shunkan.data.filings import annual_reports, fetch_report_text
+    from shunkan.data.filings import latest_readable_report
 
     s = settings or load_settings()
     if not s.enabled:
@@ -582,10 +582,13 @@ def extract_company(symbol: str, *, settings: LLMSettings | None = None,
             progress(m)
 
     say("locating the annual report")
-    ars = annual_reports(sym)
-    ar = ars[0]
-    say(f"downloading FY{ar.get('to_year')} report ({ar.get('size')})")
-    text, pages = fetch_report_text(ar["url"], max_pages=s.max_pages)
+    # The NEWEST filing is not always readable: NSE serves truncated bodies
+    # for a few symbols and duplicates the newest row for exactly those. This
+    # returns whichever filing actually parsed, and the extraction is labelled
+    # with THAT year - reading FY2025 and calling it FY2026 would be a worse
+    # failure than the download error it replaces.
+    ar, text, pages = latest_readable_report(sym)
+    say(f"read FY{ar.get('to_year')} report ({ar.get('size')}), {pages} pages")
     if len(text) < 5000:
         raise DataError(
             f"annual report yielded only {len(text):,} characters from {pages} "

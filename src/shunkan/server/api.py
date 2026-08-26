@@ -2583,14 +2583,14 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
         def build():
             try:
-                from shunkan.data.filings import annual_reports, fetch_report_text
+                from shunkan.data.filings import latest_readable_report
                 from shunkan.data.supply_chain import build_supply_map
 
-                ars = annual_reports(sym)
-                ar = ars[0]
+                _supply_builds[sym]["stage"] = "downloading the annual report"
+                # newest READABLE, not newest: see latest_readable_report
+                ar, text, pages = latest_readable_report(sym)
                 _supply_builds[sym]["stage"] = (
-                    f"downloading FY{ar['to_year']} report ({ar['size']})")
-                text, pages = fetch_report_text(ar["url"])
+                    f"read FY{ar.get('to_year')} report ({ar.get('size')})")
                 _supply_builds[sym]["stage"] = f"reading {pages} pages"
                 name = ""
                 try:
