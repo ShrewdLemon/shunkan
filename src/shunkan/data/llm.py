@@ -310,44 +310,50 @@ _FURNITURE = re.compile(
 # spliced into the tail of a sentence that crosses a page boundary.
 _PREFIX_MIN = 80
 
+# Words that carry no identifying weight, so they cannot be the ONLY thing a
+# quote and a node name have in common.
+_STOP = {"the", "and", "for", "with", "from", "its", "our", "their", "other",
+         "others", "limited", "ltd", "private", "pvt", "company", "business",
+         "services", "service", "products", "product", "customers", "customer",
+         "india", "indian", "group", "new", "all", "across", "including"}
 
-def _loads_lenient(raw: str):
-    """Parse the model's JSON, repairing the cheap failures.
 
-    APOLLOHOSP cost a full ~300k-token call and then failed on "Expecting ','
-    delimiter" at character 14,914. Re-buying an entire extraction because of
-    one stray comma is not a reasonable trade, and a hard failure here is
-    indistinguishable to the caller from "the company disclosed nothing".
+def _content_words(name: str) -> list[str]:
+    return [w for w in re.findall(r"[a-z0-9]+", _norm(name))
+            if len(w) >= 4 and w not in _STOP]
 
-    Repairs attempted, in order, each strictly syntactic - no field is ever
-    invented and no value is ever altered:
-      1. as-is
-      2. trailing commas before } or ] removed
-      3. truncated output closed by balancing open brackets, then re-parsed;
-         the partial objects at the tail are discarded by the schema walk
-    Anything still unparseable raises, because guessing at the content of a
-    broken answer is exactly the behaviour this module exists to prevent.
+
+def _quote_mentions_node(name: str, nq: str, need: float = 0.6) -> bool:
+    """Does this quote actually say anything about THIS node?
+
+    THE HOLE THIS CLOSES. The gate verified that a quote OCCURS in the filing
+    and never that it MENTIONS the thing it is cited for. So a generic
+    sentence sailed through as "exact": a share-capital line became a facility
+    ("Bajaj Auto (Thailand) ... issued and subscribed share capital of THB 45
+    million" cited for an Engineering Design Centre), related-party boilerplate
+    naming nobody was cited for both LIC Housing Finance and IDBI Bank, and a
+    residual expense row "Others 3066.55 566.93" became a raw material.
+    Measured across 809 seeded nodes: 56 had a quote sharing under a third of
+    the name's content words, 11 shared none at all.
+
+    A verified quote about something else is not evidence, and it is worse
+    than no quote because it looks like diligence.
+
+    PROPORTION, not presence. "Any one word matches" is too weak: the Thailand
+    share-capital sentence shares bajaj/auto/thailand with the design centre
+    and misses every word that makes it a design centre. Requiring most of the
+    name to appear separates the two, because boilerplate shares the entity
+    prefix and never the distinguishing noun.
+
+    Stems, not exact tokens, so "Gold Loans" is still supported by "gold loan
+    portfolio". The target is boilerplate, not paraphrase - a real quote that
+    inflects a word must survive.
     """
-    m = re.search(r"\{.*\}", raw, re.S)
-    candidate = m.group(0) if m else raw
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError:
-        pass
-    stripped = re.sub(r",\s*([}\]])", r"\1", candidate)
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        pass
-    # close what is open, dropping a dangling partial object first
-    frag = re.sub(r",\s*\{[^{}]*$", "", raw[raw.find("{"):] if "{" in raw else raw)
-    depth_c = frag.count("{") - frag.count("}")
-    depth_b = frag.count("[") - frag.count("]")
-    if frag.rstrip().endswith(","):
-        frag = frag.rstrip()[:-1]
-    frag += "]" * max(0, depth_b) + "}" * max(0, depth_c)
-    frag = re.sub(r",\s*([}\]])", r"\1", frag)
-    return json.loads(frag)   # raises if still broken, which is correct
+    words = _content_words(name)
+    if not words:
+        return True   # nothing identifying to check; other rules still apply
+    hit = sum(1 for w in words if w[:4] in nq)
+    return (hit / len(words)) >= need
 
 
 def _norm(s: str) -> str:
@@ -361,7 +367,7 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", _FURNITURE.sub(" ", (s or ""))).strip().lower()
 
 
-def _locate(quote: str, hay: str) -> str | None:
+def _locate(quote: str, hay: str, name: str = "") -> str | None:
     """Return "exact", "prefix", or None.
 
     Measured on the Balrampur FY2026 report: a strict whole-quote match
@@ -376,6 +382,8 @@ def _locate(quote: str, hay: str) -> str | None:
     nq = _norm(quote)
     if len(nq) < 12:
         return None
+    if not _quote_mentions_node(name, nq):
+        return None   # verified prose about something else; try recovery
     if nq in hay:
         return "exact"
     if len(nq) >= _PREFIX_MIN and nq[:_PREFIX_MIN] in hay:
@@ -481,7 +489,7 @@ def validate_against_source(payload: dict, text: str) -> tuple[dict, list]:
                 dropped.append({"category": cat, "name": name,
                                 "reason": "no quote supplied"})
                 continue
-            how = _locate(quote, hay)
+            how = _locate(quote, hay, name)
             if how is None:
                 # The citation failed. Before discarding a possibly-true node,
                 # ask whether the DOCUMENT names this entity at all, and if it
