@@ -382,6 +382,70 @@ def annual_reports(symbol: str) -> list[dict]:
     return out
 
 
+def _download_report(url: str, attempts: int = 3) -> bytes:
+    """Fetch a filing, verifying it actually arrived whole.
+
+    NSE'S ARCHIVE SERVES TRUNCATED BODIES WITH A MATCHING CONTENT-LENGTH, so
+    httpx sees a clean 200 and raises nothing. The corruption only surfaces
+    later as "PDFium: Data format error", which reads as a bad parser or a
+    scanned filing and is neither.
+
+    Measured 2026-08-26. AUBANK's FY2026 object declares /L 22,660,544 and the
+    API says 21.61 MB; the edge serves 130,516 or 424,177 bytes depending on
+    which replica answers, and a Range request confirms the ORIGIN believes it
+    is 424 KB. That one is a bad upload and is unfixable from here.
+
+    The commoner form is transient: NSE's edge fleet holds inconsistent
+    replicas. AUBANK FY2025 pulled eight times returned a complete 21,318,690
+    bytes four times and a truncated 18,677,760 four times, Content-Length
+    agreeing with the body every time. NTPC returned three DIFFERENT
+    truncation lengths across three runs. So a retry genuinely helps.
+
+    Completeness is tested on the %%EOF trailer, NOT on /L versus
+    Content-Length: KOTAKBANK's /L is 20 bytes under its length and the file
+    parses perfectly at 522 pages, while APOLLOHOSP and PNB carry no /L at
+    all. %%EOF flagged all three real cases with no false positives.
+    """
+    import time as _t
+
+    import httpx
+
+    last = ""
+    for i in range(attempts):
+        try:
+            raw = httpx.get(url, headers={"User-Agent": _H["User-Agent"]},
+                            timeout=300.0, follow_redirects=True).content
+        except Exception as exc:
+            last = f"download failed: {exc}"
+            _t.sleep(1.5 * (i + 1))
+            continue
+        if raw[:4] == b"PK\x03\x04":
+            return _unzip_single_pdf(raw)
+        if raw[:5] != b"%PDF-":
+            last = f"not a PDF (starts {raw[:8]!r}, {len(raw):,} bytes)"
+            _t.sleep(1.5 * (i + 1))
+            continue
+        if b"%%EOF" in raw[-4096:]:
+            return raw
+        declared = re.search(rb"/L\s+(\d+)", raw[:2048])
+        last = (f"truncated at {len(raw):,} bytes"
+                + (f", header declares {int(declared.group(1)):,}" if declared else ""))
+        _t.sleep(1.5 * (i + 1))
+    raise DataError(f"NSE served an incomplete file after {attempts} attempts: {last}")
+
+
+def _unzip_single_pdf(raw: bytes) -> bytes:
+    """Filings older than about FY2024 are served as ZIPs holding one PDF."""
+    import io
+    import zipfile
+
+    with zipfile.ZipFile(io.BytesIO(raw)) as z:
+        pdfs = [n for n in z.namelist() if n.lower().endswith(".pdf")]
+        if not pdfs:
+            raise DataError(f"archive holds no PDF: {z.namelist()[:4]}")
+        return z.read(pdfs[0])
+
+
 def fetch_report_text(url: str, max_pages: int = 600) -> tuple[str, int]:
     """Extract text from an annual report PDF. Returns (text, pages_read).
 
@@ -407,14 +471,9 @@ def fetch_report_text(url: str, max_pages: int = 600) -> tuple[str, int]:
     """
     import io
 
-    import httpx
     import pypdfium2 as pdfium
 
-    try:
-        raw = httpx.get(url, headers={"User-Agent": _H["User-Agent"]},
-                        timeout=300.0, follow_redirects=True).content
-    except Exception as exc:
-        raise DataError(f"annual report download failed: {exc}") from exc
+    raw = _download_report(url)
 
     # PDFium is NOT thread-safe, and it fails in a way that impersonates bad
     # input rather than a race. Running five bulk extractions in parallel gave
@@ -432,14 +491,55 @@ def fetch_report_text(url: str, max_pages: int = 600) -> tuple[str, int]:
             doc = pdfium.PdfDocument(io.BytesIO(raw))
         except Exception as exc:
             raise DataError(f"annual report is not readable as PDF: {exc}") from exc
-        chunks = []
-        n = min(len(doc), max_pages)
-        for i in range(n):
+        try:
+            chunks = []
+            n = min(len(doc), max_pages)
+            for i in range(n):
+                try:
+                    chunks.append(doc[i].get_textpage().get_text_range() or "")
+                except Exception:
+                    continue  # one unreadable page never costs the other 399
+        finally:
+            # Close inside the lock. Left to the weakref finalizer,
+            # FPDF_CloseDocument runs on whatever thread happens to GC, which
+            # is outside the lock and reopens a narrow version of the race the
+            # lock exists to close.
             try:
-                chunks.append(doc[i].get_textpage().get_text_range() or "")
+                doc.close()
             except Exception:
-                continue  # one unreadable page never costs the other 399
+                pass
     return "\n".join(chunks), n
+
+
+def latest_readable_report(symbol: str, tries: int = 4) -> tuple[dict, str, int]:
+    """The newest filing that actually downloads and parses.
+
+    Returns (report, text, pages) - the REPORT is returned, not just the text,
+    because the caller must label the extraction with the year it really read.
+    Silently reading FY2025 and calling it FY2026 would be a worse failure
+    than the one this function fixes.
+
+    Walks distinct URLs, newest first. Distinct matters: NSE returns a
+    DUPLICATED newest row for exactly the symbols whose newest upload is
+    broken - AUBANK, COALINDIA and NTPC, 3 of the 59 core names - so a naive
+    ars[1] retries the identical bad URL. A botched re-upload produces both
+    symptoms at once.
+    """
+    reports = annual_reports(symbol)
+    seen, problems = set(), []
+    for r in reports:
+        url = r.get("url")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        try:
+            text, pages = fetch_report_text(url)
+            return r, text, pages
+        except DataError as exc:
+            problems.append(f"FY{r.get('to_year')}: {exc}")
+            if len(seen) >= tries:
+                break
+    raise DataError(f"no readable annual report for {symbol} - " + "; ".join(problems[:3]))
 
 
 def registry_stats(root=None) -> dict:
