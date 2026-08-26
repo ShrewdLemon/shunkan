@@ -147,6 +147,37 @@ _BOILER = re.compile(r"recognised at|in accordance with ind as|auditor|pursuant 
                      r"(?:section|regulation)|previous year figures|refer note", re.I)
 
 
+# Abbreviations that end in a full stop and are NOT sentence ends. Without
+# this, "Dr. Fixit" splits after "Dr." and the brand becomes unfindable: the
+# phrase appears 40 times in Pidilite's filing and grepping it returned
+# nothing, because every occurrence had been cut in half.
+_ABBREV = {"dr", "mr", "mrs", "ms", "shri", "smt", "prof", "lt", "col", "capt",
+           "hon", "st", "jr", "sr", "ltd", "pvt", "co", "inc", "corp", "no",
+           "nos", "vol", "fig", "rs", "approx", "etc", "viz", "vs", "i.e",
+           "e.g", "u.s", "u.k"}
+_CAND = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+_LASTWORD = re.compile(r"([A-Za-z.]+)\.$")
+
+
+def _split_sentences(flat: str) -> list[str]:
+    """Split on sentence ends, but not on an abbreviation's full stop.
+
+    Python cannot express this as a variable-width lookbehind, so: split on
+    every candidate boundary, then glue back the ones that followed a known
+    abbreviation.
+    """
+    parts = _CAND.split(flat)
+    out: list[str] = []
+    for part in parts:
+        if out:
+            m = _LASTWORD.search(out[-1].rstrip())
+            if m and m.group(1).rstrip(".").lower() in _ABBREV:
+                out[-1] = out[-1] + " " + part
+                continue
+        out.append(part)
+    return out
+
+
 def digest(text: str, per_category: int = 200) -> dict[str, list[str]]:
     """Reduce a filing to the sentences that plausibly carry supply-chain facts.
 
@@ -161,7 +192,7 @@ def digest(text: str, per_category: int = 200) -> dict[str, list[str]]:
     Reliance product.
     """
     flat = re.sub(r"\s+", " ", text)
-    sents = re.split(r"(?<=[.!?])\s+(?=[A-Z])", flat)
+    sents = _split_sentences(flat)
     out, seen = {}, set()
     for cat, pat in _CUES.items():
         rx = re.compile(pat, re.I)
