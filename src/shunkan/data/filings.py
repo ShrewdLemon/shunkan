@@ -378,7 +378,17 @@ def annual_reports(symbol: str) -> list[dict]:
                     "filed": r.get("broadcast_dttm")})
     out.sort(key=lambda r: (r["to_year"] or ""), reverse=True)
     if not out:
-        raise DataError(f"NSE lists no annual reports for {sym}")
+        # Some listed names return an empty payload from EVERY corporate-filing
+        # endpoint, not just this one - ABBOTINDIA and MCX give zero annual
+        # reports AND zero board meetings while VOLTAS on the same client
+        # returns 17 rows. Symbol variants were tried and all return zero. So
+        # this is a hole in NSE's API coverage rather than a bad symbol or a
+        # transient failure, and the message says so: chasing it as a bug
+        # wastes the reader's time.
+        raise DataError(
+            f"NSE lists no annual reports for {sym}. If its other corporate "
+            "filings are also empty, NSE's API has no coverage for this "
+            "symbol - the filing must come from BSE or the company IR site.")
     return out
 
 

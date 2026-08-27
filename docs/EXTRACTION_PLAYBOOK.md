@@ -199,6 +199,22 @@ print(ex.counts(), len(ex.dropped))
 not you. A hand extraction with many `recovered` nodes means you were
 paraphrasing; go back and copy properly.
 
+## Known coverage gaps
+
+Some listed names return an **empty payload from every NSE corporate-filing
+endpoint**, not just annual reports. Verified 2026-08-27:
+
+| symbol | annual reports | board meetings |
+|---|---|---|
+| ABBOTINDIA | 0 | 0 |
+| MCX | 0 | 0 |
+| VOLTAS (control) | 17 | works |
+
+Symbol variants (`ABBOT`, `ABBOTTINDIA`, `MCXINDIA`, `MULTICOMM`) all return
+zero. This is a hole in NSE's API coverage, not a bad symbol and not
+transient. Those filings must come from BSE or the company's IR site; there is
+no point retrying the NSE path.
+
 ## What is genuinely not feasible
 
 Reading is ~9k tokens per company plus judgment. **NIFTY 100 is a long but
