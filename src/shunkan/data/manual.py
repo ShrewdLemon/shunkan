@@ -258,6 +258,9 @@ def sentence_at(flat: str, marker: str, back: int = 0, fwd: int = 0,
     page-break running head, and trimming the window to the bullet fixed all
     three.
 
+    A (0, 0) window is NOT "just the marker" - it falls through to sentence
+    mode, which surprised an agent mid-run. Use (0, 1) for the marker alone.
+
     `occurrence` (1-based) picks a later match. The default takes the FIRST,
     which silently relocates the window when a table appears twice - Dalmia
     Bharat's plant list is both a capacity table on page 14 and Table 14 in the
@@ -296,7 +299,10 @@ def build_payload(text: str, spec: dict, undisclosed=()) -> tuple[dict, list]:
     fact that is not in the filing look identical in the output and are very
     different mistakes.
     """
+    from shunkan.data.llm import _FURNITURE, _locate, _norm
+
     flat = flatten(text)
+    hay = _norm(text)
     payload: dict = {c: [] for c in CATEGORIES_M}
     payload["undisclosed"] = list(undisclosed)
     problems = []
@@ -320,5 +326,32 @@ def build_payload(text: str, spec: dict, undisclosed=()) -> tuple[dict, list]:
             if loc:
                 row["location"] = loc
             payload[cat].append(row)
+
+            # Validate NOW, not at commit. A slice is byte-exact against the
+            # flattened document and can still fail the gate, because _norm
+            # strips page furniture ("Annual Report 2024-25 49") before
+            # matching. A window that reaches into a running head therefore
+            # produces a quote that looks perfect on screen and does not
+            # match. One agent hit this three times and it presented as three
+            # different bugs: a silent `recovered` onto a page-header blob, a
+            # `prefix` from a stray "Annual", and a hard drop reported as
+            # "neither the quote nor the name occurs in the document".
+            #
+            # Reporting it here names the real cause and points at the fix -
+            # move the window - instead of leaving the author to reverse
+            # engineer it from a misleading drop reason.
+            how = _locate(q, hay, name)
+            if how != "exact":
+                stripped = _FURNITURE.search(q)
+                problems.append({
+                    "category": cat, "name": name, "quote": q[:200],
+                    "problem": (
+                        f"match would be {how or 'DROPPED'}, not exact"
+                        + (" - the window reaches into page furniture "
+                           f"({stripped.group(0)[:40]!r}); move it inside the prose"
+                           if stripped else
+                           " - widen or re-anchor the window, or rename the node "
+                           "to the document's wording")),
+                })
     return payload, problems
 
