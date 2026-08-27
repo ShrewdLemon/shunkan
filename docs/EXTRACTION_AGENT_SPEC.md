@@ -48,6 +48,11 @@ characters that are invisible on screen and break a retyped quote:
 | `U+001F` for a lost fi/fl ligature | CGPOWER ("ef\x1fciency") |
 | both `U+FFFD` and `U+FFFE` for the same failure | many, sometimes adjacent |
 | `U+2011` non-breaking hyphen | many |
+| raw `BEL` (`\x07`) between table cells | LGEINDIA's related-party rows |
+| `U+0012` (DC2) as a bullet | IRCTC |
+| `U+F0B1` (Symbol-font private use) as a bullet | CRISIL |
+| combining accent vs precomposed (`CAFE`+U+0301 vs `É`) | JUBLFOOD |
+| ligature lost as a **space** (`o ces` for `offices`) | VOLTAS |
 
 The gate now folds all of these, but slicing means you never depend on that.
 **Never span a bullet in a quote.**
