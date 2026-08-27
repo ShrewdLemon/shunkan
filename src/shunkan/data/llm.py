@@ -437,6 +437,17 @@ _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]+")
 # recovered one, so they are folded to nothing before comparison.
 _LIGATURE_JUNK = re.compile("[\ufffd\ufffe\u00ad\u200b\u200c\u200d]")
 
+# LETTER-SPACED HEADINGS. A designed infographic can set type with a space
+# between every character, and the text layer preserves it: SRF's raw-material
+# chart extracts as "F l u o r s p a r", "M e t h a n o l", "C a p r o l a c t
+# a m". A node named Fluorspar then cannot be cited at all, and naming it
+# literally would put "F l u o r s p a r" in the graph.
+#
+# Collapsed for MATCHING only - the stored quote keeps the document's own
+# bytes. Requires at least five single characters in a row so an ordinary
+# list ("a, b and c") is untouched.
+_SPACED = re.compile(r"\b(?:[a-z0-9] ){4,}[a-z0-9]\b")
+
 
 def _norm(s: str) -> str:
     """Whitespace-insensitive form for quote matching.
@@ -457,7 +468,8 @@ def _norm(s: str) -> str:
     # see. NFKC also folds ligature codepoints and full-width forms.
     s = unicodedata.normalize("NFKC", s or "")
     s = _LIGATURE_JUNK.sub("", _CTRL.sub(" ", s))
-    return re.sub(r"\s+", " ", _FURNITURE.sub(" ", s)).strip().lower()
+    s = re.sub(r"\s+", " ", _FURNITURE.sub(" ", s)).strip().lower()
+    return _SPACED.sub(lambda m: m.group(0).replace(" ", ""), s)
 
 
 def _locate(quote: str, hay: str, name: str = "") -> str | None:

@@ -417,3 +417,23 @@ def test_a_hard_to_tokenise_name_still_gets_checked():
     assert _content_words("Uri-I")          # not empty
     assert not _quote_mentions_node("Uri-I", _norm("a sentence about cement"))
     assert _quote_mentions_node("Uri-I", _norm("The Uri-I power station"))
+
+
+def test_letter_spaced_headings_are_matchable():
+    """A designed infographic can set type with a space between every
+    character and the text layer preserves it: SRF's raw-material chart
+    extracts as "F l u o r s p a r". A node named Fluorspar then cannot be
+    cited at all, and naming it literally would put "F l u o r s p a r" in the
+    graph. Collapsed for MATCHING only - the stored quote keeps the source
+    bytes."""
+    from shunkan.data.llm import _locate, _norm
+
+    doc = "Major raw materials F l u o r s p a r and M e t h a n o l are used."
+    assert "fluorspar" in _norm(doc)
+    assert _locate(doc, _norm(doc), "Fluorspar") == "exact"
+
+
+def test_an_ordinary_short_list_is_not_collapsed():
+    from shunkan.data.llm import _norm
+
+    assert _norm("options a, b and c apply") == "options a, b and c apply"

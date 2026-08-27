@@ -172,6 +172,11 @@ class Shareholding:
     total_shares: int | None = None
 
 
+# A covering letter is ~2 pages; the thinnest real annual report in the NIFTY
+# 250 seed was 133. These floors sit well below any genuine filing.
+_MIN_REPORT_PAGES = 20
+_MIN_REPORT_CHARS = 40_000
+
 _PDF_LOCK = threading.Lock()   # see fetch_report_text: PDFium is not thread-safe
 
 
@@ -544,6 +549,19 @@ def latest_readable_report(symbol: str, tries: int = 4) -> tuple[dict, str, int]
         seen.add(url)
         try:
             text, pages = fetch_report_text(url)
+            # "Parses cleanly" and "is an annual report" are not the same test.
+            # NSE's FY2026 row for UBL is a 2-page, 3.9 KB COVERING LETTER that
+            # links to the report instead of containing it - and FY2025 is the
+            # same letter. Both parse perfectly, so the old check accepted them
+            # and the company would have been seeded from a compliance note.
+            # A real integrated report is hundreds of pages; anything this
+            # small is a stub, and we walk on to the next filing.
+            if pages < _MIN_REPORT_PAGES or len(text) < _MIN_REPORT_CHARS:
+                problems.append(f"FY{r.get('to_year')}: stub, {pages}pp / "
+                                f"{len(text):,} chars - a covering letter, not a report")
+                if len(seen) >= tries:
+                    break
+                continue
             return r, text, pages
         except DataError as exc:
             problems.append(f"FY{r.get('to_year')}: {exc}")
