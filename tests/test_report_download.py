@@ -91,7 +91,7 @@ def test_fallback_skips_the_duplicated_newest_row(monkeypatch):
         tried.append(url)
         if url == "bad":
             raise DataError("NSE served an incomplete file")
-        return ("text", 10)
+        return ("x" * 60_000, 120)
 
     monkeypatch.setattr(filings, "fetch_report_text", fake)
     ar, text, pages = filings.latest_readable_report("AUBANK")
@@ -109,3 +109,32 @@ def test_no_readable_report_says_which_years_were_tried(monkeypatch):
     with pytest.raises(DataError) as e:
         filings.latest_readable_report("X")
     assert "FY2026" in str(e.value) and "FY2025" in str(e.value)
+
+
+def test_a_covering_letter_is_not_an_annual_report(monkeypatch):
+    """NSE's FY2026 row for UBL is a 2-page, 3.9 KB covering letter that links
+    to the report instead of containing it - and FY2025 is the same letter.
+    Both PARSE cleanly, so a readability check alone accepted them and the
+    company would have been seeded from a compliance note."""
+    reports = [{"url": "letter26", "to_year": "2026"},
+               {"url": "letter25", "to_year": "2025"},
+               {"url": "real24", "to_year": "2024"}]
+    monkeypatch.setattr(filings, "annual_reports", lambda s: reports)
+
+    def fake(url, max_pages=600):
+        if url.startswith("letter"):
+            return ("Please find enclosed the link to the Annual Report.", 2)
+        return ("x" * 900_000, 165)
+
+    monkeypatch.setattr(filings, "fetch_report_text", fake)
+    ar, text, pages = filings.latest_readable_report("UBL")
+    assert ar["to_year"] == "2024" and pages == 165
+
+
+def test_the_stub_reason_says_what_it_was(monkeypatch):
+    monkeypatch.setattr(filings, "annual_reports",
+                        lambda s: [{"url": "a", "to_year": "2026"}])
+    monkeypatch.setattr(filings, "fetch_report_text", lambda *a, **k: ("short", 2))
+    with pytest.raises(DataError) as e:
+        filings.latest_readable_report("X")
+    assert "covering letter" in str(e.value)
