@@ -217,7 +217,9 @@ def test_related_party_boilerplate_naming_nobody_is_not_evidence():
     kept, dropped = _gate("LIC Housing Finance Limited",
                           doc.split(". ")[0] + ".", doc, cat="customers")
     assert kept["customers"] == []
-    assert dropped and "neither" in dropped[0]["reason"]
+    # the quote IS in the document; it simply names nobody, and the reason
+    # must say that rather than implying the quote was invented
+    assert dropped and "does not mention this node" in dropped[0]["reason"]
 
 
 def test_a_residual_expense_row_is_not_a_raw_material():
@@ -379,3 +381,18 @@ def test_occurrence_selects_a_later_match():
     first = sentence_at(flat, "Ariyalur")
     second = sentence_at(flat, "Ariyalur", occurrence=2)
     assert "Table one" in first and "Table 14" in second
+
+
+def test_a_name_overlap_failure_says_so_instead_of_crying_fabrication():
+    """"neither the quote nor the name occurs in the document" misdirected
+    every agent that hit it: for "Sikandarabad plant" cited to an address
+    line, the quote is REAL and the name carries a word the sentence lacks.
+    The fix is renaming, not finding new evidence."""
+    doc = "PLANT LOCATIONS Sikandarabad Plot 5, Industrial Area, UP 203205 and more."
+    payload = {"facilities": [{"name": "Sikandarabad warehouse",
+                               "quote": "Sikandarabad Plot 5, Industrial Area, UP 203205"}],
+               "inputs": [], "outputs": [], "customers": []}
+    kept, dropped = validate_against_source(payload, doc)
+    if dropped:
+        assert "does not mention this node" in dropped[0]["reason"]
+        assert "warehouse" in dropped[0]["reason"]
