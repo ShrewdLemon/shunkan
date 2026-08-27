@@ -437,3 +437,25 @@ def test_an_ordinary_short_list_is_not_collapsed():
     from shunkan.data.llm import _norm
 
     assert _norm("options a, b and c apply") == "options a, b and c apply"
+
+
+def test_build_payload_reports_a_window_that_reaches_into_page_furniture():
+    """_norm strips running heads BEFORE matching, so a slice that is
+    byte-exact against the flattened document can still fail the gate. One
+    agent hit this three times and it presented as three different bugs: a
+    silent recovery onto a page-header blob, a prefix from a stray "Annual",
+    and a hard drop reported as "neither the quote nor the name occurs"."""
+    from shunkan.data.manual import build_payload
+
+    doc = ("Plot No. A-42 Mohali is a facility. Integrated Annual Report 2024-25 49 "
+           "Other content follows here in the document.")
+    _, problems = build_payload(doc, {"facilities": [("Mohali plant", "Mohali", (0, 60))]})
+    assert problems and "page furniture" in problems[0]["problem"]
+
+
+def test_build_payload_is_quiet_on_a_clean_slice():
+    from shunkan.data.manual import build_payload
+
+    doc = "Plot No. A-42 Mohali is a facility. Other content follows."
+    _, problems = build_payload(doc, {"facilities": [("Mohali", "Mohali")]})
+    assert not problems
