@@ -585,11 +585,25 @@ def validate_against_source(payload: dict, text: str) -> tuple[dict, list]:
                 if rec:
                     quote, how = rec, "recovered"
                 else:
-                    dropped.append({"category": cat, "name": name, "quote": quote[:400],
-                                    "reason": ("quote too short to verify"
-                                               if len(_norm(quote)) < 12
-                                               else "neither the quote nor the name "
-                                                    "occurs in the document")})
+                    # Name the ACTUAL failure. The generic message misdirected
+                    # every agent that hit it: "Sikandarabad plant" cited to an
+                    # address line reads as a fabricated quote, when in truth
+                    # the quote is real and the NAME carries a word the
+                    # sentence does not. That is fixed by renaming, not by
+                    # finding new evidence, and the reason should say so.
+                    nq = _norm(quote)
+                    if len(nq) < 12:
+                        why = "quote too short to verify"
+                    elif nq in hay or (len(nq) >= _PREFIX_MIN and nq[:_PREFIX_MIN] in hay):
+                        missing = [w for w in _content_words(name) if w[:4] not in nq]
+                        why = ("quote IS in the document but does not mention this node "
+                               f"- name words absent from it: {', '.join(missing[:5])}. "
+                               "Rename the node to the document's wording, or cite a "
+                               "sentence that names it.")
+                    else:
+                        why = "neither the quote nor the name occurs in the document"
+                    dropped.append({"category": cat, "name": name,
+                                    "quote": quote[:400], "reason": why})
                     continue
             key = _norm(name)
             if key in seen:
