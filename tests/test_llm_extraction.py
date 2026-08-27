@@ -340,3 +340,42 @@ def test_c1_bullet_glyph_folds():
     from shunkan.data.llm import _norm
 
     assert _norm("products\x83 include steel") == _norm("products include steel")
+
+
+def test_acronyms_count_as_content_words():
+    """The length>=4 floor discarded acronyms, so "NCR project portfolio"
+    scored 1 of 2 and was rejected even though NCR and projects are both in
+    the citing sentence. An acronym is usually the MOST identifying part of a
+    name; ignoring it inverts the test."""
+    from shunkan.data.llm import _content_words, _quote_mentions_node
+
+    assert "ncr" in _content_words("NCR project portfolio")
+    assert "asf" in _content_words("Aviation Service Facilities (ASF)")
+    assert _quote_mentions_node(
+        "NCR project portfolio", _norm("The Company expanded its NCR projects."))
+    # but a short lowercase word is still not identifying
+    assert "the" not in _content_words("the and of")
+
+
+def test_a_back_window_snaps_to_word_boundaries():
+    """A window landing mid-word decapitates the word the node name needs:
+    back=420 on DALBHARAT produced 'NT LOCATIONS...' and the gate then
+    rejected 'Ahmedabad plant' at 1 of 2 content words."""
+    from shunkan.data.manual import sentence_at
+
+    flat = "PLANT LOCATIONS Ahmedabad plant is at Sector 5 and operates well"
+    got = sentence_at(flat, "Sector 5", back=26, fwd=0)
+    # unsnapped this would begin "NT LOCATIONS", cutting LOCATIONS in half
+    assert got.startswith("LOCATIONS"), got
+    assert "Ahmedabad plant" in got, "the word the node name needs survived"
+
+
+def test_occurrence_selects_a_later_match():
+    """Dalmia Bharat's plant list appears twice; anchoring on the first cost
+    six nodes."""
+    from shunkan.data.manual import sentence_at
+
+    flat = "Table one lists Ariyalur. Filler sentence here. Table 14 lists Ariyalur again."
+    first = sentence_at(flat, "Ariyalur")
+    second = sentence_at(flat, "Ariyalur", occurrence=2)
+    assert "Table one" in first and "Table 14" in second

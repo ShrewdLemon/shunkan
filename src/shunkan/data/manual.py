@@ -227,7 +227,19 @@ def flatten(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
-def sentence_at(flat: str, marker: str, back: int = 0, fwd: int = 0) -> str | None:
+def _nth_start(flat: str, marker: str, n: int) -> int:
+    """Byte offset just before the nth occurrence of `marker` (1-based)."""
+    pos = -1
+    for _ in range(n):
+        nxt = flat.find(marker, pos + 1)
+        if nxt < 0:
+            return len(flat)
+        pos = nxt
+    return pos
+
+
+def sentence_at(flat: str, marker: str, back: int = 0, fwd: int = 0,
+                occurrence: int = 0) -> str | None:
     """The sentence in `flat` containing `marker`, sliced byte-exact.
 
     An extraction agent working through NIFTY 100 found the better method and
@@ -245,12 +257,27 @@ def sentence_at(flat: str, marker: str, back: int = 0, fwd: int = 0) -> str | No
     as `prefix` rather than `exact` because a 200-character window straddled a
     page-break running head, and trimming the window to the bullet fixed all
     three.
+
+    `occurrence` (1-based) picks a later match. The default takes the FIRST,
+    which silently relocates the window when a table appears twice - Dalmia
+    Bharat's plant list is both a capacity table on page 14 and Table 14 in the
+    governance annexure, and anchoring on the wrong one cost six nodes.
     """
-    lo = flat.find(marker)
+    lo = flat.find(marker, 0 if occurrence <= 0 else _nth_start(flat, marker, occurrence))
     if lo < 0:
         return None
     if back or fwd:
-        return flat[max(0, lo - back):lo + len(marker) + fwd].strip()
+        # Snap to word boundaries. A back-window that lands mid-word
+        # DECAPITATES the very word the node name needs: back=420 on
+        # DALBHARAT produced "NT LOCATIONS..." and the gate then rejected
+        # "Ahmedabad plant" at 1 of 2 content words - a true node lost to a
+        # slice offset. Snapping keeps the cut byte-exact and legible.
+        a, b = max(0, lo - back), min(len(flat), lo + len(marker) + fwd)
+        while a > 0 and flat[a - 1] not in " \t":
+            a -= 1
+        while b < len(flat) and flat[b - 1] not in " \t" and flat[b] not in " \t":
+            b += 1
+        return flat[a:b].strip()
     start = flat.rfind(". ", 0, lo)
     start = 0 if start < 0 else start + 2
     end = flat.find(". ", lo + len(marker))
@@ -276,13 +303,15 @@ def build_payload(text: str, spec: dict, undisclosed=()) -> tuple[dict, list]:
     for cat, items in spec.items():
         for it in items:
             name, marker = it[0], it[1]
-            loc, back, fwd = None, 0, 0
+            loc, back, fwd, occ = None, 0, 0, 0
             for extra in it[2:]:
                 if isinstance(extra, str):
                     loc = extra
+                elif isinstance(extra, int):
+                    occ = extra
                 elif isinstance(extra, (list, tuple)):
                     back, fwd = extra
-            q = sentence_at(flat, marker, back, fwd)
+            q = sentence_at(flat, marker, back, fwd, occ)
             if q is None:
                 problems.append({"category": cat, "name": name,
                                  "problem": f"marker not found in document: {marker[:70]!r}"})

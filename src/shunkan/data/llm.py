@@ -329,8 +329,24 @@ _STOP = {"the", "and", "for", "with", "from", "its", "our", "their", "other",
 
 
 def _content_words(name: str) -> list[str]:
-    return [w for w in re.findall(r"[a-z0-9]+", _norm(name))
-            if len(w) >= 4 and w not in _STOP]
+    """Words in a node name that carry identifying weight.
+
+    ACRONYMS COUNT. The length>=4 floor silently discarded them, so "NCR
+    project portfolio" scored 1 of 2 and was rejected even though both NCR and
+    "projects" are in the citing sentence. Same for "Aviation Service
+    Facilities (ASF)" and "QRG Towers corporate office". An acronym is usually
+    the MOST identifying part of a name, so a rule that ignores it inverts the
+    test it is meant to apply. A short token is kept when it was capitalised in
+    the original, which is what distinguishes NCR from "the".
+    """
+    caps = {w.lower() for w in re.findall(r"\b[A-Z][A-Z0-9]{1,}\b", name or "")}
+    out = []
+    for w in re.findall(r"[a-z0-9]+", _norm(name)):
+        if w in _STOP:
+            continue
+        if len(w) >= 4 or w in caps:
+            out.append(w)
+    return out
 
 
 def _quote_mentions_node(name: str, nq: str, need: float = 0.6) -> bool:
