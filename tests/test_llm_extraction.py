@@ -396,3 +396,12 @@ def test_a_name_overlap_failure_says_so_instead_of_crying_fabrication():
     if dropped:
         assert "does not mention this node" in dropped[0]["reason"]
         assert "warehouse" in dropped[0]["reason"]
+
+
+def test_combining_and_precomposed_accents_fold():
+    """Jubilant's filing writes CAFE + U+0301 in one place and the precomposed
+    U+00E9 three words later. They render identically and never match as
+    bytes, so a true quote fails for a difference no reader can see."""
+    from shunkan.data.llm import _norm
+
+    assert _norm("CAFÉ Coffee Day") == _norm("Café Coffee Day")
