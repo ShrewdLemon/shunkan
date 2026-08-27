@@ -405,3 +405,15 @@ def test_combining_and_precomposed_accents_fold():
     from shunkan.data.llm import _norm
 
     assert _norm("CAFÉ Coffee Day") == _norm("Café Coffee Day")
+
+
+def test_a_hard_to_tokenise_name_still_gets_checked():
+    """"Uri-I" reduced to zero content words - three letters, and the acronym
+    pattern needs a second capital - and an empty list made the check return
+    True UNCHECKED. A name that is hard to tokenise deserves a weaker check,
+    never no check at all."""
+    from shunkan.data.llm import _content_words, _quote_mentions_node
+
+    assert _content_words("Uri-I")          # not empty
+    assert not _quote_mentions_node("Uri-I", _norm("a sentence about cement"))
+    assert _quote_mentions_node("Uri-I", _norm("The Uri-I power station"))

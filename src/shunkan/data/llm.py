@@ -341,13 +341,14 @@ def _content_words(name: str) -> list[str]:
     the original, which is what distinguishes NCR from "the".
     """
     caps = {w.lower() for w in re.findall(r"\b[A-Z][A-Z0-9]{1,}\b", name or "")}
-    out = []
-    for w in re.findall(r"[a-z0-9]+", _norm(name)):
-        if w in _STOP:
-            continue
-        if len(w) >= 4 or w in caps:
-            out.append(w)
-    return out
+    toks = [w for w in re.findall(r"[a-z0-9]+", _norm(name)) if w not in _STOP]
+    out = [w for w in toks if len(w) >= 4 or w in caps]
+    # NEVER return empty while real tokens exist. "Uri-I" and "Uri-II" reduce
+    # to nothing - "uri" is three letters and the caps pattern needs a second
+    # capital, so it is not recognised as an acronym either - and an empty
+    # list makes _quote_mentions_node return True UNCHECKED. A name that is
+    # hard to tokenise should get a weaker check, never no check at all.
+    return out or toks
 
 
 def _quote_mentions_node(name: str, nq: str, need: float = 0.6) -> bool:
