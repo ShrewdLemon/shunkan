@@ -59,6 +59,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
@@ -448,7 +449,13 @@ def _norm(s: str) -> str:
     reason: they are artefacts of the extraction, not of the filing, and a
     citation should not fail on a byte the author never wrote.
     """
-    s = _LIGATURE_JUNK.sub("", _CTRL.sub(" ", s or ""))
+    # NFKC first. The same word can arrive in two byte sequences: Jubilant's
+    # filing writes CAFE + U+0301 (combining acute) in one place and the
+    # precomposed U+00E9 three words later. They render identically and never
+    # match as bytes, so a true quote fails for a difference no reader can
+    # see. NFKC also folds ligature codepoints and full-width forms.
+    s = unicodedata.normalize("NFKC", s or "")
+    s = _LIGATURE_JUNK.sub("", _CTRL.sub(" ", s))
     return re.sub(r"\s+", " ", _FURNITURE.sub(" ", s)).strip().lower()
 
 
