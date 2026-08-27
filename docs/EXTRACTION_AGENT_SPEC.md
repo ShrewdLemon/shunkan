@@ -22,6 +22,41 @@ r = commit(SYM, payload, text=text, report=meta["report"], pages=meta["pages_rea
 `commit` runs the SAME validation gate as the model path. A quote that is not
 in the document is dropped whoever wrote it. Report what `commit` returns.
 
+## Build quotes by SLICING, never by retyping
+
+```python
+from shunkan.data.manual import build_payload, commit
+spec = {
+  "inputs":     [("Wood", "procure wood, a key raw material")],
+  "customers":  [("Oil Marketing Companies", "supply ethanol to both public and private Oil")],
+  "facilities": [("Bhadrachalam mill", "paper mill at Bhadrachalam", "Telangana")],
+  # a (back, fwd) window for bullet lists with no full stops:
+  "outputs":    [("Radars", "spanning radars, missile systems", (0, 240))],
+}
+payload, problems = build_payload(text, spec, undisclosed=["inputs"])
+assert not problems          # a marker not found is REPORTED, never silent
+r = commit(SYM, payload, text=text, report=meta["report"], pages=meta["pages_read"])
+```
+
+This is how the last run got 2,209 nodes with ZERO drops. These filings carry
+characters that are invisible on screen and break a retyped quote:
+
+| glyph | where seen |
+|---|---|
+| `U+0083` used as a BULLET | Adani, Apollo — renders as nothing |
+| raw `ESC` (`\x1b`) as a delimiter | Motherson's top-customer chart |
+| `U+001F` for a lost fi/fl ligature | CGPOWER ("ef\x1fciency") |
+| both `U+FFFD` and `U+FFFE` for the same failure | many, sometimes adjacent |
+| `U+2011` non-breaking hyphen | many |
+
+The gate now folds all of these, but slicing means you never depend on that.
+**Never span a bullet in a quote.**
+
+Anchor markers must be DISTINCTIVE. An IOC quote anchored on the bare word
+`"first"` matched the wrong sentence and still passed the gate as `exact`,
+because the span happened to run far enough to reach the right words. Eyeball
+long quotes even when the gate is happy.
+
 ## Payload shape
 
 ```json
@@ -54,6 +89,20 @@ in the document is dropped whoever wrote it. Report what `commit` returns.
 8. **`undisclosed` is a real answer.** Banks have no meaningful raw-material
    inputs; many companies never name a supplier. An empty category with the
    reason stated beats a guessed one. Use it.
+
+## Where the facts actually are
+
+The digest alone is a weak recall aid — it surfaces boilerplate and misses
+plant-location annexures. The last run's best nodes came from targeted greps
+of the full text, guided by this:
+
+| looking for | grep for |
+|---|---|
+| plants + addresses | `Plant Locations`, `Number of plants`, the shareholder-information annexure |
+| named counterparties | the **related-party transactions** table — "Purchase of Goods", "Sale of goods"; direction is stated |
+| customer classes | BRSR Section A "A brief on types of customers" — one sentence often yields 5-8 nodes |
+| named inputs | BRSR "Input Material" recycled-content table |
+| orders won | "Major Orders Won" bullet lists — richest in named buyers, worst for the digest (no full stops) |
 
 ## Quality bar
 
