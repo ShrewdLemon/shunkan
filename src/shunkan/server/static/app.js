@@ -415,7 +415,7 @@ const SYM_RE = /^[\^A-Z0-9][A-Z0-9._&^-]{0,23}$/;
 // quietly set the global symbol as a side effect of a malformed link.
 const SYMBOL_VIEWS = new Set([
   "chart", "chain", "payoff", "iv", "volume", "news", "backtest",
-  "viz", "mlstudio", "brief", "oicharts", "company",
+  "viz", "mlstudio", "brief", "oicharts", "company", "network",
 ]);
 
 let _routing = false;   // true while show() is being driven BY the hash
@@ -3536,6 +3536,7 @@ const ANL_GROUPS = [
     ["company", "CMP", "Company intelligence", "business, promoters, management, financials, NSE peers — refusals where no source exists"],
     ["funds", "MFD", "Mutual funds", "1,095 schemes, disclosed portfolios, and which schemes hold a stock"],
     ["msci", "MSC", "MSCI index review", "predicted additions, deletions and migrations — forced passive flow, dated"],
+    ["network", "NET", "Entity network", "related-party value flow, corporate structure, disclosed chain — one screen, three sources, each named"],
     ["graph", "GPH", "Entity graph", "companies, holders, schemes, people — every edge names its source"],
     ["news", "NWS", "News intelligence", "time-sorted, sector-grouped wires with sentiment provenance"],
     ["calendar", "CAL", "Calendar", "expiries from the contract master; refusals where no source exists"],
@@ -5969,6 +5970,547 @@ async function showExtraction(sym) {
     ${(d.notes || []).map((n) => `<div class="dim" style="padding:2px 10px;font-size:11px">— ${esc(n)}</div>`).join("")}`;
 }
 
+/* ---------- ENTITY NETWORK (NET) ----------
+   The company as a set of RELATIONSHIPS rather than a set of fields.
+
+   Three sources sit in one screen and are never blended, because they carry
+   different weight and a reader has to be able to tell them apart:
+
+     - BSE related-party XBRL, filed under SEBI LODR Reg 23(9). Rupee values,
+       half-yearly, six periods. This is a NUMBER the company filed.
+     - the company's own annual report, extracted and checked verbatim. This
+       is a SENTENCE the company wrote - no number attached, and it says only
+       what it says.
+     - NSE shareholding and mutual-fund disclosures, for who owns it.
+
+   Every block names which of the three it came from. The flow diagram draws
+   both directions at ONE rupees-per-pixel scale: two scales would make a
+   Rs 8,603 Cr purchase look like a Rs 617,086 Cr sale, which is the specific
+   lie this kind of picture is good at telling.
+
+   Nothing here is computed from anything. A counterparty with no filing in a
+   period gets a gap in its sparkline, not a zero. */
+
+const NET = { d: null, sym: null, crumbs: [] };
+const NET_TOP = 12;                    // per side in the flow diagram
+
+const CR = 1e7;
+function netCr(v) {
+  if (v == null) return "—";
+  return (v / CR).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+}
+/* Relationship labels as filed. Kept close to BSE's own wording: renaming a
+   "significant influence" edge to something friendlier would overstate it. */
+const NET_REL = {
+  group_entity_of: ["GROUP ENTITY", "amber"],
+  subsidiary_of: ["SUBSIDIARY", "up"],
+  wholly_owned_subsidiary_of: ["WHOLLY OWNED SUBSIDIARY", "up"],
+  holding_company_of: ["HOLDING COMPANY", "hl"],
+  associate_of: ["ASSOCIATE", "blue"],
+  joint_venture_with: ["JOINT VENTURE", "blue"],
+  promoter_group_of: ["PROMOTER GROUP", "hl"],
+  significant_influence_over: ["SIGNIFICANT INFLUENCE", "blue"],
+  key_management_of: ["KEY MANAGEMENT", "dim"],
+  related_party_of: ["RELATED PARTY — UNSPECIFIED", "dim"],
+  fellow_subsidiary_of: ["FELLOW SUBSIDIARY", "up"],
+};
+const NET_CHAIN = [
+  ["consumes", "UPSTREAM · INPUTS", "up"],
+  ["operates", "OPERATIONS · FACILITIES", "hl"],
+  ["produces", "OUTPUTS · PRODUCTS", "amber"],
+  ["sells_to", "DOWNSTREAM · CUSTOMERS", "down"],
+];
+
+async function renderNetwork(view, params = {}) {
+  const target = params.node || (params.symbol || state.symbol || "").toUpperCase();
+  if (!params.node && params.symbol) state.symbol = params.symbol.toUpperCase();
+  view.innerHTML = panel({
+    title: `ENTITY NETWORK — <span class="hl" id="net-name">${esc(target)}</span>`,
+    id: "net-panel", flush: true,
+    meta: `<span class="controls"><input class="in" id="net-sym" value="${
+      esc(params.node ? (state.symbol || "") : target)}" size="11">
+      <button class="btn" id="net-go">LOAD</button></span> <span id="net-upd"></span>`,
+    body: `<div id="net-crumb" class="net-crumb"></div><div id="net-body">${
+      loading("walking the graph")}</div>`,
+  });
+  $("#net-go").onclick = () => { NET.crumbs = []; show("network", { symbol: $("#net-sym").value }); };
+  $("#net-sym").onkeydown = (e) => { if (e.key === "Enter") $("#net-go").click(); };
+  await netLoad(target, view);
+}
+
+/* Drill. The crumb trail is the only state that survives a hop, so the reader
+   can always get back to where the walk started. */
+function netDrill(id, label) {
+  const cur = NET.d;
+  if (cur) NET.crumbs.push({ id: NET.sym, name: cur.name });
+  netLoad(id, null, label);
+}
+function netBack(i) {
+  const c = NET.crumbs[i];
+  NET.crumbs = NET.crumbs.slice(0, i);
+  netLoad(c.id, null, c.name);
+}
+window.netDrill = netDrill;
+window.netBack = netBack;
+
+async function netLoad(target, view, label) {
+  const body = $("#net-body");
+  if (body) body.innerHTML = loading(`walking the graph from ${esc(label || target)}`);
+  try {
+    const d = await getJSON(`/api/entity/${encodeURIComponent(target)}`);
+    NET.d = d; NET.sym = target;
+    const h = $("#net-body");
+    if (!h) return;
+    $("#net-name").innerHTML = esc(d.name || target);
+    $("#net-upd").innerHTML = stamp();
+    netPaintCrumbs();
+    netPaint(h, d);
+  } catch (e) {
+    const h = $("#net-body");
+    if (h) h.innerHTML = `<div class="empty" style="padding:14px">
+      <b class="bad">${esc(e.message)}</b>
+      <div class="faint" style="margin-top:6px;font-size:11px">
+        The graph carries 498 NIFTY 500 companies and every counterparty named in
+        their related-party filings. A name that is in neither is not in here.</div></div>`;
+  }
+}
+
+function netPaintCrumbs() {
+  const c = $("#net-crumb");
+  if (!c) return;
+  if (!NET.crumbs.length) { c.innerHTML = ""; return; }
+  c.innerHTML = NET.crumbs.map((b, i) =>
+    `<button class="net-crumb-b" onclick="netBack(${i})">${esc(b.name)}</button>`
+  ).join('<span class="net-crumb-s">›</span>')
+    + `<span class="net-crumb-s">›</span><span class="net-crumb-cur">${
+      esc(NET.d.name)}</span>`;
+}
+
+function netPaint(h, d) {
+  const sells = d.trade.sells_to || [], buys = d.trade.buys_from || [];
+  const sTot = sells.reduce((a, r) => a + r.total, 0);
+  const bTot = buys.reduce((a, r) => a + r.total, 0);
+  const nStruct = Object.values(d.structure_counts || {}).reduce((a, b) => a + b, 0);
+  const nChain = Object.values(d.disclosed || {}).reduce((a, v) => a + v.length, 0);
+
+  h.innerHTML = `
+    <div class="kv-strip">
+      <div class="kv"><div class="k">SELLS TO</div><div class="v">${sells.length || "—"}</div></div>
+      <div class="kv"><div class="k">VALUE OUT</div><div class="v amber">${
+        sTot ? "₹" + netCr(sTot) + " Cr" : "—"}</div></div>
+      <div class="kv"><div class="k">BUYS FROM</div><div class="v">${buys.length || "—"}</div></div>
+      <div class="kv"><div class="k">VALUE IN</div><div class="v amber">${
+        bTot ? "₹" + netCr(bTot) + " Cr" : "—"}</div></div>
+      <div class="kv"><div class="k">RELATED ENTITIES</div><div class="v">${nStruct || "—"}</div></div>
+      <div class="kv"><div class="k">CHAIN NODES</div><div class="v">${nChain || "—"}</div></div>
+      <div class="kv"><div class="k">PERIODS</div><div class="v sm">${
+        d.periods.length ? esc(d.periods[0]) + " → " + esc(d.periods[d.periods.length - 1]) : "—"}</div></div>
+    </div>
+
+    ${(sells.length || buys.length) ? secBlock(
+      "RELATED-PARTY VALUE FLOW", null,
+      netSankey(d, sells, buys), { open: true, scroll: false }) : `
+      <div class="empty" style="padding:10px 14px">no related-party transactions filed for this entity
+      <div class="faint" style="margin-top:3px;font-size:11px">BSE serves the RPT XBRL only for listed
+      filers, and only where the filer submitted it. A counterparty appears here through
+      someone else's filing.</div></div>`}
+
+    ${d.periods.length > 1 ? secBlock("HALF-YEARLY TOTALS", `${d.periods.length} periods filed`,
+      netPeriodBars(d, sells, buys), { open: true, scroll: false }) : ""}
+
+    ${(sells.length || buys.length) ? secBlock("COUNTERPARTIES",
+      `${sells.length + buys.length} · aggregated across periods · click to walk`,
+      netTable(d, sells, buys), { open: true }) : ""}
+
+    ${nStruct ? secBlock("CORPORATE STRUCTURE", `${nStruct} · relationship as filed`,
+      netStructure(d), { open: true, scroll: false }) : ""}
+
+    ${nChain ? secBlock("DISCLOSED CHAIN — THE COMPANY'S OWN WORDS", `${nChain} nodes`,
+      netChain(d), { open: true, scroll: false }) : ""}
+
+    ${(d.owners.length || d.schemes.length) ? secBlock("OWNERSHIP",
+      `${d.owners.length} holders · ${d.schemes.length} schemes`,
+      netOwners(d), { open: false, scroll: false }) : ""}
+
+    ${secBlock("THE TRAIL — TWO HOPS OUT", "every edge drawn is one that names a source",
+      `<div id="net-graph-host" class="net-graph-host">
+         <canvas id="net-graph"></canvas>
+         <div class="net-graph-tip" id="net-graph-tip"></div>
+         <div class="net-graph-note" id="net-graph-note"></div>
+       </div>`, { open: false, scroll: false })}
+
+    <div class="net-prov">
+      <div><b class="blue">VALUES</b> ${esc(d.sources.trade)}</div>
+      <div><b class="blue">RELATIONSHIPS</b> ${esc(d.sources.structure)}</div>
+      <div><b class="blue">CHAIN</b> ${esc(d.sources.disclosed)}</div>
+      <div><b class="blue">OWNERSHIP</b> ${esc(d.sources.owners)}</div>
+    </div>`;
+
+  // The graph is expensive and usually unopened: build it on first open only.
+  const det = [...h.querySelectorAll("details.sec")].pop();
+  if (det) det.addEventListener("toggle", () => {
+    if (det.open && !det.dataset.drawn) { det.dataset.drawn = "1"; netGraph(); }
+  });
+  h.querySelectorAll(".net-node[data-id]").forEach((n) => {
+    n.onclick = () => netDrill(n.dataset.id, n.dataset.name);
+  });
+  h.querySelectorAll(".splc-node.clip").forEach((n) => {
+    n.onclick = () => n.classList.toggle("open");
+    n.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); n.click(); } };
+  });
+}
+
+/* ---------- the flow diagram ----------
+   Suppliers on the left, customers on the right, ribbon height proportional
+   to rupees. ONE scale for both sides. Anything past NET_TOP is summed into a
+   labelled remainder band rather than dropped, so the picture still adds up
+   to the number in the header strip. */
+function netSankey(d, sells, buys) {
+  const W = 1000, PAD = 14, GAP = 3, LAB = 232, MIDW = 132;
+  const topS = sells.slice(0, NET_TOP), topB = buys.slice(0, NET_TOP);
+  const restS = sells.slice(NET_TOP), restB = buys.slice(NET_TOP);
+  const rS = restS.reduce((a, r) => a + r.total, 0);
+  const rB = restB.reduce((a, r) => a + r.total, 0);
+  const lS = topS.concat(rS ? [{ id: null, name: `${restS.length} smaller counterparties`, total: rS, rest: 1 }] : []);
+  const lB = topB.concat(rB ? [{ id: null, name: `${restB.length} smaller counterparties`, total: rB, rest: 1 }] : []);
+
+  const sTot = sells.reduce((a, r) => a + r.total, 0);
+  const bTot = buys.reduce((a, r) => a + r.total, 0);
+  const rows = Math.max(lS.length, lB.length);
+  const H = Math.max(300, rows * 30 + PAD * 2);
+  const band = H - PAD * 2;
+  // pixels per rupee: the larger side fills the band, the other is drawn to
+  // the same ruler so the comparison between them is honest.
+  const big = Math.max(sTot, bTot) || 1;
+  const usableS = band - GAP * Math.max(0, lS.length - 1);
+  const usableB = band - GAP * Math.max(0, lB.length - 1);
+  const usable = Math.min(usableS, usableB);
+  const pxPerRs = usable / big;
+  const MINH = 1.2;
+
+  const lay = (list, total) => {
+    const h = list.map((r) => Math.max(MINH, r.total * pxPerRs));
+    const sum = h.reduce((a, b) => a + b, 0) + GAP * Math.max(0, list.length - 1);
+    let y = PAD + (band - sum) / 2;
+    return list.map((r, i) => { const o = { ...r, h: h[i], y }; y += h[i] + GAP; return o; });
+  };
+  const L = lay(lB, bTot), R = lay(lS, sTot);
+  const cH = Math.max(bTot, sTot) * pxPerRs;
+  const cY = PAD + (band - cH) / 2;
+  const x0 = LAB, x1 = (W - MIDW) / 2, x2 = x1 + MIDW, x3 = W - LAB;
+
+  // Ribbons meet the centre block stacked in the same order they leave the
+  // label column, so no two cross without cause.
+  let ly = cY, ry = cY;
+  const ribbon = (n, side) => {
+    const y0 = n.y, y1 = side === "L" ? ly : ry;
+    if (side === "L") ly += n.h; else ry += n.h;
+    const [a, b] = side === "L" ? [x0, x1] : [x2, x3];
+    const m = (a + b) / 2;
+    const cls = side === "L" ? "net-rb-in" : "net-rb-out";
+    return `<path class="${cls}" d="M${a},${y0} C${m},${y0} ${m},${y1} ${b},${y1}
+      L${b},${y1 + n.h} C${m},${y1 + n.h} ${m},${y0 + n.h} ${a},${y0 + n.h} Z"><title>${
+      esc(n.name)} — ₹${netCr(n.total)} Cr</title></path>`;
+  };
+  const label = (n, side) => {
+    const anchor = side === "L" ? "end" : "start";
+    const tx = side === "L" ? x0 - 8 : x3 + 8;
+    const cy = n.y + n.h / 2;
+    const name = n.name.length > 34 ? n.name.slice(0, 33) + "…" : n.name;
+    return `<g class="net-slab${n.id ? " act" : ""}"${
+      n.id ? ` data-id="${esc(n.id)}" data-name="${esc(n.name)}"` : ""}>
+      <rect x="${side === "L" ? 0 : x3}" y="${n.y - 7}" width="${LAB}" height="${n.h + 14}" fill="transparent"/>
+      <text class="net-lb" x="${tx}" y="${cy - 1}" text-anchor="${anchor}">${esc(name)}</text>
+      <text class="net-lv" x="${tx}" y="${cy + 10}" text-anchor="${anchor}">₹${netCr(n.total)} Cr</text>
+      <title>${esc(n.name)}</title></g>`;
+  };
+  const pct = (v, t) => t ? (v / t * 100).toFixed(1) + "%" : "—";
+  return `
+  <div class="net-flow-wrap">
+    <div class="net-flow-hd">
+      <span class="net-k down">▶ ${lB.length} SUPPLIERS · ₹${netCr(bTot)} Cr IN</span>
+      <span class="net-k faint">both sides at one scale — ₹${
+        netCr(1 / pxPerRs)} Cr per pixel</span>
+      <span class="net-k up">${lS.length} CUSTOMERS · ₹${netCr(sTot)} Cr OUT ▶</span>
+    </div>
+    <svg class="net-flow" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
+         aria-label="related-party value flow">
+      ${L.map((n) => ribbon(n, "L")).join("")}
+      ${R.map((n) => ribbon(n, "R")).join("")}
+      <rect class="net-hub" x="${x1}" y="${cY}" width="${MIDW}" height="${Math.max(cH, 26)}"/>
+      <text class="net-hub-t" x="${(x1 + x2) / 2}" y="${cY + Math.max(cH, 26) / 2 - 2}"
+            text-anchor="middle">${esc((NET.d.name || "").slice(0, 16))}</text>
+      <text class="net-hub-s" x="${(x1 + x2) / 2}" y="${cY + Math.max(cH, 26) / 2 + 11}"
+            text-anchor="middle">${d.periods.length}p aggregate</text>
+      ${L.map((n) => label(n, "L")).join("")}
+      ${R.map((n) => label(n, "R")).join("")}
+    </svg>
+    <div class="net-flow-ft">
+      <span>Largest supplier <b class="hl">${esc(L[0] ? L[0].name : "—")}</b>${
+        L[0] ? ` · ${pct(L[0].total, bTot)} of purchases` : ""}</span>
+      <span>Largest customer <b class="hl">${esc(R[0] ? R[0].name : "—")}</b>${
+        R[0] ? ` · ${pct(R[0].total, sTot)} of sales` : ""}</span>
+    </div>
+  </div>`;
+}
+
+/* ---------- period totals ----------
+   Six half-years, both directions. Bars, not a line: these are six discrete
+   filings, not a continuous series, and a line would imply readings between
+   them that nobody filed. */
+function netPeriodBars(d, sells, buys) {
+  const per = d.periods;
+  const sum = (list, p) => list.reduce((a, r) => a + (r.periods[p] || 0), 0);
+  const S = per.map((p) => sum(sells, p)), B = per.map((p) => sum(buys, p));
+  const mx = Math.max(...S, ...B, 1);
+  const W = 1000, H = 190, PAD = 26, bw = (W - PAD * 2) / per.length;
+  const bar = (v, i, side) => {
+    const h = Math.max(v ? 1 : 0, (v / mx) * (H - 64));
+    const w = bw * 0.32;
+    const x = PAD + i * bw + (side === "s" ? bw / 2 - w - 2 : bw / 2 + 2);
+    return `<g><rect class="${side === "s" ? "net-bar-s" : "net-bar-b"}" x="${x}"
+      y="${H - 34 - h}" width="${w}" height="${h}"><title>${esc(per[i])} — ${
+      side === "s" ? "sales" : "purchases"} ₹${netCr(v)} Cr</title></rect>
+      ${h > 16 ? `<text class="net-bar-t" x="${x + w / 2}" y="${H - 38 - h}"
+        text-anchor="middle">${netCr(v)}</text>` : ""}</g>`;
+  };
+  return `<div class="net-bars-wrap">
+    <svg class="net-bars" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+      <line class="net-ax" x1="${PAD}" y1="${H - 34}" x2="${W - PAD}" y2="${H - 34}"/>
+      ${per.map((p, i) => bar(S[i], i, "s") + bar(B[i], i, "b")).join("")}
+      ${per.map((p, i) => `<text class="net-bar-x" x="${PAD + i * bw + bw / 2}" y="${H - 18}"
+        text-anchor="middle">${esc(p)}</text>`).join("")}
+    </svg>
+    <div class="net-legend"><span class="net-sw s"></span>SALES TO RELATED PARTIES
+      <span class="net-sw b"></span>PURCHASES FROM RELATED PARTIES
+      <span class="faint">· ₹ Cr · half-yearly as filed</span></div>
+  </div>`;
+}
+
+/* Sparkline over the filed periods. A period the counterparty does not appear
+   in is a GAP, not a zero - they may simply not have transacted, and drawing
+   that as a floor reading would be an invention. */
+function netSpark(r, per) {
+  const w = 74, h = 16;
+  const vals = per.map((p) => r.periods[p]);
+  const seen = vals.filter((v) => v != null);
+  if (seen.length < 2) return `<span class="faint">${seen.length ? "one period" : "—"}</span>`;
+  const mx = Math.max(...seen), mn = Math.min(...seen, 0);
+  const x = (i) => (i / (per.length - 1)) * (w - 2) + 1;
+  const y = (v) => h - 2 - ((v - mn) / ((mx - mn) || 1)) * (h - 4);
+  let dstr = "", pen = false;
+  vals.forEach((v, i) => {
+    if (v == null) { pen = false; return; }
+    dstr += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+    pen = true;
+  });
+  const last = vals[vals.length - 1], first = seen[0];
+  const dir = last == null ? "" : last >= first ? "up" : "down";
+  return `<svg class="net-spark ${dir}" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">
+    <path d="${dstr}"/>${vals.map((v, i) => v == null ? "" :
+      `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${
+        i === vals.length - 1 ? 1.9 : 1}"/>`).join("")}</svg>`;
+}
+
+function netTable(d, sells, buys) {
+  const per = d.periods;
+  const sTot = sells.reduce((a, r) => a + r.total, 0);
+  const bTot = buys.reduce((a, r) => a + r.total, 0);
+  const row = (r, side, tot) => `
+    <tr class="net-node" data-id="${esc(r.id)}" data-name="${esc(r.name)}" tabindex="0">
+      <td class="net-cp">${esc(r.name)}</td>
+      <td><span class="badge ${side === "s" ? "up" : "down"}">${side === "s" ? "SELLS TO" : "BUYS FROM"}</span></td>
+      <td class="num amber">${netCr(r.total)}</td>
+      <td class="num">${tot ? (r.total / tot * 100).toFixed(1) + "%" : "—"}</td>
+      <td class="net-sp">${netSpark(r, per)}</td>
+      <td class="num faint">${Object.keys(r.periods).length}/${per.length}</td>
+      <td class="net-walk">walk ›</td>
+    </tr>`;
+  const all = sells.map((r) => [r, "s", sTot]).concat(buys.map((r) => [r, "b", bTot]))
+    .sort((a, b) => b[0].total - a[0].total);
+  return `<table class="tbl net-tbl">
+    <thead><tr><th>COUNTERPARTY</th><th>DIRECTION</th><th class="num">TOTAL ₹Cr</th>
+      <th class="num">SHARE</th><th>PER PERIOD</th><th class="num">FILED</th><th></th></tr></thead>
+    <tbody>${all.map(([r, s, t]) => row(r, s, t)).join("")}</tbody></table>
+  <div class="net-fine">Totals sum every period the counterparty appears in — a party in
+  six half-years is one relationship, not six. SHARE is of that direction's filed total, not of
+  company revenue: related-party sales are a subset of sales, and the filing does not carry the
+  denominator.</div>`;
+}
+
+function netStructure(d) {
+  const order = Object.keys(NET_REL).filter((k) => (d.structure[k] || []).length)
+    .concat(Object.keys(d.structure).filter((k) => !NET_REL[k]));
+  return `<div class="net-struct">${order.map((rel) => {
+    const list = d.structure[rel] || [];
+    if (!list.length) return "";
+    const [lab, tone] = NET_REL[rel] || [rel.replace(/_/g, " ").toUpperCase(), "dim"];
+    return `<div class="net-sgrp">
+      <div class="net-sgrp-h ${tone}">${esc(lab)} <span class="faint">${list.length}</span></div>
+      <div class="net-chips">${list.map((n) => `
+        <button class="net-chip net-node" data-id="${esc(n.id)}" data-name="${esc(n.name)}"
+          title="${esc(n.name)} — ${esc(n.source)}">${esc(n.name)}</button>`).join("")}</div>
+    </div>`;
+  }).join("")}</div>
+  <div class="net-fine">Relationship text is BSE's, as the filer wrote it. Where a filer used
+  "Any other related party" it stays unspecified rather than being guessed into a category —
+  52% of all filed rows carry no transaction type either, and those are relationships here,
+  not trades.</div>`;
+}
+
+function netChain(d) {
+  return `<div class="splc-grid net-chain">${NET_CHAIN.map(([rel, title, tone]) => {
+    const list = d.disclosed[rel] || [];
+    return `<div class="splc-col">
+      <div class="splc-head ${tone}">${title} <span class="faint">${list.length}</span></div>
+      ${list.length ? list.map((n) => `
+        <div class="splc-node${(n.quote || "").length > 150 ? " clip" : ""}" tabindex="0" role="button">
+          <div class="splc-term">${esc(String(n.name).toUpperCase())}${
+            n.match === "prefix" ? ` <span class="faint" title="verified on an 80-character verbatim prefix; the tail crosses a page break">≈</span>` : ""}${
+            n.match === "recovered" ? ` <span class="faint" title="the model paraphrased; this is the document's own sentence, lifted by code">≡</span>` : ""}</div>
+          <div class="splc-ev">${esc(n.quote || "")}</div>
+        </div>`).join("")
+        : `<div class="empty" style="padding:6px 8px">the report names none in this class</div>`}
+    </div>`;
+  }).join("")}</div>
+  <div class="net-fine">Every line is a sentence sliced byte-exact from the filed annual report and
+  re-checked against it. ≈ passed on a verbatim 80-character prefix where the tail crosses a
+  page break; ≡ is the document's own sentence recovered by code after the model paraphrased.
+  These are the company's claims about itself, with no rupee value attached.</div>`;
+}
+
+function netOwners(d) {
+  const bar = (n, mx, unit) => `
+    <div class="own-row"><span class="net-own-n">${esc(n.name)}</span>
+      <div class="own-track"><div class="own-fill" style="width:${
+        Math.min(100, (n.pct != null ? n.pct : (n.value / mx * 100)) || 0)}%"></div></div>
+      <b>${n.pct != null ? n.pct.toFixed(2) + "%" : (n.value != null ? "₹" + netCr(n.value) + " Cr" : "—")}</b></div>`;
+  const mxv = Math.max(...d.schemes.map((s) => s.value || 0), 1);
+  return `<div class="net-own">
+    <div><div class="net-sgrp-h blue">HOLDERS <span class="faint">${d.owners.length}</span></div>
+      ${d.owners.length ? d.owners.map((n) => bar(n, 100)).join("")
+        : `<div class="empty" style="padding:6px">no shareholding filing in the graph for this entity</div>`}</div>
+    <div><div class="net-sgrp-h blue">MUTUAL-FUND SCHEMES HOLDING IT <span class="faint">${d.schemes.length}</span></div>
+      ${d.schemes.length ? d.schemes.map((n) => bar(n, mxv)).join("")
+        : `<div class="empty" style="padding:6px">no scheme discloses a position in this entity</div>`}</div>
+  </div>`;
+}
+
+/* ---------- the trail ----------
+   A force layout, run to a fixed iteration count on load and then drawn once.
+   The node cap the API applies is REPORTED under the picture: a graph that
+   silently truncates looks exactly like a graph that is complete. */
+async function netGraph() {
+  const cv = $("#net-graph"), note = $("#net-graph-note"), tip = $("#net-graph-tip");
+  if (!cv) return;
+  note.textContent = "walking…";
+  let g;
+  try { g = await getJSON(`/api/entity/${encodeURIComponent(NET.sym)}/trail?hops=2&max_nodes=260`); }
+  catch (e) { note.textContent = e.message; return; }
+  const nodes = g.nodes.map((n) => ({ ...n, x: 0, y: 0, vx: 0, vy: 0 }));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const edges = g.edges.filter((e) => byId.has(e.src) && byId.has(e.dst));
+  if (!nodes.length) { note.textContent = "no edges from this node"; return; }
+
+  const W = cv.clientWidth || 900, H = 460;
+  cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio;
+  cv.style.height = H + "px";
+  const ctx = cv.getContext("2d");
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+
+  // deterministic seeding: a ring by index, so the same entity lays out the
+  // same way every time. Math.random() here would make the picture move under
+  // the reader on every open for no informational gain.
+  const deg = new Map();
+  edges.forEach((e) => { deg.set(e.src, (deg.get(e.src) || 0) + 1); deg.set(e.dst, (deg.get(e.dst) || 0) + 1); });
+  nodes.forEach((n, i) => {
+    const a = (i / nodes.length) * Math.PI * 2;
+    const r = n.id === g.root ? 0 : 60 + (i % 7) * 26;
+    n.x = W / 2 + Math.cos(a) * r; n.y = H / 2 + Math.sin(a) * r;
+  });
+  const root = byId.get(g.root);
+  const k = Math.sqrt((W * H) / nodes.length) * 0.62;
+  for (let it = 0; it < 260; it++) {
+    const t = 1 - it / 260;
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j];
+        let dx = a.x - b.x, dy = a.y - b.y;
+        let ds = dx * dx + dy * dy;
+        if (ds < 0.01) { dx = (i - j) * 0.1 + 0.05; dy = 0.05; ds = 0.01; }
+        const f = (k * k) / ds;
+        a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+      }
+    }
+    edges.forEach((e) => {
+      const a = byId.get(e.src), b = byId.get(e.dst);
+      const dx = a.x - b.x, dy = a.y - b.y;
+      const d2 = Math.sqrt(dx * dx + dy * dy) || 1;
+      const f = (d2 * d2) / k / d2 * 0.9;
+      a.vx -= dx * f; a.vy -= dy * f; b.vx += dx * f; b.vy += dy * f;
+    });
+    nodes.forEach((n) => {
+      n.vx += (W / 2 - n.x) * 0.012; n.vy += (H / 2 - n.y) * 0.012;
+      const sp = Math.sqrt(n.vx * n.vx + n.vy * n.vy) || 1;
+      const cap = Math.min(sp, 14 * t + 0.6);
+      n.x += (n.vx / sp) * cap; n.y += (n.vy / sp) * cap;
+      n.vx *= 0.55; n.vy *= 0.55;
+      n.x = Math.max(14, Math.min(W - 14, n.x)); n.y = Math.max(14, Math.min(H - 14, n.y));
+    });
+    if (root) { root.x = W / 2; root.y = H / 2; root.vx = root.vy = 0; }
+  }
+
+  const TONE = { sells_to: "#23d18b", buys_from: "#ff5c5c" };
+  const rad = (n) => n.id === g.root ? 6.5 : Math.min(5, 1.8 + Math.sqrt(deg.get(n.id) || 1) * 0.7);
+  let hover = null;
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    edges.forEach((e) => {
+      const a = byId.get(e.src), b = byId.get(e.dst);
+      const lit = hover && (e.src === hover.id || e.dst === hover.id);
+      ctx.strokeStyle = lit ? (TONE[e.rel] || "#ffa62b") : "rgba(99,96,90,0.30)";
+      ctx.lineWidth = lit ? 1.3 : 0.5;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    });
+    nodes.forEach((n) => {
+      const isRoot = n.id === g.root;
+      ctx.beginPath(); ctx.arc(n.x, n.y, rad(n), 0, 6.284);
+      ctx.fillStyle = isRoot ? "#ffa62b" : hover === n ? "#e6e1d6" : "#5fa8dc";
+      ctx.fill();
+      if (isRoot) { ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5; ctx.stroke(); }
+    });
+    if (root) {
+      ctx.font = "11px ui-monospace, monospace"; ctx.fillStyle = "#ffa62b";
+      ctx.textAlign = "center";
+      ctx.fillText(String(NET.d.name || "").slice(0, 28), root.x, root.y - 12);
+    }
+  }
+  draw();
+  cv.onmousemove = (ev) => {
+    const r = cv.getBoundingClientRect();
+    const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    let best = null, bd = 100;
+    nodes.forEach((n) => {
+      const d2 = (n.x - mx) ** 2 + (n.y - my) ** 2;
+      if (d2 < bd) { bd = d2; best = n; }
+    });
+    if (best !== hover) { hover = best; draw(); }
+    if (best) {
+      tip.style.display = "block";
+      tip.style.left = Math.min(W - 210, mx + 12) + "px"; tip.style.top = (my + 12) + "px";
+      tip.innerHTML = `<b>${esc(best.name)}</b><br><span class="faint">${
+        esc(best.kind)} · ${deg.get(best.id) || 0} edges · click to walk</span>`;
+    } else tip.style.display = "none";
+  };
+  cv.onmouseleave = () => { tip.style.display = "none"; hover = null; draw(); };
+  cv.onclick = () => { if (hover && hover.id !== g.root) netDrill(hover.id, hover.name); };
+  note.innerHTML = `${g.nodes.length} entities · ${g.edges.length} edges · 2 hops${
+    g.truncated ? ` · <b class="bad">CAPPED at 260 nodes — this is a slice, not the whole
+    neighbourhood</b>` : " · complete at this depth"}. Amber is the entity in view;
+    hover an edge's node to light its links; click any node to walk to it.`;
+}
+
 const RENDER = {
   pulse: renderPulse, chart: renderChart, chain: renderChain, payoff: renderPayoff,
   iv: renderIV, volume: renderVolume, news: renderNews, backtest: renderBacktest,
@@ -5980,6 +6522,7 @@ const RENDER = {
   datastore: renderDatastore, workspace: renderWorkspace, viz: renderViz,
 
   mlstudio: renderMLStudio, brief: renderBrief, admin: renderAdmin,
+  network: renderNetwork,
 };
 
 /* ---------- websocket ---------- */
