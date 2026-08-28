@@ -540,8 +540,17 @@ def latest_readable_report(symbol: str, tries: int = 4) -> tuple[dict, str, int]
     ars[1] retries the identical bad URL. A botched re-upload produces both
     symptoms at once.
     """
-    reports = annual_reports(symbol)
+    # NSE listing an empty payload is a REASON TO TRY BSE, not a reason to
+    # stop. Raising here made the BSE fallback below unreachable for exactly
+    # the symbols it exists to rescue - ABBOTINDIA and MCX return zero rows
+    # from every NSE endpoint, which is the whole point of having a second
+    # exchange.
     seen, problems = set(), []
+    try:
+        reports = annual_reports(symbol)
+    except DataError as exc:
+        reports = []
+        problems.append(f"NSE: {exc}")
     for r in reports:
         url = r.get("url")
         if not url or url in seen:
@@ -567,7 +576,27 @@ def latest_readable_report(symbol: str, tries: int = 4) -> tuple[dict, str, int]
             problems.append(f"FY{r.get('to_year')}: {exc}")
             if len(seen) >= tries:
                 break
-    raise DataError(f"no readable annual report for {symbol} - " + "; ".join(problems[:3]))
+    # NSE exhausted. Fall back to BSE, which lists ~4,979 active equity scrips
+    # against NSE's ~2,000 and has annual reports NSE simply does not serve:
+    # ABBOTINDIA and MCX return an empty payload from EVERY NSE
+    # corporate-filing endpoint, and BSE has 29 and 15 reports for them.
+    try:
+        from shunkan.data.bse import annual_reports as bse_reports
+
+        for r in bse_reports(symbol)[:tries]:
+            try:
+                text, pages = fetch_report_text(r["url"])
+            except DataError as exc:
+                problems.append(f"BSE FY{r.get('to_year')}: {exc}")
+                continue
+            if pages < _MIN_REPORT_PAGES or len(text) < _MIN_REPORT_CHARS:
+                problems.append(f"BSE FY{r.get('to_year')}: stub, {pages}pp")
+                continue
+            return r, text, pages
+    except Exception as exc:
+        problems.append(f"BSE fallback: {str(exc)[:80]}")
+
+    raise DataError(f"no readable annual report for {symbol} - " + "; ".join(problems[:4]))
 
 
 def registry_stats(root=None) -> dict:
