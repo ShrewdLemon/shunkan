@@ -287,6 +287,19 @@ _TRADE = {
 }
 
 
+def _node_for(g, name, src, cache):
+    """Memoised resolve-or-create for one ingest run."""
+    from shunkan.store.graph import normalise
+
+    key = normalise(name)
+    if key in cache:
+        return cache[key]
+    nid = g.resolve(name) or g.put_node("company", key or name, name)
+    g.put_alias(name, nid, source=src)
+    cache[key] = nid
+    return nid
+
+
 def ingest_rpt(symbol_or_code, *, symbol: str | None = None) -> dict:
     """Push one company's harvested RPT into the knowledge graph.
 
@@ -314,7 +327,7 @@ def ingest_rpt(symbol_or_code, *, symbol: str | None = None) -> dict:
     g = GraphStore()
     sym = (symbol or (symbol_or_code if isinstance(symbol_or_code, str) else "")).upper()
     src = f"BSE RPT XBRL scrip {code}"
-    edges, seen_rel = [], set()
+    edges, seen_rel, _cache = [], set(), {}
 
     # THE SPINE. The `entity` column names whichever GROUP COMPANY transacted,
     # not the filer - Reliance's own filing is mostly rows where the entity is
@@ -336,11 +349,11 @@ def ingest_rpt(symbol_or_code, *, symbol: str | None = None) -> dict:
             ent, cp = r.get("entity") or sym, r["counterparty"]
             if not cp:
                 continue
-            # resolve onto an existing node where one exists, else create
-            e_id = g.resolve(ent) or g.put_node("company", normalise(ent) or ent, ent)
-            c_id = g.resolve(cp) or g.put_node("company", normalise(cp) or cp, cp)
-            g.put_alias(ent, e_id, source=src)
-            g.put_alias(cp, c_id, source=src)
+            # Resolve once per distinct name. The same counterparty recurs
+            # across six periods and thousands of rows, and resolve() is a
+            # UNION query - re-running it per row turned a 20-second ingest
+            # into one that had not finished in ten minutes.
+            e_id, c_id = _node_for(g, ent, src, _cache), _node_for(g, cp, src, _cache)
 
             if filer and e_id != filer and e_id not in filed_entities:
                 filed_entities.add(e_id)
@@ -369,3 +382,50 @@ def ingest_rpt(symbol_or_code, *, symbol: str | None = None) -> dict:
     g.commit()
     return {"scrip_code": code, "symbol": sym, "edges": len(edges),
             "relationships": len(seen_rel), "group_entities": len(filed_entities)}
+
+
+def link_legal_names(symbols=None) -> dict:
+    """Alias each company's LEGAL NAME onto its ticker node.
+
+    The graph keys companies by ticker - the node is RELIANCE - while every
+    filing, every RPT row and every counterparty list writes "Reliance
+    Industries Limited". Without a bridge those are two entities, and
+    resolve("Reliance Industries Limited") found an `input` node created
+    because some other filer named Reliance as a supplier. The trail then
+    started from the wrong place and returned nothing, with no error.
+
+    BSE's scrip master is the clean source for the mapping: it carries
+    SCRIP_CD, scrip_id (the ticker) and Issuer_Name/Scrip_Name for ~4,979
+    active scrips, so the join needs no guessing.
+    """
+    from shunkan.store.graph import GraphStore
+
+    g = GraphStore()
+    rows = scrip_master()
+    by_ticker = {}
+    for r in rows:
+        t = str(r.get("scrip_id", "")).upper().strip()
+        if t:
+            by_ticker[t] = r
+    if symbols is None:
+        from shunkan.data.constituents import fetch_constituents
+
+        symbols = [c.symbol for c in fetch_constituents("NIFTY500")]
+
+    linked, missed = 0, []
+    for sym in symbols:
+        r = by_ticker.get(sym.upper())
+        if not r:
+            missed.append(sym)
+            continue
+        nid = g.resolve(sym, kind="company")
+        if not nid:
+            missed.append(sym)
+            continue
+        for field in ("Issuer_Name", "Scrip_Name"):
+            name = str(r.get(field) or "").strip()
+            if name:
+                g.put_alias(name, nid, source="BSE scrip master")
+                linked += 1
+    g.commit()
+    return {"aliased": linked, "unmatched": missed}

@@ -67,6 +67,7 @@ CREATE INDEX IF NOT EXISTS edge_src ON edge(src, rel);
 CREATE INDEX IF NOT EXISTS edge_dst ON edge(dst, rel);
 CREATE INDEX IF NOT EXISTS edge_rel ON edge(rel, weight);
 
+CREATE INDEX IF NOT EXISTS idx_node_name ON node(name);
 CREATE TABLE IF NOT EXISTS alias (
     alias   TEXT PRIMARY KEY,      -- normalised raw string
     node_id TEXT NOT NULL,
@@ -289,11 +290,54 @@ class GraphStore:
 
     # -- reads -------------------------------------------------------------
 
-    def resolve(self, text: str, kind: str | None = None) -> str | None:
-        """The mapping service: any spelling in, canonical node id out."""
+    # A company outranks a role. The same name legitimately exists as several
+    # node kinds - RELIANCE is a company, and it is also a `customer` node
+    # because another filer lists it as a buyer, and an `input` node because a
+    # third lists it as a supplier. The alias table maps one key to one node,
+    # so whichever writer ran last won, and resolve("RELIANCE") returned
+    # customer:RELIANCE - a node with none of the company's edges. Anything
+    # walking the graph from a ticker got an empty trail and no error.
+    _KIND_RANK = {"company": 0, "holder": 1, "person": 2, "scheme": 3,
+                  "amc": 4, "customer": 5, "input": 6, "output": 7,
+                  "facilitie": 8, "sector": 9}
+
+    def resolve(self, text: str, kind: str | None = None,
+                prefer: str | None = "company") -> str | None:
+        """The mapping service: any spelling in, canonical node id out.
+
+        `prefer` breaks the tie when one name spans several kinds. It defaults
+        to "company" because that is what a caller almost always means when it
+        hands over a ticker or a legal name; pass prefer=None for the raw
+        alias hit.
+        """
         key = normalise(text)
         if not key:
             return None
+        if kind:
+            # An explicit kind is a CONSTRAINT, not a hint. Falling through to
+            # the unfiltered alias when the kind-filtered lookup missed is how
+            # resolve("RELIANCE", kind="company") returned customer:RELIANCE,
+            # and link_legal_names then aliased every legal name onto that
+            # wrong node. Ask for a company, get a company or nothing.
+            row = self._con.execute(
+                "SELECT n.id FROM alias a JOIN node n ON n.id=a.node_id "
+                "WHERE a.alias=? AND n.kind=?", (key, kind)).fetchone()
+            if row:
+                return row["id"]
+            row = self._con.execute(
+                "SELECT id FROM node WHERE name=? COLLATE NOCASE AND kind=?",
+                (text, kind)).fetchone()
+            return row["id"] if row else None
+        if prefer:
+            # every node reachable by this name, best kind first
+            rows = self._con.execute(
+                "SELECT n.id, n.kind FROM node n WHERE n.id IN "
+                "(SELECT node_id FROM alias WHERE alias=?) "
+                "UNION SELECT id, kind FROM node WHERE name=? COLLATE NOCASE",
+                (key, text)).fetchall()
+            if rows:
+                best = min(rows, key=lambda r: self._KIND_RANK.get(r["kind"], 50))
+                return best["id"]
         row = self._con.execute(
             "SELECT node_id FROM alias WHERE alias=?", (key,)).fetchone()
         if row:
@@ -352,6 +396,100 @@ class GraphStore:
             out += [Neighbour(**dict(r), direction="in")
                     for r in self._con.execute(sql, args)]
         return out
+
+    # ------------------------------------------------------------ traversal
+
+    # Structural relations describe WHO an entity is; trade relations describe
+    # what moved. A UI wants them separated, and so does anyone reasoning
+    # about the graph: a fellow-subsidiary link and a Rs 7,966 Cr sale are
+    # different kinds of claim even when they join the same two nodes.
+    STRUCTURAL = ("group_entity_of", "subsidiary_of", "wholly_owned_subsidiary_of",
+                  "fellow_subsidiary_of", "subsidiary_of_ultimate_parent",
+                  "holding_company_of", "associate_of", "joint_venture_with",
+                  "promoter_group_of", "significant_influence_over",
+                  "key_management_of", "related_party_of")
+    TRADE = ("rpt_sells_to", "rpt_buys_from")
+    DISCLOSED = ("consumes", "produces", "sells_to", "operates")
+
+    def trail(self, nid: str, *, hops: int = 2, rels: tuple | None = None,
+              limit_per_node: int = 60, max_nodes: int = 400) -> dict:
+        """Walk outward from a node and return the subgraph reached.
+
+        Breadth-first with a hard node cap, because a group like Reliance
+        reaches thousands of entities within two hops and an unbounded walk
+        would return a graph nobody can read or draw. The cap is REPORTED in
+        `truncated` rather than applied silently - a partial graph presented
+        as complete is worse than a small one.
+
+        Every returned edge keeps its source. That is not decoration: the
+        graph mixes an annual-report sentence with an XBRL filing with a
+        mutual-fund disclosure, and a reader must be able to tell which is
+        which without leaving the view.
+        """
+        seen = {nid}
+        frontier = [nid]
+        nodes, edges = {}, []
+        root = self.node(nid)
+        if root:
+            nodes[nid] = {**root, "hop": 0}
+        truncated = False
+        for hop in range(1, hops + 1):
+            nxt = []
+            for src in frontier:
+                for rel in (rels or (None,)):
+                    for n in self.neighbours(src, rel=rel, limit=limit_per_node):
+                        edges.append({
+                            "src": src if n.direction == "out" else n.id,
+                            "dst": n.id if n.direction == "out" else src,
+                            "rel": n.rel, "weight": n.weight, "unit": n.unit,
+                            "as_of": n.as_of, "source": n.source, "hop": hop,
+                        })
+                        if n.id in seen:
+                            continue
+                        if len(nodes) >= max_nodes:
+                            truncated = True
+                            continue
+                        seen.add(n.id)
+                        nodes[n.id] = {"id": n.id, "kind": n.kind,
+                                       "name": n.name, "hop": hop}
+                        nxt.append(n.id)
+            frontier = nxt
+            if not frontier:
+                break
+        return {"root": nid, "hops": hops, "nodes": list(nodes.values()),
+                "edges": edges, "truncated": truncated,
+                "note": (f"walk stopped at {max_nodes} nodes; the graph "
+                         "continues beyond this view") if truncated else ""}
+
+    def trade_summary(self, nid: str, *, top: int = 25) -> dict:
+        """Counterparties by rupee value, split by direction.
+
+        Aggregated across periods because a counterparty appearing in six
+        half-years is one relationship, not six. The period breakdown is kept
+        so a trend can be drawn without a second query.
+        """
+        out: dict = {"sells_to": {}, "buys_from": {}}
+        for rel, key in (("rpt_sells_to", "sells_to"), ("rpt_buys_from", "buys_from")):
+            for n in self.neighbours(nid, rel=rel, direction="out", limit=4000):
+                if not n.weight:
+                    continue
+                row = out[key].setdefault(n.id, {
+                    "id": n.id, "name": n.name, "total": 0.0, "periods": {}})
+                row["total"] += n.weight
+                row["periods"][n.as_of or "?"] = (
+                    row["periods"].get(n.as_of or "?", 0.0) + n.weight)
+        for key in out:
+            out[key] = sorted(out[key].values(), key=lambda r: -r["total"])[:top]
+        return out
+
+    def structure(self, nid: str, *, limit: int = 400) -> list[dict]:
+        """Who this entity IS related to, with the relation stated."""
+        rows = []
+        for rel in self.STRUCTURAL:
+            for n in self.neighbours(nid, rel=rel, limit=limit):
+                rows.append({"id": n.id, "name": n.name, "rel": rel,
+                             "direction": n.direction, "source": n.source})
+        return rows
 
     def co_held(self, nid: str, rel: str = "scheme_holds", limit: int = 25) -> list[dict]:
         """Two hops: everything the holders of THIS also hold.
