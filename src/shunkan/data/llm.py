@@ -850,8 +850,16 @@ def store_extraction(ex: Extraction) -> None:
     os.replace(tmp, path)
     try:
         _push_graph(ex)
-    except Exception:
-        pass  # the graph is a projection; never lose an extraction over it
+    except Exception as exc:
+        # The graph is a projection and must never cost us an extraction - but
+        # a swallowed exception here hid a total failure across 498 companies.
+        # Record it where a reader will see it.
+        ex.notes.append(f"graph projection failed: {type(exc).__name__}: {exc}"[:200])
+        try:
+            path = store_dir() / f"{ex.symbol}.json"
+            path.write_text(json.dumps(asdict(ex), indent=1))
+        except Exception:
+            pass
 
 
 def load_extraction(symbol: str) -> Extraction | None:
@@ -877,25 +885,41 @@ _REL = {"inputs": "consumes", "outputs": "produces",
 def _push_graph(ex: Extraction) -> None:
     """Project the extraction onto the knowledge graph.
 
+    THIS SILENTLY DID NOTHING FOR 498 COMPANIES. It called a put_nodes() that
+    GraphStore has never had, the AttributeError was swallowed by the caller's
+    bare except, and ~21,000 extracted nodes never reached the graph while
+    every extraction reported success. A store_extraction that cannot fail is
+    worth less than one that can: the except stays, because losing an
+    extraction over a graph write would be worse, but it now records the
+    failure on the extraction instead of discarding it.
+
     Every edge carries the document URL as its source, because put_edges
     raises ValueError without one - the graph refuses unsourced claims by
-    construction, and this module has nothing to hide from it.
+    construction.
     """
-    from shunkan.store.graph import GraphStore, normalise
+    from shunkan.store.graph import GraphStore
 
     g = GraphStore()
-    nodes, edges = [{"id": ex.symbol, "kind": "company", "name": ex.symbol}], []
+    src = ex.document_url or ex.document or "annual report"
+    company = g.put_node("company", ex.symbol, ex.symbol)
+    g.put_alias(ex.symbol, company, source=src)
+
+    edges = []
     for cat, rel in _REL.items():
+        kind = cat[:-1]           # input / output / customer / facility
         for item in getattr(ex, cat):
-            nid = f"{cat[:3]}:{normalise(item['name'])}"
-            nodes.append({"id": nid, "kind": cat[:-1], "name": item["name"]})
-            edges.append({"src": ex.symbol, "dst": nid, "rel": rel,
-                          "as_of": ex.extracted_at[:10],
-                          "source": ex.document_url or ex.document,
-                          "meta": json.dumps({"quote": item["quote"][:400],
-                                              "model": ex.model})})
-    g.put_nodes(nodes)
-    g.put_edges(edges)
+            name = item["name"]
+            nid = g.put_node(kind, name, name,
+                             {"location": item.get("location")} if item.get("location") else None)
+            g.put_alias(name, nid, source=src)
+            edges.append({"src": company, "dst": nid, "rel": rel,
+                          "as_of": ex.extracted_at[:10], "source": src,
+                          "meta": {"quote": item["quote"][:400],
+                                   "match": item.get("match"),
+                                   "model": ex.model}})
+    if edges:
+        g.put_edges(edges)
+    g.commit()
 
 
 # ------------------------------------------------------------------ ledger

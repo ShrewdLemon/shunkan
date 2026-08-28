@@ -239,6 +239,12 @@ class GraphStore:
         # never block behind a bulk import.
         self._con.execute("PRAGMA journal_mode=WAL")
         self._con.execute("PRAGMA synchronous=NORMAL")
+        # Wait for a writer instead of failing instantly. WAL lets readers and
+        # ONE writer coexist, but two writers still collide - the web process
+        # and an ingest run, say - and the default timeout is zero, so the
+        # loser raised "database is locked" and a bulk import died mid-way.
+        # Thirty seconds is far longer than any write here takes.
+        self._con.execute("PRAGMA busy_timeout=30000")
         self._con.executescript(SCHEMA)
         self._con.commit()
 
