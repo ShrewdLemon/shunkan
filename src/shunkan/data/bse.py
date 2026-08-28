@@ -235,3 +235,137 @@ def harvest_rpt(symbol_or_code, *, sleep_s: float = 0.6) -> dict:
     path.write_text(json.dumps({"scrip_code": code, "periods": out}, indent=1))
     return {"scrip_code": code, "periods": len(out), "rows": total,
             "path": str(path)}
+
+
+# --------------------------------------------------------- graph projection
+
+# The filed relationship string is free text and filers disagree on all of
+# case, plural and specificity: "Fellow Subsidiary" / "Fellow subsidiary",
+# "Subsidiary" / "Subsidiaries" / "Wholly Owned Subsidiary", and company-
+# specific strings like "Subsidiaries of TCS" or "Wholly owned Subsidiary of
+# APSEZ". Left raw they would shatter one relation into a dozen edge types.
+# Ordered longest-intent-first because "subsidiary of ultimate parent" must
+# not be eaten by the plain "subsidiary" rule.
+_REL_RULES = (
+    ("holding", "holding_company_of"),
+    ("ultimate parent", "subsidiary_of_ultimate_parent"),
+    ("fellow", "fellow_subsidiary_of"),
+    ("joint venture", "joint_venture_with"),
+    ("joint control", "significant_influence_over"),
+    ("significant influence", "significant_influence_over"),
+    ("associate", "associate_of"),
+    ("promoter", "promoter_group_of"),
+    ("wholly owned subsidiary", "wholly_owned_subsidiary_of"),
+    ("wholly-owned subsidiary", "wholly_owned_subsidiary_of"),
+    ("subsidiar", "subsidiary_of"),
+    ("kmp", "key_management_of"),
+    ("key management", "key_management_of"),
+    ("director", "key_management_of"),
+)
+
+
+def normalise_relationship(raw: str) -> str:
+    low = (raw or "").lower()
+    for needle, rel in _REL_RULES:
+        if needle in low:
+            return rel
+    return "related_party_of"
+
+
+# ONLY these carry commercial direction. "Any other transaction" is 52% of all
+# rows and says nothing about who supplied whom - turning it into a trade edge
+# would manufacture a supply relationship out of a disclosure catch-all, which
+# is the exact failure this project exists to avoid. It still proves the
+# parties are related, so it lands as a relationship edge and nothing more.
+_TRADE = {
+    "sale of goods or services": ("rpt_sells_to", 1),
+    "sale of goods": ("rpt_sells_to", 1),
+    "sale of fixed assets": ("rpt_sells_to", 1),
+    "purchase of goods or services": ("rpt_buys_from", 1),
+    "purchase of goods": ("rpt_buys_from", 1),
+    "purchase of fixed assets": ("rpt_buys_from", 1),
+}
+
+
+def ingest_rpt(symbol_or_code, *, symbol: str | None = None) -> dict:
+    """Push one company's harvested RPT into the knowledge graph.
+
+    ENTITY RESOLUTION IS THE POINT. "Reliance Retail Limited" arriving from
+    the RPT feed must land on the SAME node the annual-report extraction
+    created for it, or the graph shows one company twice and looks
+    authoritative doing it. Resolution goes through the alias table and
+    normalise(), which already strip legal form, so "Reliance Retail Limited"
+    and "Reliance Retail Ltd" converge.
+
+    Values are already in rupees - rpt_rows applies the filing's own level of
+    rounding - so the weight on a trade edge is comparable across companies.
+    Rows whose unit could not be recognised carry no weight rather than a
+    wrong one.
+    """
+    from shunkan.store.graph import GraphStore, normalise
+
+    code = (symbol_or_code if isinstance(symbol_or_code, int)
+            else scrip_code(symbol_or_code))
+    path = _cache_dir() / f"rpt_{code}.json"
+    if not path.exists():
+        raise DataError(f"no harvested RPT for scrip {code} - run harvest_rpt first")
+    data = json.loads(path.read_text())
+
+    g = GraphStore()
+    sym = (symbol or (symbol_or_code if isinstance(symbol_or_code, str) else "")).upper()
+    src = f"BSE RPT XBRL scrip {code}"
+    edges, seen_rel = [], set()
+
+    # THE SPINE. The `entity` column names whichever GROUP COMPANY transacted,
+    # not the filer - Reliance's own filing is mostly rows where the entity is
+    # "Reliance Retail Limited". Attributing edges only to that column left
+    # RELIANCE unconnected to its own group: the subsidiaries were richly
+    # linked to each other and orphaned from the ticker anyone would search
+    # for. So the filer is linked to every distinct entity appearing in its
+    # filing, which is what makes RELIANCE -> Reliance Retail -> Neolync
+    # walkable from the symbol.
+    filer = None
+    if sym:
+        filer = g.resolve(sym) or g.put_node("company", sym, sym)
+        g.put_alias(sym, filer, source=src)
+    filed_entities = set()
+
+    for per in data.get("periods", []):
+        as_of = str(per.get("qtr") or "")
+        for r in per.get("rows", []):
+            ent, cp = r.get("entity") or sym, r["counterparty"]
+            if not cp:
+                continue
+            # resolve onto an existing node where one exists, else create
+            e_id = g.resolve(ent) or g.put_node("company", normalise(ent) or ent, ent)
+            c_id = g.resolve(cp) or g.put_node("company", normalise(cp) or cp, cp)
+            g.put_alias(ent, e_id, source=src)
+            g.put_alias(cp, c_id, source=src)
+
+            if filer and e_id != filer and e_id not in filed_entities:
+                filed_entities.add(e_id)
+                edges.append({"src": filer, "dst": e_id, "rel": "group_entity_of",
+                              "as_of": "", "source": src,
+                              "meta": {"note": "named as a transacting entity in "
+                                               "this filer's RPT disclosure"}})
+
+            rel = normalise_relationship(r.get("relationship"))
+            key = (e_id, c_id, rel)
+            if key not in seen_rel:          # structural edge, once, not per period
+                seen_rel.add(key)
+                edges.append({"src": e_id, "dst": c_id, "rel": rel, "as_of": "",
+                              "source": src,
+                              "meta": {"stated": r.get("relationship")}})
+
+            trade = _TRADE.get((r.get("type") or "").strip().lower())
+            if trade and r.get("amount_inr"):
+                edges.append({"src": e_id, "dst": c_id, "rel": trade[0],
+                              "weight": r["amount_inr"], "unit": "INR",
+                              "as_of": as_of, "source": src,
+                              "meta": {"type": r.get("type"),
+                                       "relationship": r.get("relationship")}})
+    if edges:
+        g.put_edges(edges)
+    g.commit()
+    return {"scrip_code": code, "symbol": sym, "edges": len(edges),
+            "relationships": len(seen_rel), "group_entities": len(filed_entities)}
