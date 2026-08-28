@@ -2680,6 +2680,97 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         threading.Thread(target=run, daemon=True).start()
         return {"building": True, "stage": "queued", "symbol": sym}
 
+    @app.get("/api/entity/{symbol}")
+    def entity_map(symbol: str, hops: int = 2, top: int = 20):
+        """Everything the graph knows about one entity, in one call.
+
+        The company page needs four things that used to be four round trips -
+        who it trades with, who it IS related to, what it makes and buys, and
+        who owns it. They come from different sources (BSE XBRL, an annual
+        report sentence, a mutual-fund disclosure) so each block states its
+        own provenance rather than presenting a single undifferentiated blob.
+        """
+        from shunkan.store.graph import GraphStore
+
+        g = GraphStore()
+        # Drilling from a counterparty passes the node id it was drawn with
+        # ("company:RELIANCE INTERNATIONAL") rather than a ticker, because a
+        # counterparty usually HAS no ticker. Accept both.
+        sym = symbol.replace(".NS", "")
+        nid = (sym if ":" in sym and g.node(sym)
+               else g.resolve(sym.upper(), kind="company")
+               or g.resolve(sym.upper()))
+        if not nid:
+            raise HTTPException(404, f"{sym} is not in the graph")
+        sym = sym.upper() if ":" not in sym else sym
+        node = g.node(nid) or {}
+
+        trade = g.trade_summary(nid, top=top)
+        struct = g.structure(nid, limit=600)
+        by_rel: dict = {}
+        for r in struct:
+            by_rel.setdefault(r["rel"], []).append(r)
+
+        # The verbatim quote lives in edge.meta, which neighbours() drops.
+        # Query directly: a supply-chain claim without the sentence that
+        # supports it is exactly the kind of unsourced assertion this
+        # codebase refuses to render.
+        disclosed: dict = {}
+        rows = g._con.execute(
+            "SELECT e.rel, e.dst id, n.name, e.as_of, e.source, e.meta "
+            "FROM edge e JOIN node n ON n.id = e.dst "
+            "WHERE e.src = ? AND e.rel IN "
+            "('consumes','produces','sells_to','operates') "
+            "ORDER BY e.rel, n.name", (nid,)).fetchall()
+        for r in rows:
+            m = json.loads(r["meta"] or "{}")
+            disclosed.setdefault(r["rel"], []).append({
+                "id": r["id"], "name": r["name"], "quote": m.get("quote"),
+                "match": m.get("match"), "as_of": r["as_of"],
+                "source": r["source"]})
+
+        owners = [{"id": n.id, "name": n.name, "pct": n.weight, "as_of": n.as_of,
+                   "source": n.source}
+                  for n in g.neighbours(nid, rel="holds", direction="in", limit=60)]
+        schemes = [{"id": n.id, "name": n.name, "value": n.weight, "as_of": n.as_of}
+                   for n in g.neighbours(nid, rel="scheme_holds", direction="in",
+                                         limit=40)]
+
+        periods = sorted({p for side in trade.values() for r in side
+                          for p in r["periods"] if p and p != "?"})
+        return {
+            "symbol": sym, "node": nid, "name": node.get("name", sym),
+            "trade": trade, "periods": periods,
+            "structure": by_rel,
+            "structure_counts": {k: len(v) for k, v in by_rel.items()},
+            "disclosed": disclosed,
+            "owners": owners[:40], "schemes": schemes,
+            "sources": {
+                "trade": "BSE related-party XBRL (SEBI LODR Reg 23(9)) — "
+                         "half-yearly, frozen at Sep 2024",
+                "structure": "BSE related-party XBRL — relationship as filed",
+                "disclosed": "the company's own annual report,every node quoted",
+                "owners": "NSE shareholding XBRL / mutual-fund disclosures",
+            },
+        }
+
+    @app.get("/api/entity/{symbol}/trail")
+    def entity_trail(symbol: str, hops: int = 2, max_nodes: int = 300,
+                     rels: str = ""):
+        """The multi-hop walk, for drawing. Node cap is reported, not hidden."""
+        from shunkan.store.graph import GraphStore
+
+        g = GraphStore()
+        sym = symbol.replace(".NS", "")
+        nid = (sym if ":" in sym and g.node(sym)
+               else g.resolve(sym.upper(), kind="company")
+               or g.resolve(sym.upper()))
+        if not nid:
+            raise HTTPException(404, f"{sym} is not in the graph")
+        rel_t = tuple(r for r in rels.split(",") if r) or None
+        return g.trail(nid, hops=max(1, min(hops, 3)), rels=rel_t,
+                       max_nodes=max(20, min(max_nodes, 800)))
+
     @app.get("/api/admin/llm")
     def admin_llm_get():
         """Settings, provider catalogue and spend. Never returns the key."""

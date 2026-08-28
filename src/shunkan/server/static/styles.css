@@ -1378,3 +1378,106 @@ main { padding: 0; }
 .x-scroll::-webkit-scrollbar { height: 8px; }
 .x-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 4px; }
 .x-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- ENTITY NETWORK (NET) ----------
+   Same rules as the rest of the terminal: square, 1px, monospace, and colour
+   that means exactly one thing. Green is value leaving as sales, red is value
+   arriving as purchases — direction, which is the only job those two have
+   anywhere else in this file. Amber stays data, blue stays labels. */
+
+.net-crumb { display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  padding: 5px 12px; border-bottom: 1px solid var(--stroke-soft); font-size: 11px; }
+.net-crumb:empty { display: none; }
+.net-crumb-b { background: none; border: 0; color: var(--blue); font: inherit;
+  cursor: pointer; padding: 1px 3px; }
+.net-crumb-b:hover { color: var(--amber); text-decoration: underline; }
+.net-crumb-s { color: var(--text-faint); }
+.net-crumb-cur { color: var(--text); }
+
+.net-flow-wrap { padding: 6px 12px 10px; }
+.net-flow-hd, .net-flow-ft { display: flex; justify-content: space-between; gap: 12px;
+  font-size: 10.5px; letter-spacing: 0.04em; padding: 3px 2px; flex-wrap: wrap; }
+.net-flow-ft { color: var(--text-dim); border-top: 1px solid var(--stroke-soft);
+  margin-top: 6px; padding-top: 6px; letter-spacing: 0; }
+.net-k.up { color: var(--up); } .net-k.down { color: var(--down); }
+.net-flow { width: 100%; height: auto; display: block; }
+.net-rb-in  { fill: var(--down); fill-opacity: 0.20; }
+.net-rb-out { fill: var(--up);   fill-opacity: 0.20; }
+.net-rb-in:hover  { fill-opacity: 0.42; }
+.net-rb-out:hover { fill-opacity: 0.42; }
+.net-hub { fill: var(--amber-dim); stroke: var(--amber); stroke-width: 1; }
+.net-hub-t { fill: var(--amber); font: 600 11px var(--mono); letter-spacing: 0.04em; }
+.net-hub-s { fill: var(--text-faint); font: 9.5px var(--mono); }
+.net-lb { fill: var(--text); font: 10.5px var(--mono); }
+.net-lv { fill: var(--text-faint); font: 9.5px var(--mono);
+  font-variant-numeric: tabular-nums; }
+.net-slab.act { cursor: pointer; }
+.net-slab.act:hover .net-lb { fill: var(--amber); }
+.net-slab.act:hover .net-lv { fill: var(--amber); }
+
+.net-bars-wrap { padding: 6px 12px 10px; }
+.net-bars { width: 100%; height: auto; display: block; }
+.net-ax { stroke: var(--stroke); stroke-width: 1; }
+.net-bar-s { fill: var(--up); fill-opacity: 0.72; }
+.net-bar-b { fill: var(--down); fill-opacity: 0.72; }
+.net-bar-s:hover, .net-bar-b:hover { fill-opacity: 1; }
+.net-bar-t { fill: var(--text-faint); font: 9px var(--mono);
+  font-variant-numeric: tabular-nums; }
+.net-bar-x { fill: var(--blue); font: 10px var(--mono); letter-spacing: 0.03em; }
+.net-legend { display: flex; align-items: center; gap: 6px; font-size: 10px;
+  color: var(--text-dim); letter-spacing: 0.03em; padding-top: 2px; flex-wrap: wrap; }
+.net-sw { width: 9px; height: 9px; display: inline-block; }
+.net-sw.s { background: var(--up); } .net-sw.b { background: var(--down); margin-left: 10px; }
+
+.net-tbl td, .net-tbl th { vertical-align: middle; }
+.net-cp { max-width: 42ch; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--text); }
+.net-tbl tr.net-node { cursor: pointer; }
+.net-tbl tr.net-node:hover { background: var(--amber-dim); }
+.net-tbl tr.net-node:hover .net-cp { color: var(--amber); }
+.net-walk { color: var(--text-faint); font-size: 10px; white-space: nowrap; }
+.net-tbl tr.net-node:hover .net-walk { color: var(--amber); }
+.net-sp { width: 80px; }
+.net-spark path { fill: none; stroke: var(--amber); stroke-width: 1.1; }
+.net-spark circle { fill: var(--amber); }
+.net-spark.up path, .net-spark.up circle { stroke: var(--up); fill: var(--up); }
+.net-spark.up path { fill: none; }
+.net-spark.down path, .net-spark.down circle { stroke: var(--down); fill: var(--down); }
+.net-spark.down path { fill: none; }
+
+.net-struct { padding: 4px 12px 8px; display: grid; gap: 9px; }
+.net-sgrp-h { font-size: 10px; letter-spacing: 0.08em; padding: 3px 0;
+  border-bottom: 1px solid var(--stroke-soft); margin-bottom: 5px; color: var(--blue); }
+.net-sgrp-h.amber { color: var(--amber); } .net-sgrp-h.up { color: var(--up); }
+.net-sgrp-h.hl { color: var(--text); } .net-sgrp-h.dim { color: var(--text-dim); }
+.net-chips { display: flex; flex-wrap: wrap; gap: 3px; }
+.net-chip { background: var(--bg-panel-2); border: 1px solid var(--stroke);
+  color: var(--text-dim); font: 10.5px var(--mono); padding: 2px 6px; cursor: pointer;
+  max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.net-chip:hover { border-color: var(--amber); color: var(--amber); }
+
+.net-chain { padding: 4px 12px 6px; }
+.net-own { padding: 6px 12px 10px; display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.net-own-n { max-width: 30ch; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+
+.net-graph-host { position: relative; padding: 6px 12px 8px; }
+.net-graph-host canvas { width: 100%; display: block; cursor: crosshair;
+  border: 1px solid var(--stroke-soft); background: var(--bg-panel); }
+.net-graph-tip { display: none; position: absolute; pointer-events: none;
+  background: var(--bg-header); border: 1px solid var(--stroke); padding: 4px 7px;
+  font-size: 10.5px; max-width: 210px; z-index: 5; }
+.net-graph-note { font-size: 10.5px; color: var(--text-dim); padding-top: 5px;
+  line-height: 1.5; }
+
+.net-fine { font-size: 10px; color: var(--text-faint); padding: 5px 12px 8px;
+  line-height: 1.55; max-width: 104ch; }
+.net-prov { border-top: 1px solid var(--stroke); padding: 7px 12px; font-size: 10px;
+  color: var(--text-faint); display: grid; gap: 2px; line-height: 1.5; }
+.net-prov b { letter-spacing: 0.06em; margin-right: 5px; }
+
+@media (max-width: 900px) {
+  .net-cp { max-width: 22ch; }
+  .net-flow-hd, .net-flow-ft { font-size: 9.5px; }
+}
