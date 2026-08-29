@@ -107,3 +107,19 @@ def test_net_never_formats_a_real_amount_as_zero():
     assert "maximumFractionDigits: 0 }" not in body, \
         "fixed 0-decimal crore formatting zeroes out every sub-crore amount"
     assert "<0.01" in body, "small non-zero amounts need a display floor"
+
+
+def test_extract_button_hidden_when_there_is_nothing_to_extract():
+    """A control that cannot succeed reads as a broken app. Emmvee and
+    PhysicsWallah listed into NIFTY 500 weeks ago and have filed no annual
+    report on either exchange - the page must say the SOURCE is missing, not
+    offer a button that will fail."""
+    src = (ROOT / "src/shunkan/server/static/app.js").read_text()
+    body = src[src.index("async function drawSupplyMap"):]
+    body = body[:body.index("\n}\n")]
+    assert "d.runnable === false" in body, \
+        "supply map ignores the API's runnable flag"
+    gate = body[body.index("d.runnable === false"):]
+    gate = gate[:gate.index("EXTRACT NOW")]
+    assert "missing SOURCE" in gate, \
+        "the un-runnable branch must explain that no filing exists"

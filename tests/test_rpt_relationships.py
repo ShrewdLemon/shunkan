@@ -81,3 +81,19 @@ def test_no_person_phrase_becomes_structural() -> None:
     ]
     for phrase in person_phrases:
         assert normalise_relationship(phrase) not in company_rels, phrase
+
+
+def test_scrip_code_miss_names_the_reason() -> None:
+    """BSE Ltd and CDSL are NSE-listed only, so a BSE-sourced feed being empty
+    for them is correct behaviour, not a failure. The message has to say so -
+    a bare "no scrip code" reads as a broken lookup and invites someone to
+    "fix" it by loosening the name match until it hits the wrong company."""
+    import pytest as _pytest
+
+    from shunkan.data.bse import DataError, scrip_code
+
+    with _pytest.raises(DataError) as ei:
+        scrip_code("NOTAREALTICKERXYZ")
+    msg = str(ei.value)
+    assert "scrip master" in msg
+    assert "NSE-listed-only" in msg
