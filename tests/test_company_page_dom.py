@@ -123,3 +123,24 @@ def test_extract_button_hidden_when_there_is_nothing_to_extract():
     gate = gate[:gate.index("EXTRACT NOW")]
     assert "missing SOURCE" in gate, \
         "the un-runnable branch must explain that no filing exists"
+
+
+def test_every_analyse_code_is_typeable_in_the_command_bar():
+    """The hub and the command bar are two doors to the same rooms.
+
+    NET and ADM were added to ANL_GROUPS and not to CODE_ALIAS, so both views
+    existed, rendered, and could only be reached by clicking through the
+    Analyse hub - typing the code did nothing. A screen listed in the hub but
+    not typeable is a screen the muscle memory cannot find.
+    """
+    import re
+
+    src = (ROOT / "src/shunkan/server/static/app.js").read_text()
+    groups = src[src.index("const ANL_GROUPS"):src.index("const ANL_VIEWS")]
+    hub_codes = set(re.findall(r'\["[a-z]+", "([A-Z]{2,3})"', groups))
+    alias = src[src.index("const CODE_ALIAS"):src.index("function wireCmdline")]
+    typeable = set(re.findall(r'\b([A-Z]{2,3}):\s*"', alias))
+    missing = hub_codes - typeable
+    assert not missing, (
+        f"listed in the Analyse hub but not typeable: {sorted(missing)}. "
+        f"Add them to CODE_ALIAS.")

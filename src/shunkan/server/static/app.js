@@ -6815,7 +6815,12 @@ const CODE_ALIAS = { OPT: "oc", PRT: "portfolio", PLS: "pulse", ANL: "analyse",
                      MAP: "heatmap", CAL: "calendar", WSP: "workspace",
                      CMP: "company", MFD: "funds", MF: "funds", MSC: "msci", GPH: "graph",
                      VOL: "iv", FLW: "volume", NWS: "news", BTL: "backtest",
-                     MLS: "mlstudio", PAY: "payoff" };
+                     MLS: "mlstudio", PAY: "payoff",
+                     // Added with their views and forgotten here, which made
+                     // both reachable only by clicking through ANL. A screen
+                     // listed in the hub but not typeable is a screen the
+                     // muscle memory cannot find.
+                     NET: "network", ADM: "admin" };
 
 function wireCmdline() {
   const inp = $("#cl-input");
