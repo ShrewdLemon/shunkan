@@ -5995,9 +5995,22 @@ const NET = { d: null, sym: null, crumbs: [] };
 const NET_TOP = 12;                    // per side in the flow diagram
 
 const CR = 1e7;
+/* Precision follows magnitude, so that A NON-ZERO VALUE NEVER RENDERS AS "0".
+   Fixed 0-decimal crore formatting turned HDFC Bank's entire related-party
+   book - real filed rupee amounts, the largest Rs 2.65 Cr - into a column of
+   zeroes and a header reading "Rs 0 Cr". That is the same failure as the
+   insider-dealing "0% -> 0%" screen: a number that exists, displayed as
+   nothing. Anything below a hundredth of a crore reads "<0.01", which is a
+   statement about the DISPLAY, and only a true zero prints "0". */
 function netCr(v) {
   if (v == null) return "—";
-  return (v / CR).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+  const c = v / CR;
+  const a = Math.abs(c);
+  if (c === 0) return "0";
+  if (a < 0.01) return (c < 0 ? "-" : "") + "<0.01";
+  const dp = a >= 1000 ? 0 : a >= 10 ? 1 : 2;
+  return c.toLocaleString("en-IN", { minimumFractionDigits: dp,
+                                     maximumFractionDigits: dp });
 }
 /* Relationship labels as filed. Kept close to BSE's own wording: renaming a
    "significant influence" edge to something friendlier would overstate it. */
@@ -6010,10 +6023,17 @@ const NET_REL = {
   joint_venture_with: ["JOINT VENTURE", "blue"],
   promoter_group_of: ["PROMOTER GROUP", "hl"],
   significant_influence_over: ["SIGNIFICANT INFLUENCE", "blue"],
-  key_management_of: ["KEY MANAGEMENT", "dim"],
-  related_party_of: ["RELATED PARTY — UNSPECIFIED", "dim"],
+  subsidiary_of_ultimate_parent: ["SUBSIDIARY OF ULTIMATE PARENT", "up"],
   fellow_subsidiary_of: ["FELLOW SUBSIDIARY", "up"],
+  key_management_of: ["KEY MANAGEMENT — PEOPLE", "dim"],
+  relative_of_kmp: ["RELATIVE OF KEY MANAGEMENT — PEOPLE", "dim"],
+  kmp_interested_entity_of: ["ENTITY A KEY PERSON IS INTERESTED IN", "dim"],
+  related_party_of: ["RELATED PARTY — UNSPECIFIED", "dim"],
 };
+/* People are not corporate structure. Keeping them in the same block but
+   visibly separated stops the count at the top of the section from reading as
+   a subsidiary count. */
+const NET_PEOPLE = new Set(["key_management_of", "relative_of_kmp"]);
 const NET_CHAIN = [
   ["consumes", "UPSTREAM · INPUTS", "up"],
   ["operates", "OPERATIONS · FACILITIES", "hl"],
@@ -6341,21 +6361,28 @@ function netTable(d, sells, buys) {
 function netStructure(d) {
   const order = Object.keys(NET_REL).filter((k) => (d.structure[k] || []).length)
     .concat(Object.keys(d.structure).filter((k) => !NET_REL[k]));
-  return `<div class="net-struct">${order.map((rel) => {
+  const ent = order.filter((k) => !NET_PEOPLE.has(k))
+    .reduce((a, k) => a + (d.structure[k] || []).length, 0);
+  const ppl = order.filter((k) => NET_PEOPLE.has(k))
+    .reduce((a, k) => a + (d.structure[k] || []).length, 0);
+  return `<div class="net-scount">${ent} entities${
+    ppl ? ` · <span class="faint">${ppl} named individuals, listed separately below</span>` : ""}</div>
+  <div class="net-struct">${order.map((rel) => {
     const list = d.structure[rel] || [];
     if (!list.length) return "";
     const [lab, tone] = NET_REL[rel] || [rel.replace(/_/g, " ").toUpperCase(), "dim"];
-    return `<div class="net-sgrp">
+    return `<div class="net-sgrp${NET_PEOPLE.has(rel) ? " net-people" : ""}">
       <div class="net-sgrp-h ${tone}">${esc(lab)} <span class="faint">${list.length}</span></div>
       <div class="net-chips">${list.map((n) => `
         <button class="net-chip net-node" data-id="${esc(n.id)}" data-name="${esc(n.name)}"
           title="${esc(n.name)} — ${esc(n.source)}">${esc(n.name)}</button>`).join("")}</div>
     </div>`;
   }).join("")}</div>
-  <div class="net-fine">Relationship text is BSE's, as the filer wrote it. Where a filer used
-  "Any other related party" it stays unspecified rather than being guessed into a category —
-  52% of all filed rows carry no transaction type either, and those are relationships here,
-  not trades.</div>`;
+  <div class="net-fine">Relationship text is BSE's, as the filer wrote it, and the HEAD of the
+  phrase decides the category: "Director of Subsidiary Company" names a person, not a subsidiary.
+  Where a filer used "Any other related party" it stays unspecified rather than being guessed into
+  a category — 52% of all filed rows carry no transaction type either, and those are relationships
+  here, not trades.</div>`;
 }
 
 function netChain(d) {

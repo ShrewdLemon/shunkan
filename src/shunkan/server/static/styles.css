@@ -1481,3 +1481,8 @@ main { padding: 0; }
   .net-cp { max-width: 22ch; }
   .net-flow-hd, .net-flow-ft { font-size: 9.5px; }
 }
+.net-scount { font-size: 10.5px; color: var(--text-dim); padding: 4px 12px 0;
+  letter-spacing: 0.03em; }
+.net-sgrp.net-people { opacity: 0.82; border-left: 1px solid var(--stroke);
+  padding-left: 8px; }
+.net-sgrp.net-people .net-chip { border-style: dashed; }
