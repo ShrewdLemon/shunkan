@@ -10,8 +10,16 @@ corrupt AND reverted to its pre-RPT state: 4,399 nodes where there had been
 62,220, integrity_check failing across four b-trees, the edge table
 unreadable. The sources were untouched.
 
-Order matters. Companies must exist before anything resolves onto them, and
-link_legal_names needs the RPT counterparties present to alias them.
+ORDER MATTERS, AND I GOT IT WRONG THE FIRST TIME. The original comment here
+claimed link_legal_names needs the RPT counterparties present, so it ran last.
+The dependency is the other way round: the RPT pass resolves filer names like
+"Reliance Industries Limited", and unless the legal-name aliases already point
+at ticker nodes, those names resolve onto whatever the extraction pass created
+- `input:RELIANCE INDUSTRIES LIMITED`, `holder:TATA COMMUNICATIONS LIMITED` -
+and the company pages come back empty while the edge count looks right.
+
+link_legal_names needs only the company nodes and BSE's scrip master, both of
+which exist after step 1. It runs there.
 """
 from __future__ import annotations
 
@@ -56,11 +64,15 @@ def main() -> None:
     from shunkan.data.llm import _push_graph, load_extraction, stored_symbols
     from shunkan.store.graph import GraphStore
 
-    _stamp("step 1/4  base graph from parquet stores")
+    _stamp("step 1/5  base graph from parquet stores")
     res = ingest.rebuild(verbose=lambda m: _stamp(f"    {m.strip()}"))
     _stamp(f"    {res}")
 
-    _stamp("step 2/4  projecting 498 validated extractions")
+    _stamp("step 2/5  aliasing legal names onto tickers, BEFORE anything "
+           "resolves against them")
+    _stamp(f"    {link_legal_names()}")
+
+    _stamp("step 3/5  projecting 498 validated extractions")
     ok = fail = 0
     syms = stored_symbols()
     for i, sym in enumerate(syms, 1):
@@ -79,7 +91,7 @@ def main() -> None:
     _stamp(f"    extractions pushed ok={ok} fail={fail}")
 
     if not args.skip_rpt:
-        _stamp("step 3/4  related-party filings (this is the slow one)")
+        _stamp("step 4/5  related-party filings (this is the slow one)")
         done = APP_DIR / "store" / "bse" / "rpt_ingested.txt"
         if done.exists():
             done.unlink()
@@ -88,9 +100,11 @@ def main() -> None:
         subprocess.run([sys.executable, str(Path(__file__).with_name("reingest_rpt.py"))],
                        check=False)
     else:
-        _stamp("step 3/4  SKIPPED")
+        _stamp("step 4/5  SKIPPED")
 
-    _stamp("step 4/4  aliasing legal names onto tickers")
+    # Again at the end: the RPT pass creates counterparty nodes that did not
+    # exist during step 2, and some of them are listed companies.
+    _stamp("step 5/5  re-aliasing legal names over the new counterparties")
     _stamp(f"    {link_legal_names()}")
 
     g = GraphStore()

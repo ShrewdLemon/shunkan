@@ -210,3 +210,39 @@ def test_every_relation_the_classifier_emits_is_visible_in_the_graph() -> None:
     assert not missing, (
         f"these relations would be written but never displayed: {sorted(missing)}. "
         f"Add them to GraphStore.STRUCTURAL.")
+
+
+def test_rpt_counterparties_land_on_company_nodes(tmp_path) -> None:
+    """A related-party filing asserts a relationship between LEGAL ENTITIES.
+
+    The annual-report extraction creates input:/customer:/output: nodes for
+    whatever a sentence mentioned, so "Reliance Industries Limited" can exist
+    as an INPUT node because another company's report names it as a supplier.
+    An unconstrained resolve() takes whichever the alias table saw last.
+
+    Rebuilding with extractions loaded before the RPT pass did exactly that:
+    566 of Reliance's related-party edges landed on
+    input:RELIANCE INDUSTRIES LIMITED and 678 of Tata Communications' on a
+    holder: node, while company:RELIANCE showed zero counterparties. The edges
+    existed and the totals looked right; the company page was empty.
+    """
+    from shunkan.data.bse import _node_for
+    from shunkan.store.graph import GraphStore
+
+    g = GraphStore(tmp_path / "g.db")
+    # the shape that caused it: an extraction node claiming the legal name
+    inp = g.put_node("input", "RELIANCE INDUSTRIES LIMITED",
+                     "Reliance Industries Limited")
+    g.put_alias("Reliance Industries Limited", inp, "annual report extraction")
+    held = g.put_node("holder", "TATA COMMUNICATIONS LIMITED",
+                      "Tata Communications Limited")
+    g.put_alias("Tata Communications Limited", held, "shareholding XBRL")
+    g.commit()
+
+    for name in ("Reliance Industries Limited", "Tata Communications Limited"):
+        nid = _node_for(g, name, "BSE RPT XBRL test", {})
+        kind = (g.node(nid) or {}).get("kind")
+        assert kind == "company", (
+            f"{name!r} resolved to a {kind!r} node; related-party edges would "
+            f"attach to it and the company page would show nothing")
+    assert _node_for(g, "Reliance Industries Limited", "s", {}) != inp

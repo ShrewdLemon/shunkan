@@ -404,13 +404,34 @@ _TRADE = {
 
 
 def _node_for(g, name, src, cache):
-    """Memoised resolve-or-create for one ingest run."""
+    """Memoised resolve-or-create for one ingest run.
+
+    KIND IS CONSTRAINED TO company ON PURPOSE. A related-party filing asserts
+    a relationship between LEGAL ENTITIES. The annual-report extraction, by
+    contrast, creates `input:` / `customer:` / `output:` nodes for whatever a
+    sentence happened to mention - so "Reliance Industries Limited" can exist
+    as an input node because some other company's report names it as a
+    supplier.
+
+    An unconstrained resolve() takes whichever of those the alias table saw
+    last. Rebuilding the graph with extractions loaded before the RPT pass did
+    exactly that: 566 of Reliance's related-party edges landed on
+    `input:RELIANCE INDUSTRIES LIMITED`, and 678 of Tata Communications' on a
+    `holder:` node, while `company:RELIANCE` showed zero counterparties. The
+    edges existed, the totals looked plausible, and the company page was
+    empty.
+
+    Asking for a company and creating one when there is none keeps the RPT
+    feed on company nodes no matter what else has been ingested, and in what
+    order.
+    """
     from shunkan.store.graph import normalise
 
     key = normalise(name)
     if key in cache:
         return cache[key]
-    nid = g.resolve(name) or g.put_node("company", key or name, name)
+    nid = (g.resolve(name, kind="company")
+           or g.put_node("company", key or name, name))
     g.put_alias(name, nid, source=src)
     cache[key] = nid
     return nid
