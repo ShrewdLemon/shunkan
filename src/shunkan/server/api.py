@@ -2321,7 +2321,28 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
     def graph_stats():
         from shunkan.store.graph import graph
 
-        return _clean(graph().stats())
+        g = graph()
+        out = g.stats()
+        # Ship the health verdict WITH the counts, always. A truncated
+        # database still answers COUNT(*) with a plausible-looking number -
+        # 4,374 nodes where there had been 62,220 - so a stats block without a
+        # verdict is exactly the reassuring-but-wrong screen this codebase
+        # exists to avoid.
+        out["health"] = g.health()
+        return _clean(out)
+
+    @app.get("/api/graph/health")
+    def graph_health(deep: bool = False):
+        """Structural check. `deep=true` runs the full integrity_check.
+
+        Deliberately does NOT construct a GraphStore: opening one runs the
+        schema script, which raises on a file damaged badly enough to matter,
+        so routing this through the store would make the endpoint fail in the
+        one case it exists to report.
+        """
+        from shunkan.store.graph import check_health
+
+        return _clean(check_health(deep=deep))
 
     @app.post("/api/graph/rebuild")
     def graph_rebuild():

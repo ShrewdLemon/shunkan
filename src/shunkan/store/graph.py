@@ -540,6 +540,10 @@ class GraphStore:
         """
         return [dict(r) for r in self._con.execute(sql, (nid, rel, limit))]
 
+    def health(self, *, deep: bool = False) -> dict:
+        """Structural check for this store's file. See check_health()."""
+        return check_health(self.path, deep=deep)
+
     def stats(self) -> dict:
         c = self._con
         kinds = {r["kind"]: r["n"] for r in
@@ -588,3 +592,66 @@ def graph(path: Path | None = None) -> GraphStore:
     if _STORE is None or path is not None:
         _STORE = GraphStore(path)
     return _STORE
+
+
+def check_health(path=None, *, deep: bool = False) -> dict:
+    """Is the graph database structurally sound?
+
+    A MODULE FUNCTION, NOT A METHOD, AND THAT IS THE WHOLE POINT. The first
+    version of this lived on GraphStore, which made it unreachable in the one
+    situation it existed for: GraphStore.__init__ runs `PRAGMA journal_mode`
+    and the schema script, and both raise "file is not a database" on a file
+    damaged badly enough to matter. A health check you cannot call when the
+    database is broken is decoration.
+
+    So it opens the file read-only, issues no PRAGMA that writes, and returns
+    a dict rather than raising - the caller is usually a status endpoint whose
+    job is to REPORT the problem, not to die of it.
+
+    Written after 2026-08-30, when ~/.shunkan/shunkan.db was truncated from
+    roughly 187 MB to 31.9 MB while a server process held it open across a
+    laptop sleep. Every b-tree kept pointers to pages past the new end of
+    file. The damage was invisible where anyone would look: COUNT(*) on node
+    still answered 4,374, where there had been 62,220, and only a query that
+    happened to touch a lost page raised "database disk image is malformed".
+    A graph reporting a plausible number while missing 90% of itself is worse
+    than one that refuses.
+    """
+    from shunkan.config import APP_DIR
+
+    path = Path(path) if path is not None else APP_DIR / "shunkan.db"
+    pragma = "integrity_check" if deep else "quick_check"
+    rebuild_hint = ("STRUCTURAL DAMAGE - rebuild with "
+                    "`python tools/rebuild_graph.py --yes`; every node and "
+                    "edge is derived from on-disk sources, so nothing is lost "
+                    "but time")
+    if not path.exists():
+        return {"ok": False, "check": pragma, "errors": ["no database file"],
+                "error_count": 1, "truncated_report": False,
+                "detail": f"{path} does not exist"}
+    con = None
+    try:
+        # immutable=1: no locking, no WAL recovery, no write of any kind. A
+        # damaged file must not be modified by the act of inspecting it.
+        con = sqlite3.connect(f"file:{path}?immutable=1", uri=True)
+        rows = [r[0] for r in con.execute(f"PRAGMA {pragma}")]
+    except sqlite3.DatabaseError as exc:
+        return {"ok": False, "check": pragma, "errors": [str(exc)],
+                "error_count": 1, "truncated_report": False,
+                "detail": f"the database could not be read at all - {rebuild_hint}"}
+    finally:
+        if con is not None:
+            con.close()
+
+    # SQLite returns quick_check as a SINGLE row whose text is every complaint
+    # joined by newlines - 100 of them on the real failure. Slicing the row
+    # list caps nothing; the LINE list is what needs capping, or a status
+    # endpoint returns a wall of page numbers.
+    lines = [ln.strip() for r in rows for ln in str(r).splitlines()
+             if ln.strip() and ln.strip() != "*** in database main ***"]
+    ok = lines == ["ok"]
+    return {"ok": ok, "check": pragma,
+            "errors": [] if ok else lines[:15],
+            "error_count": 0 if ok else len(lines),
+            "truncated_report": (not ok) and len(lines) > 15,
+            "detail": "sound" if ok else rebuild_hint}
