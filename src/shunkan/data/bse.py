@@ -246,9 +246,32 @@ def harvest_rpt(symbol_or_code, *, sleep_s: float = 0.6) -> dict:
 # APSEZ". Left raw they would shatter one relation into a dozen edge types.
 # Ordered longest-intent-first because "subsidiary of ultimate parent" must
 # not be eaten by the plain "subsidiary" rule.
+# THE HEAD NOUN GOVERNS, NOT WHICHEVER WORD APPEARS FIRST IN THE RULE LIST.
+#
+# Filers write headed phrases: "Director of Subsidiary Company" names a
+# PERSON, and "subsidiary" is a qualifier saying which board they sit on. A
+# flat substring scan read the qualifier as the head and classified 528 HDFC
+# Bank rows as subsidiaries - including named individuals and their relatives.
+# The page would then have asserted, with a source attached, that HDFC Bank
+# has 528 subsidiaries. It has roughly ten.
+#
+# So person-role terms are tested FIRST. In this corpus "subsidiary",
+# "associate" and "fellow subsidiary" appear in person phrases only ever as
+# the object of "of", never as the head, which makes the precedence safe:
+# there is no filed phrase where a person term appears as a qualifier on a
+# structural head.
+_PERSON_ENTITY = (
+    "interested entity", "entity in which", "enterprise over which",
+    "enterprise in which", "firm in which", "concern in which",
+)
+_RELATIVE = ("relative", "spouse", "son of", "daughter of", "huf")
+_PERSON = ("kmp", "key management", "key managerial", "director", "manager",
+           "whole-time", "whole time", "chairman", "officer")
+
 _REL_RULES = (
-    ("holding", "holding_company_of"),
+    # structural, longest intent first
     ("ultimate parent", "subsidiary_of_ultimate_parent"),
+    ("holding", "holding_company_of"),
     ("fellow", "fellow_subsidiary_of"),
     ("joint venture", "joint_venture_with"),
     ("joint control", "significant_influence_over"),
@@ -258,14 +281,32 @@ _REL_RULES = (
     ("wholly owned subsidiary", "wholly_owned_subsidiary_of"),
     ("wholly-owned subsidiary", "wholly_owned_subsidiary_of"),
     ("subsidiar", "subsidiary_of"),
-    ("kmp", "key_management_of"),
-    ("key management", "key_management_of"),
-    ("director", "key_management_of"),
 )
 
 
 def normalise_relationship(raw: str) -> str:
+    """Map a filer's own relationship text onto one graph relation.
+
+    Person-headed phrases resolve to a person relation even when they name a
+    structural entity as their qualifier, because that entity is not the party
+    being described - the individual is.
+    """
     low = (raw or "").lower()
+    if not low.strip():
+        return "related_party_of"
+
+    # An entity someone is INTERESTED IN is neither that person nor a
+    # subsidiary of the filer. It gets its own relation rather than being
+    # flattened into key management, which would call a company a person.
+    if any(t in low for t in _PERSON_ENTITY):
+        return "kmp_interested_entity_of"
+    if any(t in low for t in _RELATIVE):
+        # A promoter's relative is promoter group as a matter of law; a
+        # director's relative is not.
+        return "promoter_group_of" if "promoter" in low else "relative_of_kmp"
+    if any(t in low for t in _PERSON):
+        return "key_management_of"
+
     for needle, rel in _REL_RULES:
         if needle in low:
             return rel
