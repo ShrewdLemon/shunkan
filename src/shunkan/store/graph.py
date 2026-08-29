@@ -403,11 +403,23 @@ class GraphStore:
     # what moved. A UI wants them separated, and so does anyone reasoning
     # about the graph: a fellow-subsidiary link and a Rs 7,966 Cr sale are
     # different kinds of claim even when they join the same two nodes.
+    # EVERY relation the RPT classifier can emit must appear here. One it
+    # omits still gets written to the graph and then never displayed: the edge
+    # exists, the page reports no such relationships, and nothing errors.
+    # Four relations sat in exactly that state - relative_of_kmp,
+    # kmp_interested_entity_of, employee_benefit_plan_of and
+    # related_party_of_subsidiary, roughly 40,000 edges between them.
+    # tests/test_rpt_relationships.py pins the two lists together.
     STRUCTURAL = ("group_entity_of", "subsidiary_of", "wholly_owned_subsidiary_of",
                   "fellow_subsidiary_of", "subsidiary_of_ultimate_parent",
                   "holding_company_of", "associate_of", "joint_venture_with",
                   "promoter_group_of", "significant_influence_over",
-                  "key_management_of", "related_party_of")
+                  # people and person-adjacent entities: not corporate
+                  # structure, separated in the view, but listed here or they
+                  # vanish
+                  "key_management_of", "relative_of_kmp",
+                  "kmp_interested_entity_of", "employee_benefit_plan_of",
+                  "related_party_of_subsidiary", "related_party_of")
     TRADE = ("rpt_sells_to", "rpt_buys_from")
     DISCLOSED = ("consumes", "produces", "sells_to", "operates")
 
