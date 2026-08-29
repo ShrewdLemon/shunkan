@@ -483,13 +483,34 @@ class GraphStore:
         return out
 
     def structure(self, nid: str, *, limit: int = 400) -> list[dict]:
-        """Who this entity IS related to, with the relation stated."""
+        """Who this entity IS related to, with the relation stated.
+
+        `limit` is PER RELATION, not per call. HDFC Bank files 528 entities
+        under one relation alone, so a caller passing a total-looking number
+        gets a surprise either way - hence structure_counts(), which is what
+        the UI must display.
+        """
         rows = []
         for rel in self.STRUCTURAL:
             for n in self.neighbours(nid, rel=rel, limit=limit):
                 rows.append({"id": n.id, "name": n.name, "rel": rel,
                              "direction": n.direction, "source": n.source})
         return rows
+
+    def structure_counts(self, nid: str) -> dict[str, int]:
+        """TRUE totals per relation, independent of any display cap.
+
+        Counting the rows that came back conflates "this is all of them" with
+        "this is as many as we asked for". The header would then shrink to the
+        cap and read as complete - a silent truncation wearing a total's
+        clothing. These come from COUNT(*), so a capped list can be reported
+        as capped.
+        """
+        marks = ",".join("?" * len(self.STRUCTURAL))
+        sql = (f"SELECT rel, COUNT(*) n FROM edge "
+               f"WHERE (src = ? OR dst = ?) AND rel IN ({marks}) GROUP BY rel")
+        return {r["rel"]: r["n"] for r in
+                self._con.execute(sql, (nid, nid, *self.STRUCTURAL))}
 
     def co_held(self, nid: str, rel: str = "scheme_holds", limit: int = 25) -> list[dict]:
         """Two hops: everything the holders of THIS also hold.

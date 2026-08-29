@@ -6038,6 +6038,8 @@ const NET_REL = {
   key_management_of: ["KEY MANAGEMENT — PEOPLE", "dim"],
   relative_of_kmp: ["RELATIVE OF KEY MANAGEMENT — PEOPLE", "dim"],
   kmp_interested_entity_of: ["ENTITY A KEY PERSON IS INTERESTED IN", "dim"],
+  employee_benefit_plan_of: ["EMPLOYEE BENEFIT FUND OR TRUST", "dim"],
+  related_party_of_subsidiary: ["RELATED PARTY OF A SUBSIDIARY", "dim"],
   related_party_of: ["RELATED PARTY — UNSPECIFIED", "dim"],
 };
 /* People are not corporate structure. Keeping them in the same block but
@@ -6152,7 +6154,10 @@ function netPaint(h, d) {
       `${sells.length + buys.length} · aggregated across periods · click to walk`,
       netTable(d, sells, buys), { open: true }) : ""}
 
-    ${nStruct ? secBlock("CORPORATE STRUCTURE", `${nStruct} · relationship as filed`,
+    ${nStruct ? secBlock("CORPORATE STRUCTURE",
+      `${nStruct} · relationship as filed${
+        Object.keys(d.structure_capped || {}).length
+          ? ` · SHOWING ${d.structure_cap} PER RELATION` : ""}`,
       netStructure(d), { open: true, scroll: false }) : ""}
 
     ${nChain ? secBlock("DISCLOSED CHAIN — THE COMPANY'S OWN WORDS", `${nChain} nodes`,
@@ -6375,8 +6380,11 @@ function netStructure(d) {
     .reduce((a, k) => a + (d.structure[k] || []).length, 0);
   const ppl = order.filter((k) => NET_PEOPLE.has(k))
     .reduce((a, k) => a + (d.structure[k] || []).length, 0);
+  const cap = d.structure_capped || {};
   return `<div class="net-scount">${ent} entities${
-    ppl ? ` · <span class="faint">${ppl} named individuals, listed separately below</span>` : ""}</div>
+    ppl ? ` · <span class="faint">${ppl} named individuals, listed separately below</span>` : ""}${
+    Object.keys(cap).length ? ` · <b class="bad">capped at ${d.structure_cap} per relation — ${
+      Object.entries(cap).map(([r, n]) => `${esc(r)} has ${n}`).join(", ")}</b>` : ""}</div>
   <div class="net-struct">${order.map((rel) => {
     const list = d.structure[rel] || [];
     if (!list.length) return "";

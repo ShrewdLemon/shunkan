@@ -2727,10 +2727,18 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         node = g.node(nid) or {}
 
         trade = g.trade_summary(nid, top=top)
-        struct = g.structure(nid, limit=600)
+        # The cap is PER RELATION. Counts come from COUNT(*) rather than from
+        # len() of the capped list, so a truncated group reports as truncated
+        # instead of quietly redefining its own total.
+        STRUCT_CAP = 600
+        struct = g.structure(nid, limit=STRUCT_CAP)
+        true_counts = g.structure_counts(nid)
         by_rel: dict = {}
         for r in struct:
             by_rel.setdefault(r["rel"], []).append(r)
+        capped = {rel: true_counts.get(rel, len(v))
+                  for rel, v in by_rel.items()
+                  if true_counts.get(rel, 0) > len(v)}
 
         # The verbatim quote lives in edge.meta, which neighbours() drops.
         # Query directly: a supply-chain claim without the sentence that
@@ -2763,7 +2771,10 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             "symbol": sym, "node": nid, "name": node.get("name", sym),
             "trade": trade, "periods": periods,
             "structure": by_rel,
-            "structure_counts": {k: len(v) for k, v in by_rel.items()},
+            "structure_counts": {k: true_counts.get(k, len(v))
+                                 for k, v in by_rel.items()},
+            "structure_capped": capped,
+            "structure_cap": STRUCT_CAP,
             "disclosed": disclosed,
             "owners": owners[:40], "schemes": schemes,
             "sources": {

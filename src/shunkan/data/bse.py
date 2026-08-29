@@ -275,6 +275,13 @@ _PERSON_ENTITY = (
 _RELATIVE = ("relative", "spouse", "son of", "daughter of", "huf")
 _PERSON = ("kmp", "key management", "key managerial", "director", "manager",
            "whole-time", "whole time", "chairman", "officer")
+# "Employee" splits both ways and has to be disambiguated by what follows it:
+# "Employee of Max Healthcare Institute Limited" is a person, while "Employee
+# Welfare Trust" and "Employees' Gratuity Fund" are entities the company
+# transacts with. Reading either as the other is wrong in a different
+# direction, so neither gets folded into the other.
+_BENEFIT = ("trust", "benefit plan", "benefit fund", "welfare", "gratuity",
+            "provident", "superannuation", "pension", "esop", "share option")
 
 _REL_RULES = (
     # structural, longest intent first
@@ -286,6 +293,9 @@ _REL_RULES = (
     ("significant influence", "significant_influence_over"),
     ("associate", "associate_of"),
     ("promoter", "promoter_group_of"),
+    # "Wholly -Owned Subsidiary" is filed 944 times with that stray space;
+    # normalisation collapses it to the hyphenated form so it is not demoted
+    # to a plain subsidiary.
     ("wholly owned subsidiary", "wholly_owned_subsidiary_of"),
     ("wholly-owned subsidiary", "wholly_owned_subsidiary_of"),
     ("subsidiar", "subsidiary_of"),
@@ -295,13 +305,70 @@ _REL_RULES = (
 def normalise_relationship(raw: str) -> str:
     """Map a filer's own relationship text onto one graph relation.
 
-    Person-headed phrases resolve to a person relation even when they name a
-    structural entity as their qualifier, because that entity is not the party
-    being described - the individual is.
+    Filers write "HEAD of QUALIFIER", and the head names the party. The
+    qualifier says which entity they are related THROUGH, which is not the
+    same claim and must not be read as one:
+
+        "Related Party of Subsidiary"    -> a party related to a subsidiary,
+                                            NOT a subsidiary of the filer
+        "Director of Subsidiary Company" -> a person
+        "Subsidiary of parent company"   -> a FELLOW subsidiary; calling it a
+                                            subsidiary of the filer promotes a
+                                            sibling into a child
+
+    So the head is parsed off and classified first, and the qualifier is
+    consulted only where it genuinely changes the relation.
     """
-    low = (raw or "").lower()
-    if not low.strip():
+    import re
+
+    low = re.sub(r"\s+", " ", (raw or "").strip().lower())
+    low = low.replace(" -", "-").replace("- ", "-")
+    if not low:
         return "related_party_of"
+
+    head, _, qual = low.partition(" of ")
+
+    # An entity someone is merely INTERESTED IN is neither that person nor a
+    # subsidiary of the filer, so it gets its own relation rather than being
+    # flattened into key management, which would label a company a person.
+    if any(t in low for t in _PERSON_ENTITY):
+        return "kmp_interested_entity_of"
+    if any(t in head for t in _RELATIVE):
+        # A promoter's relative is promoter group as a matter of law; a
+        # director's relative is not.
+        return "promoter_group_of" if "promoter" in low else "relative_of_kmp"
+    if any(t in head for t in _PERSON):
+        return "key_management_of"
+    if "employe" in head:
+        # a fund or trust is an entity; an employee OF somewhere is a person
+        if any(t in low for t in _BENEFIT):
+            return "employee_benefit_plan_of"
+        if qual:
+            return "key_management_of"
+        return "related_party_of"
+    if any(t in low for t in _BENEFIT) and "employe" in low:
+        return "employee_benefit_plan_of"
+
+    # "Related party of X" is the filer saying it could not place this party
+    # in a category. Keeping the X is more honest than dropping it, and far
+    # more honest than reading X as the party's own relation.
+    if head.startswith("related part") or head.startswith("other related"):
+        return ("related_party_of_subsidiary" if "subsidiar" in qual
+                else "related_party_of")
+
+    # A subsidiary OF THE PARENT is a sibling of the filer, not a child.
+    if "subsidiar" in head and re.search(r"\b(parent|holding|ultimate)\b", qual):
+        return "fellow_subsidiary_of"
+
+    for needle, rel in _REL_RULES:
+        if needle in head:
+            return rel
+    # Only now consider the whole phrase: a head that matched nothing may
+    # still carry an unambiguous structural marker in its qualifier.
+    for needle, rel in _REL_RULES:
+        if needle in low:
+            return rel
+    return "related_party_of"
 
     # An entity someone is INTERESTED IN is neither that person nor a
     # subsidiary of the filer. It gets its own relation rather than being
