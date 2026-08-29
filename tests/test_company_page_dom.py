@@ -184,3 +184,61 @@ def test_net_sankey_does_not_depend_on_the_net_view_being_open():
     fn = fn[:fn.index("\n}\n")]
     assert "NET.d" not in fn, \
         "netSankey still reaches for the NET view's global state"
+
+
+def test_every_fetch_has_a_deadline():
+    """A request that never settles renders as a spinner that never stops.
+
+    That is the worst refusal this app can make: it is visually identical to
+    "still working" and it lasts forever. The entity graph showed "walking the
+    graph" indefinitely because getJSON awaited a fetch with no timeout and
+    openNode had no catch, so a server restart mid-session produced a screen
+    with nothing to read and nothing to click.
+    """
+    src = (ROOT / "src/shunkan/server/static/app.js").read_text()
+    fn = src[src.index("async function getJSON"):]
+    fn = fn[:fn.index("\nasync function postJSON")]
+    assert "AbortController" in fn, "getJSON can hang forever"
+    assert "setTimeout" in fn and "abort()" in fn
+    assert "clearTimeout" in fn, "the timer must be cleared or it leaks"
+    assert "did not respond within" in fn, \
+        "a timeout must say so, not surface as a bare TypeError"
+
+
+def test_a_failed_request_cannot_leave_a_spinner_on_screen():
+    """The backstop, because views are hand-written and some forget to catch."""
+    src = (ROOT / "src/shunkan/server/static/app.js").read_text()
+    assert "unhandledrejection" in src, "no global failure net"
+    net = src[src.index("function wireFailureNet"):]
+    net = net[:net.index("\nfunction bootChrome")]
+    assert 'querySelectorAll(".loading")' in net, \
+        "the net must actually replace visible spinners"
+    boot = src[src.index("function bootChrome"):]
+    boot = boot[:boot.index("\n}")]
+    assert "wireFailureNet()" in boot, "the net is defined but never armed"
+
+
+def test_entity_graph_handles_its_own_failures():
+    """openNode awaited three fetches with no error path at all."""
+    src = (ROOT / "src/shunkan/server/static/app.js").read_text()
+    # start at the fail() helper, not openNode - the retry button lives there
+    blk = src[src.index("const fail = (b, what"):src.index('$("#gph-go").onclick')]
+    # Brace-match each `await getJSON` back to see whether a `try {` opened
+    # before it and had not yet closed. Counting keywords in the preceding
+    # text cannot tell an enclosing try from one that already ended - the
+    # first version of this test got that wrong and passed a real hole.
+    for idx in [i for i in range(len(blk)) if blk.startswith("await getJSON", i)]:
+        depth, guarded, j = 0, False, idx
+        while j > 0:
+            j -= 1
+            if blk[j] == "}":
+                depth += 1
+            elif blk[j] == "{":
+                if depth == 0:
+                    if blk[max(0, j - 6):j].rstrip().endswith("try"):
+                        guarded = True
+                    break
+                depth -= 1
+        line = blk[idx:blk.index("\n", idx)].strip()
+        assert guarded, f"unguarded await in the entity graph: {line[:70]}"
+    assert "RETRY" in blk, "a failure with no way to retry is a dead end"

@@ -13,9 +13,28 @@ const elv = (tag, cls, html) => {
 };
 
 const apiStats = { lastMs: 0, lastPath: "", calls: 0 };
-async function getJSON(url) {
+/* A request that never settles renders as a spinner that never stops. That is
+   the worst refusal this app can make: it looks identical to "still working"
+   and it lasts forever. Every fetch gets a deadline so a dead server, a
+   suspended laptop or a restarted process fails LOUDLY. */
+const API_TIMEOUT_MS = 45000;
+
+async function getJSON(url, { timeoutMs = API_TIMEOUT_MS } = {}) {
   const t0 = performance.now();
-  const r = await fetch(url);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  let r;
+  try {
+    r = await fetch(url, { signal: ac.signal });
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error(`${url.split("?")[0]} did not respond within ${
+        Math.round(timeoutMs / 1000)}s — is the server still running?`);
+    }
+    throw new Error(`${url.split("?")[0]} unreachable — ${e.message}`);
+  } finally {
+    clearTimeout(timer);
+  }
   apiStats.lastMs = Math.round(performance.now() - t0);
   apiStats.lastPath = url.split("?")[0];
   apiStats.calls++;
@@ -2593,10 +2612,25 @@ async function renderGraph(view, params = {}) {
   });
   const body = () => $("#gph-panel .panel-body");
 
+  const fail = (b, what, err, retry) => {
+    b.innerHTML = `<div class="empty" style="padding:12px 14px">
+      <b class="bad">${esc(what)} failed</b>
+      <div style="margin-top:5px;font-size:11px">${esc(err.message || String(err))}</div>
+      <button class="chip" id="gph-retry" style="margin-top:8px;color:var(--amber);cursor:pointer">RETRY</button></div>`;
+    const r = $("#gph-retry");
+    if (r) r.onclick = retry;
+  };
+
   const openNode = async (id) => {
     const b = body(); if (!b) return;
     b.innerHTML = loading("walking the graph");
-    const d = await getJSON(`/api/graph/node?id=${encodeURIComponent(id)}&limit=400`);
+    let d;
+    try {
+      d = await getJSON(`/api/graph/node?id=${encodeURIComponent(id)}&limit=400`);
+    } catch (e) {
+      fail(b, "reading the entity", e, () => openNode(id));
+      return;
+    }
     const n = d.node;
     const groups = new Map();
     for (const e of d.neighbours) {
@@ -2651,7 +2685,13 @@ async function renderGraph(view, params = {}) {
     const b = body(); if (!b) return;
     if (!q) { b.innerHTML = `<div class="empty" style="padding:12px 14px">type an entity — any spelling; the mapping service resolves it</div>`; return; }
     b.innerHTML = loading(`resolving “${esc(q)}”`);
-    const d = await getJSON(`/api/graph/resolve?q=${encodeURIComponent(q)}`);
+    let d;
+    try {
+      d = await getJSON(`/api/graph/resolve?q=${encodeURIComponent(q)}`);
+    } catch (e) {
+      fail(b, `resolving “${q}”`, e, () => resolve(q));
+      return;
+    }
     if (d.node_id) { openNode(d.node_id); return; }
     b.innerHTML = d.candidates.length ? `
       <div class="empty" style="padding:8px 14px">no exact match for “${esc(q)}” — closest entities:</div>
@@ -6644,7 +6684,37 @@ const RENDER = {
 /* ---------- websocket ---------- */
 
 let ws = null;
+/* THE BACKSTOP. Views are written by hand and some forget to catch; this one
+   caught GPH, whose openNode() awaited three fetches with no error path at
+   all, so a single failed request left "walking the graph" on screen forever
+   with nothing to click and nothing to read.
+
+   Any unhandled rejection replaces every visible spinner with the actual
+   error. It is deliberately blunt: a wrong-looking error beats a spinner that
+   lies about still working. */
+function wireFailureNet() {
+  const show_ = (msg) => {
+    const spinners = document.querySelectorAll(".loading");
+    if (!spinners.length) return;
+    spinners.forEach((el) => {
+      el.outerHTML = `<div class="empty load-failed" style="padding:12px 14px">
+        <b class="bad">this did not load</b>
+        <div style="margin-top:5px;font-size:11px">${esc(String(msg))}</div>
+        <div class="faint" style="margin-top:6px;font-size:11px">
+          Nothing was changed. Re-run the view to try again — if the server was
+          restarted, reload the page so the app code matches it.</div></div>`;
+    });
+  };
+  window.addEventListener("unhandledrejection", (e) => {
+    show_(e.reason && e.reason.message ? e.reason.message : e.reason);
+  });
+  window.addEventListener("error", (e) => {
+    if (e.message) show_(e.message);
+  });
+}
+
 function bootChrome() {
+  wireFailureNet();
   wireCmdline();
   // Raw intervals on purpose: addTimer timers die on every view switch,
   // and the header outlives views.
