@@ -2724,6 +2724,70 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         threading.Thread(target=run, daemon=True).start()
         return {"building": True, "stage": "queued", "symbol": sym}
 
+    _sym_index: dict = {}
+
+    @app.get("/api/symbols/search")
+    def symbols_search(q: str = "", limit: int = 10):
+        """Ticker suggestions for a partial company name.
+
+        NSE tickers are not guessable from the name - ICICI Bank is
+        ICICIBANK, not ICICI; Bajaj Finance is BAJFINANCE, not BAJAJ - so a
+        plain text box asks the reader to already know the answer. Typing
+        "icici" must offer ICICIBANK, ICICIGI and ICICIPRULI rather than
+        refuse.
+
+        Ranked most-specific first, because a substring match on a long name
+        is a much weaker signal than a ticker prefix and must never outrank
+        one.
+        """
+        from shunkan.data.constituents import universe
+
+        term = (q or "").strip().upper()
+        if not term:
+            return {"query": q, "matches": []}
+        if not _sym_index:
+            # Tie-break by SIZE, not by ticker length. Ranking the shortest
+            # symbol first put ICICIGI above ICICIBANK - correct by string
+            # length and useless to a reader who typed "icici". BSE's scrip
+            # master carries a market cap per scrip, which is a real signal
+            # for which company someone probably meant.
+            caps: dict = {}
+            try:
+                from shunkan.data.bse import scrip_master
+
+                for row in scrip_master():
+                    sid = str(row.get("scrip_id") or "").upper().strip()
+                    try:
+                        caps[sid] = float(row.get("Mktcap") or 0)
+                    except (TypeError, ValueError):
+                        caps[sid] = 0.0
+            except Exception:                                  # noqa: BLE001
+                caps = {}          # ranking degrades to alphabetical, not broken
+            for c in universe(("NIFTY500",)):
+                _sym_index[c.symbol] = (c, caps.get(c.symbol.upper(), 0.0))
+        out = []
+        for sym, (c, mcap) in _sym_index.items():
+            name = (c.name or "").upper()
+            if sym == term:
+                rank = 0
+            elif sym.startswith(term):
+                rank = 1
+            elif name.startswith(term):
+                rank = 2
+            elif any(w.startswith(term) for w in name.replace(".", " ").split()):
+                rank = 3
+            elif term in sym:
+                rank = 4
+            elif term in name:
+                rank = 5
+            else:
+                continue
+            out.append((rank, -mcap, sym, c))
+        out.sort(key=lambda r: (r[0], r[1], r[2]))
+        return {"query": q, "matches": [
+            {"symbol": sym, "name": c.name, "industry": c.industry}
+            for _, _, sym, c in out[:max(1, min(limit, 25))]]}
+
     @app.get("/api/entity/{symbol}")
     def entity_map(symbol: str, hops: int = 2, top: int = 20):
         """Everything the graph knows about one entity, in one call.

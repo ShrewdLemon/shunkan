@@ -77,3 +77,36 @@ def test_index_itself_is_never_cached(client):
     cc = r.headers.get("cache-control", "")
     assert "no-store" in cc or "no-cache" in cc, \
         f"index.html is cacheable ({cc!r}); it would freeze the asset versions"
+
+
+def test_ticker_search_puts_the_obvious_company_first(client):
+    """NSE tickers are not guessable from the name - ICICI Bank is ICICIBANK,
+    State Bank is SBIN - so typing "icici" must offer the bank.
+
+    Ranking ties by ticker LENGTH put ICICIGI above ICICIBANK: correct by
+    string length and useless to a reader. Size is the honest tiebreak.
+    """
+    for term, want in [("icici", "ICICIBANK"), ("hdfc", "HDFCBANK"),
+                       ("sbi", "SBIN"), ("kotak", "KOTAKBANK"),
+                       ("wip", "WIPRO"), ("reliance", "RELIANCE")]:
+        r = client.get(f"/api/symbols/search?q={term}&limit=5").json()
+        syms = [m["symbol"] for m in r["matches"]]
+        assert syms, f"{term!r} matched nothing"
+        assert syms[0] == want, f"{term!r} -> {syms}, expected {want} first"
+
+
+def test_ticker_search_is_bounded_and_survives_junk(client):
+    assert client.get("/api/symbols/search?q=").json()["matches"] == []
+    assert client.get("/api/symbols/search?q=%20%20").json()["matches"] == []
+    assert client.get("/api/symbols/search?q=zzzzzzzz").json()["matches"] == []
+    many = client.get("/api/symbols/search?q=a&limit=999").json()["matches"]
+    assert len(many) <= 25, "limit must be capped"
+    # an exact ticker must win outright
+    r = client.get("/api/symbols/search?q=TCS&limit=5").json()
+    assert r["matches"][0]["symbol"] == "TCS"
+
+
+def test_every_match_carries_a_name_to_disambiguate(client):
+    """A list of bare tickers is a second guessing game."""
+    for m in client.get("/api/symbols/search?q=tata&limit=6").json()["matches"]:
+        assert m.get("name"), f"{m['symbol']} has no company name"

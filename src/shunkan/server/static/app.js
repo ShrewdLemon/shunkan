@@ -2703,6 +2703,7 @@ async function renderGraph(view, params = {}) {
   };
 
   $("#gph-go").onclick = () => resolve($("#gph-q").value.trim());
+  attachSuggest($("#gph-q"), (sym) => resolve(sym));
   $("#gph-q").onkeydown = (e) => { if (e.key === "Enter") $("#gph-go").click(); };
   try {
     const st = await getJSON("/api/graph");
@@ -3000,6 +3001,7 @@ async function renderCompany(view, params = {}) {
     body: loading("reading the company"),
   });
   $("#cmp-go").onclick = () => show("company", { symbol: $("#cmp-sym").value });
+  attachSuggest($("#cmp-sym"), () => $("#cmp-go").click());
   $("#cmp-sym").onkeydown = (e) => { if (e.key === "Enter") $("#cmp-go").click(); };
   try {
     const d = await getJSON(`/api/company/${encodeURIComponent(sym)}`);
@@ -3478,6 +3480,9 @@ async function drawRelatedParties(sym, view) {
     const d = await getJSON(`/api/entity/${encodeURIComponent(sym)}`);
     const h = host();
     if (!h) return;
+    // the expander rebuilds from NET.d, so the company page must publish it too
+    NET.d = d; NET.sym = sym;
+    NET_EXPAND.L = NET_EXPAND.R = false;
     const sells = d.trade.sells_to || [], buys = d.trade.buys_from || [];
     const nStruct = Object.values(d.structure_counts || {}).reduce((a, b) => a + b, 0);
     const sT = sells.reduce((a, r) => a + r.total, 0);
@@ -3506,7 +3511,7 @@ async function drawRelatedParties(sym, view) {
         <div class="kv"><div class="k">FILED</div><div class="v sm">${
           d.periods.length ? esc(d.periods[0]) + " → " + esc(d.periods[d.periods.length - 1]) : "—"}</div></div>
       </div>
-      ${(sells.length || buys.length) ? netSankey(d, sells, buys) : ""}
+      ${(sells.length || buys.length) ? netFlowBlock(d, sells, buys) : ""}
       ${d.periods.length > 1 && (sells.length || buys.length)
         ? netPeriodBars(d, sells, buys) : ""}
       ${(sells.length || buys.length) ? secBlock("COUNTERPARTIES",
@@ -3520,7 +3525,8 @@ async function drawRelatedParties(sym, view) {
       </div>`;
     const b = $("#cmp-rpt-net");
     if (b) b.onclick = () => show("network", { symbol: sym });
-    h.querySelectorAll(".net-node[data-id]").forEach((n) => {
+    netWireExpand(h);
+    h.querySelectorAll(".net-node[data-id], .net-slab[data-id]").forEach((n) => {
       n.onclick = () => show("network", { node: n.dataset.id });
     });
   } catch (e) {
@@ -6113,6 +6119,37 @@ async function showExtraction(sym) {
    period gets a gap in its sparkline, not a zero. */
 
 const NET = { d: null, sym: null, crumbs: [] };
+/* Which side of the flow diagram is showing every counterparty rather than
+   the top 12. Shared by the NET view and the company page, reset whenever a
+   new entity loads so an expansion never carries across entities. */
+const NET_EXPAND = { L: false, R: false };
+
+function netFlowBlock(d, sells, buys) {
+  return `<div class="net-flow-host">${netSankey(d, sells, buys)}</div>`;
+}
+
+/* Rebuilds every flow diagram on the page from NET.d. Bound once, delegated,
+   so it works the same on the NET view and inside the company page without
+   either having to know about the other. */
+function netWireExpand(root) {
+  (root || document).querySelectorAll("[data-expand]").forEach((el) => {
+    el.style.cursor = "pointer";
+    el.onclick = (ev) => {
+      ev.stopPropagation();
+      const side = el.dataset.expand;
+      NET_EXPAND[side] = !NET_EXPAND[side];
+      const d = NET.d;
+      if (!d) return;
+      document.querySelectorAll(".net-flow-host").forEach((host) => {
+        host.innerHTML = netSankey(d, d.trade.sells_to || [], d.trade.buys_from || []);
+        netWireExpand(host);
+        host.querySelectorAll(".net-node[data-id], .net-slab[data-id]").forEach((n) => {
+          n.onclick = () => netDrill(n.dataset.id, n.dataset.name);
+        });
+      });
+    };
+  });
+}
 const NET_TOP = 12;                    // per side in the flow diagram
 
 const CR = 1e7;
@@ -6177,6 +6214,7 @@ async function renderNetwork(view, params = {}) {
       loading("walking the graph")}</div>`,
   });
   $("#net-go").onclick = () => { NET.crumbs = []; show("network", { symbol: $("#net-sym").value }); };
+  attachSuggest($("#net-sym"), () => $("#net-go").click());
   $("#net-sym").onkeydown = (e) => { if (e.key === "Enter") $("#net-go").click(); };
   await netLoad(target, view);
 }
@@ -6202,6 +6240,7 @@ async function netLoad(target, view, label) {
   try {
     const d = await getJSON(`/api/entity/${encodeURIComponent(target)}`);
     NET.d = d; NET.sym = target;
+    NET_EXPAND.L = NET_EXPAND.R = false;   // never carry an expansion across entities
     const h = $("#net-body");
     if (!h) return;
     $("#net-name").innerHTML = esc(d.name || target);
@@ -6252,7 +6291,7 @@ function netPaint(h, d) {
 
     ${(sells.length || buys.length) ? secBlock(
       "RELATED-PARTY VALUE FLOW", null,
-      netSankey(d, sells, buys), { open: true, scroll: false }) : `
+      netFlowBlock(d, sells, buys), { open: true, scroll: false }) : `
       <div class="empty" style="padding:10px 14px">no related-party transactions filed for this entity
       <div class="faint" style="margin-top:3px;font-size:11px">BSE serves the RPT XBRL only for listed
       filers, and only where the filer submitted it. A counterparty appears here through
@@ -6297,7 +6336,8 @@ function netPaint(h, d) {
   if (det) det.addEventListener("toggle", () => {
     if (det.open && !det.dataset.drawn) { det.dataset.drawn = "1"; netGraph(); }
   });
-  h.querySelectorAll(".net-node[data-id]").forEach((n) => {
+  netWireExpand(h);
+  h.querySelectorAll(".net-node[data-id], .net-slab[data-id]").forEach((n) => {
     n.onclick = () => netDrill(n.dataset.id, n.dataset.name);
   });
   h.querySelectorAll(".splc-node.clip").forEach((n) => {
@@ -6313,12 +6353,25 @@ function netPaint(h, d) {
    to the number in the header strip. */
 function netSankey(d, sells, buys) {
   const W = 1000, PAD = 14, GAP = 3, LAB = 232, MIDW = 132;
-  const topS = sells.slice(0, NET_TOP), topB = buys.slice(0, NET_TOP);
-  const restS = sells.slice(NET_TOP), restB = buys.slice(NET_TOP);
+  // The remainder band is a SUMMARY, and a summary the reader cannot open is
+  // a dead end - it names a number of counterparties and then refuses to say
+  // which. Clicking it expands that side to the full list.
+  const capS = NET_EXPAND.R ? sells.length : NET_TOP;
+  const capB = NET_EXPAND.L ? buys.length : NET_TOP;
+  const topS = sells.slice(0, capS), topB = buys.slice(0, capB);
+  const restS = sells.slice(capS), restB = buys.slice(capB);
   const rS = restS.reduce((a, r) => a + r.total, 0);
   const rB = restB.reduce((a, r) => a + r.total, 0);
-  const lS = topS.concat(rS ? [{ id: null, name: `${restS.length} smaller counterparties`, total: rS, rest: 1 }] : []);
-  const lB = topB.concat(rB ? [{ id: null, name: `${restB.length} smaller counterparties`, total: rB, rest: 1 }] : []);
+  const restBand = (n, side, expanded) => ({
+    id: null, rest: 1, side,
+    name: expanded ? "show fewer" : `${n} smaller counterparties`,
+  });
+  const lS = topS.concat(rS ? [{ ...restBand(restS.length, "R", false), total: rS }] : [])
+                 .concat(NET_EXPAND.R && sells.length > NET_TOP
+                   ? [{ ...restBand(0, "R", true), total: 0, collapse: 1 }] : []);
+  const lB = topB.concat(rB ? [{ ...restBand(restB.length, "L", false), total: rB }] : [])
+                 .concat(NET_EXPAND.L && buys.length > NET_TOP
+                   ? [{ ...restBand(0, "L", true), total: 0, collapse: 1 }] : []);
 
   const sTot = sells.reduce((a, r) => a + r.total, 0);
   const bTot = buys.reduce((a, r) => a + r.total, 0);
@@ -6382,14 +6435,18 @@ function netSankey(d, sells, buys) {
     const ribbonY = n.y + n.h / 2;         // where the ribbon actually is
     const lead = side === "L" ? x0 : x3;
     const name = n.name.length > 30 ? n.name.slice(0, 29) + "…" : n.name;
-    return `<g class="net-slab${n.id ? " act" : ""}"${
-      n.id ? ` data-id="${esc(n.id)}" data-name="${esc(n.name)}"` : ""}>
+    return `<g class="net-slab${n.id ? " act" : ""}${n.rest ? " band" : ""}"${
+      n.id ? ` data-id="${esc(n.id)}" data-name="${esc(n.name)}"` : ""}${
+      n.rest ? ` data-expand="${n.side}"` : ""}>
       <rect x="${side === "L" ? 0 : x3}" y="${cy - 13}" width="${LAB}" height="26" fill="transparent"/>
       <path class="net-lead" d="M${side === "L" ? tx + 4 : tx - 4},${cy} L${
         side === "L" ? lead - 2 : lead + 2},${ribbonY}"/>
       <text class="net-lb" x="${tx}" y="${cy - 1}" text-anchor="${anchor}">${esc(name)}</text>
-      <text class="net-lv" x="${tx}" y="${cy + 10}" text-anchor="${anchor}">₹${netCr(n.total)} Cr</text>
-      <title>${esc(n.name)} — ₹${netCr(n.total)} Cr</title></g>`;
+      <text class="net-lv" x="${tx}" y="${cy + 10}" text-anchor="${anchor}">${
+        n.collapse ? "▴ collapse" : n.rest
+          ? `₹${netCr(n.total)} Cr · ▾ show all` : `₹${netCr(n.total)} Cr`}</text>
+      <title>${n.rest ? (n.collapse ? "collapse this side" : "click to list every counterparty on this side")
+        : `${esc(n.name)} — ₹${netCr(n.total)} Cr`}</title></g>`;
   };
   const pct = (v, t) => t ? (v / t * 100).toFixed(1) + "%" : "—";
   return `
@@ -6983,6 +7040,73 @@ const CODE_ALIAS = { OPT: "oc", PRT: "portfolio", PLS: "pulse", ANL: "analyse",
                      // listed in the hub but not typeable is a screen the
                      // muscle memory cannot find.
                      NET: "network", ADM: "admin" };
+
+/* ---------- ticker suggestions ----------
+   NSE tickers are not guessable from the company name: ICICI Bank is
+   ICICIBANK, Bajaj Finance is BAJFINANCE, State Bank is SBIN. A plain text
+   box therefore asks the reader to already know the answer, and typing
+   "icici" simply failed.
+
+   Attaches to any input: debounced, keyboard-navigable, and it never
+   silently rewrites what was typed - picking a suggestion is an explicit act.
+*/
+function attachSuggest(input, onPick) {
+  if (!input || input.dataset.suggestBound) return;
+  input.dataset.suggestBound = "1";
+  input.setAttribute("autocomplete", "off");
+  const box = elv("div", "sug-box");
+  box.style.display = "none";
+  (input.parentNode || document.body).appendChild(box);
+  let items = [], active = -1, timer = null, seq = 0;
+
+  const close = () => { box.style.display = "none"; active = -1; };
+  const paint = () => {
+    if (!items.length) { close(); return; }
+    box.innerHTML = items.map((m, i) => `
+      <div class="sug-row${i === active ? " on" : ""}" data-i="${i}">
+        <span class="sug-sym">${esc(m.symbol)}</span>
+        <span class="sug-name">${esc(m.name || "")}</span>
+      </div>`).join("");
+    const r = input.getBoundingClientRect();
+    box.style.width = `${r.width}px`;
+    box.style.display = "block";
+    box.querySelectorAll(".sug-row").forEach((row) => {
+      row.onmousedown = (e) => { e.preventDefault(); pick(+row.dataset.i); };
+    });
+  };
+  const pick = (i) => {
+    const m = items[i];
+    if (!m) return;
+    input.value = m.symbol;
+    close();
+    if (onPick) onPick(m.symbol);
+  };
+  const query = async (q) => {
+    const mine = ++seq;
+    try {
+      const d = await getJSON(`/api/symbols/search?q=${encodeURIComponent(q)}&limit=8`);
+      if (mine !== seq) return;          // a later keystroke already won
+      items = d.matches || [];
+      active = items.length ? 0 : -1;
+      paint();
+    } catch { close(); }                 // a failed lookup must not block typing
+  };
+
+  input.addEventListener("input", () => {
+    const q = input.value.trim();
+    clearTimeout(timer);
+    if (q.length < 2) { items = []; close(); return; }
+    timer = setTimeout(() => query(q), 120);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (box.style.display === "none" || !items.length) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); active = (active + 1) % items.length; paint(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); active = (active - 1 + items.length) % items.length; paint(); }
+    else if (e.key === "Enter" && active >= 0) { e.preventDefault(); pick(active); }
+    else if (e.key === "Escape") { close(); }
+  });
+  input.addEventListener("blur", () => setTimeout(close, 120));
+}
 
 function wireCmdline() {
   const inp = $("#cl-input");
