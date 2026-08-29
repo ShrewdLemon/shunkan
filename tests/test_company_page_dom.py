@@ -166,9 +166,19 @@ def test_company_page_carries_the_related_party_block():
     draw = src[src.index("async function drawRelatedParties"):]
     draw = draw[:draw.index("\nasync function renderHeatmap")]
     assert "/api/entity/" in draw, "must read the entity endpoint"
-    # the same shipped renderers as NET, not a re-typed copy that can drift
-    for fn in ("netSankey", "netTable", "netStructure", "netCr"):
+    # The same shipped renderers as NET, not a re-typed copy that can drift.
+    # netFlowBlock is the flow diagram's wrapper - accept it, but then prove
+    # it really does delegate, or this test passes on an empty shim.
+    for fn in ("netTable", "netStructure", "netCr"):
         assert fn in draw, f"{fn} not reused on the company page"
+    assert "netFlowBlock" in draw or "netSankey" in draw, \
+        "the company page draws no flow diagram"
+    if "netSankey" not in draw:
+        wrapper = src[src.index("function netFlowBlock"):]
+        wrapper = wrapper[:wrapper.index("\n}")]
+        assert "netSankey" in wrapper, \
+            "netFlowBlock does not delegate to netSankey - the company page " \
+            "has its own copy of the diagram and they will drift"
     assert 'show("network"' in draw, \
         "no route through to the full network for the multi-hop walk"
     assert "no related-party filing" in draw, \
