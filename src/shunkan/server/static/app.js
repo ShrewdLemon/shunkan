@@ -3134,8 +3134,12 @@ async function renderCompany(view, params = {}) {
       <details class="sec"><summary class="news-sect">SEGMENTS — IND AS 108 <span class="faint" id="cmp-seg-count"></span></summary>
         <div class="sec-body" id="cmp-seg"><div class="empty" style="padding:8px 14px">reading the quarterly filing…</div></div></details>
       <details class="sec"><summary class="news-sect">SUPPLY CHAIN — FROM THE FILED ANNUAL REPORT <span class="faint" id="cmp-splc-count"></span></summary>
-        <div class="sec-body" id="cmp-splc"><div class="empty" style="padding:8px 14px">loading the map…</div></div></details>`;
+        <div class="sec-body" id="cmp-splc"><div class="empty" style="padding:8px 14px">loading the map…</div></div></details>
+
+      <details class="sec" open><summary class="news-sect">RELATED PARTIES — WHO IT ACTUALLY TRADES WITH <span class="faint" id="cmp-rpt-count"></span></summary>
+        <div class="sec-body" id="cmp-rpt"><div class="empty" style="padding:8px 14px">reading the related-party filings…</div></div></details>`;
     drawSupplyMap(sym, view);
+    drawRelatedParties(sym, view);
     drawFundOwnership(sym, view);
     drawSegments(sym, view);
     host.querySelectorAll(".map-tile").forEach((el) => {
@@ -3417,6 +3421,73 @@ const MAP_UNIVERSES = [
   ["small250", "SMALLCAP 250"],
 ];
 let mapUniverse = "core";
+
+/* ---------- related parties ON THE COMPANY PAGE ----------
+   This lived only in NET, which was wrong. A reader who wants to know who
+   Reliance actually sells to is already on the company page, next to
+   ownership and the supply chain - making them learn a second screen exists,
+   and its three-letter code, is not a feature.
+
+   NET keeps the parts that need a whole screen: the multi-hop walk, the
+   canvas map, and drilling into a counterparty's own network. What belongs
+   here is the answer to "who does THIS company trade with, and who is it
+   related to" - so that is what renders, with a way through to the rest. */
+async function drawRelatedParties(sym, view) {
+  const host = () => $("#cmp-rpt");
+  try {
+    const d = await getJSON(`/api/entity/${encodeURIComponent(sym)}`);
+    const h = host();
+    if (!h) return;
+    const sells = d.trade.sells_to || [], buys = d.trade.buys_from || [];
+    const nStruct = Object.values(d.structure_counts || {}).reduce((a, b) => a + b, 0);
+    const sT = sells.reduce((a, r) => a + r.total, 0);
+    const bT = buys.reduce((a, r) => a + r.total, 0);
+    const cnt = $("#cmp-rpt-count");
+    if (cnt) {
+      cnt.textContent = (sells.length || buys.length || nStruct)
+        ? `· ${sells.length + buys.length} counterparties · ${nStruct} related entities · ${d.periods.length} half-years`
+        : "· nothing filed";
+    }
+    if (!sells.length && !buys.length && !nStruct) {
+      h.innerHTML = `<div class="empty" style="padding:10px 14px">
+        no related-party filing in the graph for ${esc(sym)}
+        <div class="faint" style="margin-top:3px;font-size:11px">
+          BSE serves this XBRL only for companies listed on BSE, and only where the
+          filer submitted it. ${esc(d.sources.trade)}</div></div>`;
+      return;
+    }
+    h.innerHTML = `
+      <div class="kv-strip">
+        <div class="kv"><div class="k">SELLS TO</div><div class="v">${sells.length || "—"}</div></div>
+        <div class="kv"><div class="k">VALUE OUT</div><div class="v amber">${sT ? "₹" + netCr(sT) + " Cr" : "—"}</div></div>
+        <div class="kv"><div class="k">BUYS FROM</div><div class="v">${buys.length || "—"}</div></div>
+        <div class="kv"><div class="k">VALUE IN</div><div class="v amber">${bT ? "₹" + netCr(bT) + " Cr" : "—"}</div></div>
+        <div class="kv"><div class="k">RELATED ENTITIES</div><div class="v">${nStruct || "—"}</div></div>
+        <div class="kv"><div class="k">FILED</div><div class="v sm">${
+          d.periods.length ? esc(d.periods[0]) + " → " + esc(d.periods[d.periods.length - 1]) : "—"}</div></div>
+      </div>
+      ${(sells.length || buys.length) ? netSankey(d, sells, buys) : ""}
+      ${d.periods.length > 1 && (sells.length || buys.length)
+        ? netPeriodBars(d, sells, buys) : ""}
+      ${(sells.length || buys.length) ? secBlock("COUNTERPARTIES",
+        `${sells.length + buys.length} · aggregated across periods`,
+        netTable(d, sells, buys), { open: false }) : ""}
+      ${nStruct ? secBlock("CORPORATE STRUCTURE", `${nStruct} · relationship as filed`,
+        netStructure(d), { open: false, scroll: false }) : ""}
+      <div class="cmp-rpt-more">
+        <button class="chip" id="cmp-rpt-net">OPEN FULL NETWORK (NET) ›</button>
+        <span class="faint">two-hop map, and walking into any counterparty's own network</span>
+      </div>`;
+    const b = $("#cmp-rpt-net");
+    if (b) b.onclick = () => show("network", { symbol: sym });
+    h.querySelectorAll(".net-node[data-id]").forEach((n) => {
+      n.onclick = () => show("network", { node: n.dataset.id });
+    });
+  } catch (e) {
+    const h = host();
+    if (h) h.innerHTML = `<div class="empty" style="padding:10px 14px">${esc(e.message)}</div>`;
+  }
+}
 
 async function renderHeatmap(view) {
   view.innerHTML = panel({
@@ -6274,7 +6345,7 @@ function netSankey(d, sells, buys) {
       ${R.map((n) => ribbon(n, "R")).join("")}
       <rect class="net-hub" x="${x1}" y="${cY}" width="${MIDW}" height="${Math.max(cH, 26)}"/>
       <text class="net-hub-t" x="${(x1 + x2) / 2}" y="${cY + Math.max(cH, 26) / 2 - 2}"
-            text-anchor="middle">${esc((NET.d.name || "").slice(0, 16))}</text>
+            text-anchor="middle">${esc((d.name || "").slice(0, 16))}</text>
       <text class="net-hub-s" x="${(x1 + x2) / 2}" y="${cY + Math.max(cH, 26) / 2 + 11}"
             text-anchor="middle">${d.periods.length}p aggregate</text>
       ${L.map((n) => label(n, "L")).join("")}

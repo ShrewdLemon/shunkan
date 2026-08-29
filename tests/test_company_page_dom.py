@@ -144,3 +144,43 @@ def test_every_analyse_code_is_typeable_in_the_command_bar():
     assert not missing, (
         f"listed in the Analyse hub but not typeable: {sorted(missing)}. "
         f"Add them to CODE_ALIAS.")
+
+
+def test_company_page_carries_the_related_party_block():
+    """Related parties are ABOUT the company, so they belong on the company
+    page beside ownership and the supply chain.
+
+    Building them only into NET meant a reader who wanted to know who Reliance
+    sells to had to know a second screen existed and know its three-letter
+    code. The deep view keeps what needs a whole screen - the multi-hop walk,
+    the canvas map, drilling into a counterparty - and the company page
+    answers the direct question.
+    """
+    src = (ROOT / "src/shunkan/server/static/app.js").read_text()
+    body = src[src.index("async function renderCompany"):]
+    body = body[:body.index("\nasync function drawSegments")]
+    assert "drawRelatedParties" in body, \
+        "the company page never calls drawRelatedParties"
+    assert 'id="cmp-rpt"' in body, "no mount point for the related-party block"
+
+    draw = src[src.index("async function drawRelatedParties"):]
+    draw = draw[:draw.index("\nasync function renderHeatmap")]
+    assert "/api/entity/" in draw, "must read the entity endpoint"
+    # the same shipped renderers as NET, not a re-typed copy that can drift
+    for fn in ("netSankey", "netTable", "netStructure", "netCr"):
+        assert fn in draw, f"{fn} not reused on the company page"
+    assert 'show("network"' in draw, \
+        "no route through to the full network for the multi-hop walk"
+    assert "no related-party filing" in draw, \
+        "a company with nothing filed must get a named reason, not a blank"
+
+
+def test_net_sankey_does_not_depend_on_the_net_view_being_open():
+    """netSankey read NET.d for its hub label, which made it a NET-only
+    function. The company page calls it too, so the label comes from the
+    payload it was handed."""
+    src = (ROOT / "src/shunkan/server/static/app.js").read_text()
+    fn = src[src.index("function netSankey"):]
+    fn = fn[:fn.index("\n}\n")]
+    assert "NET.d" not in fn, \
+        "netSankey still reaches for the NET view's global state"
