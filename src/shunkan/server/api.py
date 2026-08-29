@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import hashlib
 import json
 import math
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +23,7 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -4488,7 +4490,31 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
         @app.get("/")
         def index():
-            return FileResponse(STATIC_DIR / "index.html")
+            """index.html with its asset versions stamped from file CONTENT.
+
+            The page shipped hand-written cache busters - app.js?v=80,
+            styles.css?v=51 - and a human had to remember to bump them. Across
+            one session of edits nobody did, so browsers kept serving the
+            cached v=80 bundle: a reload changed nothing, a whole page section
+            was missing because that build predated it, and a screen hung
+            forever because that build predated its error handling. Every
+            symptom pointed at the server, which was serving the correct file
+            the whole time.
+
+            A number a human maintains is a number that goes stale. This
+            hashes each asset and rewrites the query string, so the URL
+            changes exactly when the bytes do - and never otherwise, which
+            keeps the caching that the version parameter was there to buy.
+            """
+            html = (STATIC_DIR / "index.html").read_text()
+            for asset in ("app.js", "styles.css", "viz3d.js"):
+                path = STATIC_DIR / asset
+                if not path.exists():
+                    continue
+                digest = hashlib.md5(path.read_bytes()).hexdigest()[:10]
+                html = re.sub(rf"(/static/{re.escape(asset)})(\?v=[^\"\']*)?",
+                              rf"\1?v={digest}", html)
+            return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     return app
 
