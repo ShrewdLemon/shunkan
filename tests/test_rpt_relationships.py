@@ -171,3 +171,42 @@ def test_company_names_that_look_like_honorifics_are_untouched() -> None:
     assert "counterparty" not in src, \
         "normalise_relationship must classify the relationship text only"
     assert normalise_relationship("Subsidiary") == "subsidiary_of"
+
+
+def test_every_relation_the_classifier_emits_is_visible_in_the_graph() -> None:
+    """A relation the classifier produces but STRUCTURAL omits is written to
+    the graph and then never displayed - the edge exists, the page says the
+    company has no such relationships, and nothing errors.
+
+    Four relations were in exactly that state: relative_of_kmp,
+    kmp_interested_entity_of, employee_benefit_plan_of and
+    related_party_of_subsidiary, together roughly 40,000 edges. This test is
+    the fix; adding them was only the symptom.
+    """
+    from shunkan.data.bse import normalise_relationship
+    from shunkan.store.graph import GraphStore
+
+    # every distinct phrase shape the corpus is known to contain
+    phrases = [
+        "Subsidiary", "Subsidiaries", "Wholly owned subsidiary",
+        "Wholly -Owned Subsidiary", "Fellow subsidiary",
+        "Subsidiary of parent company", "Ultimate Parent Company",
+        "Holding Company", "Associate", "Associates", "Joint Venture",
+        "Joint Ventures", "Entity with joint control",
+        "Significant influence", "Promoter", "Promoter Group",
+        "Director", "Director of Subsidiary Company", "KMP of Subsidiary",
+        "Key Managerial Personnel (KMP)", "Relative of Director",
+        "Relative of KMP/Director of subsidiary", "Relative of Promoter",
+        "Interested entity of KMP/Directors or their relative",
+        "Enterprise over which KMP has significant influence",
+        "Employee Trust", "Employee Welfare Trust", "Employee benefit plans",
+        "Employee of Max Healthcare Institute Limited and director in related party",
+        "Related Party of Subsidiary", "Related Party of the Company",
+        "Any other related party", "Group Entity", "",
+    ]
+    emitted = {normalise_relationship(p) for p in phrases}
+    known = set(GraphStore.STRUCTURAL) | set(GraphStore.TRADE) | {"group_entity_of"}
+    missing = emitted - known
+    assert not missing, (
+        f"these relations would be written but never displayed: {sorted(missing)}. "
+        f"Add them to GraphStore.STRUCTURAL.")
