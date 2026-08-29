@@ -1486,3 +1486,9 @@ main { padding: 0; }
 .net-sgrp.net-people { opacity: 0.82; border-left: 1px solid var(--stroke);
   padding-left: 8px; }
 .net-sgrp.net-people .net-chip { border-style: dashed; }
+.cmp-rpt-more { display: flex; align-items: center; gap: 9px; padding: 8px 12px;
+  border-top: 1px solid var(--stroke-soft); font-size: 10.5px; flex-wrap: wrap; }
+.cmp-rpt-more .chip { color: var(--amber); cursor: pointer; border: 1px solid var(--stroke);
+  background: var(--bg-panel-2); padding: 3px 8px; font: 10.5px var(--mono);
+  letter-spacing: 0.05em; }
+.cmp-rpt-more .chip:hover { border-color: var(--amber); }
