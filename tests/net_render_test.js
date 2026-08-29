@@ -30,7 +30,7 @@ const M = new Function(
   "esc", "secBlock", "panel", "loading", "stamp", "$", "state", "show",
   "getJSON", "window", "document",
   block + "\nreturn {netSankey,netPeriodBars,netSpark,netTable,netStructure," +
-          "netChain,netOwners,netCr,NET,NET_PEOPLE};"
+          "netChain,netOwners,netCr,NET,NET_PEOPLE,NET_EXPAND,NET_TOP};"
 )(esc, secBlock, panel, loading, stamp, $, state, show, getJSON, win, doc);
 
 let bad = 0;
@@ -215,6 +215,42 @@ for (const [name, d] of Object.entries(FIX)) {
   ok(/max-width:\s*100%/.test(rule), "capped but not responsive on narrow screens");
   ok(/\.net-flow-wrap\s*\{[^}]*overflow-x:\s*auto/.test(css),
      "wide diagram must scroll in its own container, not the page body");
+}
+
+/* ---- the remainder band must open ----
+   A summary that names "8 smaller counterparties" and then refuses to say
+   which is a dead end. It is a control, and it has to behave like one. */
+{
+  const d = FIX.rich; M.NET.d = d;
+  const sells = d.trade.sells_to, buys = d.trade.buys_from;
+  M.NET_EXPAND.L = M.NET_EXPAND.R = false;
+
+  const collapsed = M.netSankey(d, sells, buys);
+  ok(/data-expand="R"/.test(collapsed), "the remainder band carries no expand handle");
+  ok(/show all/.test(collapsed), "the band does not say it can be opened");
+  const nCollapsed = (collapsed.match(/<text class="net-lb"/g) || []).length;
+
+  M.NET_EXPAND.R = true;
+  const opened = M.netSankey(d, sells, buys);
+  const nOpened = (opened.match(/<text class="net-lb"/g) || []).length;
+  ok(nOpened > nCollapsed,
+     "expanding a side did not reveal more counterparties",
+     `${nCollapsed} -> ${nOpened}`);
+  ok(/collapse/.test(opened), "expanded with no way back");
+  // every real counterparty on that side must now be present
+  for (const cp of sells) {
+    const nm = cp.name.length > 30 ? cp.name.slice(0, 29) : cp.name;
+    ok(opened.includes(esc(nm)), `expanded view is missing ${cp.name}`);
+  }
+  // labels must STILL not overlap once expanded
+  const ys = [...opened.matchAll(
+    /<text class="net-lb" x="[-\d.]+" y="([-\d.]+)" text-anchor="start"/g)]
+    .map((m) => parseFloat(m[1])).sort((a, b) => a - b);
+  for (let i = 1; i < ys.length; i++) {
+    ok(ys[i] - ys[i - 1] >= 18,
+       `expanded labels overlap: ${(ys[i] - ys[i - 1]).toFixed(1)}px apart`);
+  }
+  M.NET_EXPAND.L = M.NET_EXPAND.R = false;
 }
 
 /* ---- a gap is not a zero ---- */

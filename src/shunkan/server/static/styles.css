@@ -1503,3 +1503,23 @@ main { padding: 0; }
   background: var(--bg-panel-2); padding: 3px 8px; font: 10.5px var(--mono);
   letter-spacing: 0.05em; }
 .cmp-rpt-more .chip:hover { border-color: var(--amber); }
+
+/* ---------- ticker suggestions ---------- */
+.sug-box { position: absolute; z-index: 40; background: var(--bg-header);
+  border: 1px solid var(--stroke); max-height: 240px; overflow-y: auto;
+  font-size: 11px; margin-top: 1px; }
+.sug-row { display: flex; gap: 8px; align-items: baseline; padding: 3px 7px;
+  cursor: pointer; border-bottom: 1px solid var(--stroke-soft); }
+.sug-row:last-child { border-bottom: 0; }
+.sug-row.on, .sug-row:hover { background: var(--amber-dim); }
+.sug-sym { color: var(--amber); min-width: 9ch; letter-spacing: 0.03em; }
+.sug-row.on .sug-sym { color: var(--amber); }
+.sug-name { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.controls { position: relative; }
+
+/* the remainder band reads as a control, because it is one */
+.net-slab.band .net-lb { fill: var(--text-dim); font-style: italic; }
+.net-slab.band .net-lv { fill: var(--blue); }
+.net-slab.band:hover .net-lb, .net-slab.band:hover .net-lv { fill: var(--amber); }
+.net-slab.band { cursor: pointer; }
