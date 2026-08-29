@@ -6323,7 +6323,10 @@ function netSankey(d, sells, buys) {
   const sTot = sells.reduce((a, r) => a + r.total, 0);
   const bTot = buys.reduce((a, r) => a + r.total, 0);
   const rows = Math.max(lS.length, lB.length);
-  const H = Math.max(300, rows * 30 + PAD * 2);
+  // ROW_MIN is the height of a two-line label (name + value) plus breathing
+  // room. Below it the labels touch however the ribbons are laid out.
+  const ROW_MIN = 30;
+  const H = Math.max(300, rows * ROW_MIN + PAD * 2);
   const band = H - PAD * 2;
   // pixels per rupee: the larger side fills the band, the other is drawn to
   // the same ruler so the comparison between them is honest.
@@ -6334,11 +6337,25 @@ function netSankey(d, sells, buys) {
   const pxPerRs = usable / big;
   const MINH = 1.2;
 
+  /* Ribbon geometry is proportional to rupees. LABEL geometry is not, and
+     must not be: a counterparty worth a thousandth of the largest gets a
+     ribbon barely over a pixel tall, and placing its name at that ribbon's
+     centre stacks it on top of its neighbours. Reliance's left column
+     rendered as eleven overlapping names in a solid block.
+
+     So labels get evenly spaced slots with a guaranteed minimum, and a hair-
+     thin leader connects each one to the ribbon it describes. The picture
+     stays honest - thickness is still value - and the text is readable. */
   const lay = (list, total) => {
     const h = list.map((r) => Math.max(MINH, r.total * pxPerRs));
     const sum = h.reduce((a, b) => a + b, 0) + GAP * Math.max(0, list.length - 1);
     let y = PAD + (band - sum) / 2;
-    return list.map((r, i) => { const o = { ...r, h: h[i], y }; y += h[i] + GAP; return o; });
+    const slot = list.length ? (H - PAD * 2) / list.length : 0;
+    return list.map((r, i) => {
+      const o = { ...r, h: h[i], y, ly: PAD + slot * (i + 0.5) };
+      y += h[i] + GAP;
+      return o;
+    });
   };
   const L = lay(lB, bTot), R = lay(lS, sTot);
   const cH = Math.max(bTot, sTot) * pxPerRs;
@@ -6360,15 +6377,19 @@ function netSankey(d, sells, buys) {
   };
   const label = (n, side) => {
     const anchor = side === "L" ? "end" : "start";
-    const tx = side === "L" ? x0 - 8 : x3 + 8;
-    const cy = n.y + n.h / 2;
-    const name = n.name.length > 34 ? n.name.slice(0, 33) + "…" : n.name;
+    const tx = side === "L" ? x0 - 14 : x3 + 14;
+    const cy = n.ly;                       // the SLOT, not the ribbon
+    const ribbonY = n.y + n.h / 2;         // where the ribbon actually is
+    const lead = side === "L" ? x0 : x3;
+    const name = n.name.length > 30 ? n.name.slice(0, 29) + "…" : n.name;
     return `<g class="net-slab${n.id ? " act" : ""}"${
       n.id ? ` data-id="${esc(n.id)}" data-name="${esc(n.name)}"` : ""}>
-      <rect x="${side === "L" ? 0 : x3}" y="${n.y - 7}" width="${LAB}" height="${n.h + 14}" fill="transparent"/>
+      <rect x="${side === "L" ? 0 : x3}" y="${cy - 13}" width="${LAB}" height="26" fill="transparent"/>
+      <path class="net-lead" d="M${side === "L" ? tx + 4 : tx - 4},${cy} L${
+        side === "L" ? lead - 2 : lead + 2},${ribbonY}"/>
       <text class="net-lb" x="${tx}" y="${cy - 1}" text-anchor="${anchor}">${esc(name)}</text>
       <text class="net-lv" x="${tx}" y="${cy + 10}" text-anchor="${anchor}">₹${netCr(n.total)} Cr</text>
-      <title>${esc(n.name)}</title></g>`;
+      <title>${esc(n.name)} — ₹${netCr(n.total)} Cr</title></g>`;
   };
   const pct = (v, t) => t ? (v / t * 100).toFixed(1) + "%" : "—";
   return `

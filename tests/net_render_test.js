@@ -163,6 +163,60 @@ for (const [name, d] of Object.entries(FIX)) {
   ok(shown >= 26, "flow ribbons missing", shown);
 }
 
+/* ---- labels must not sit on top of each other ----
+   Ribbon height is proportional to rupees, so a counterparty worth a
+   thousandth of the largest gets a ribbon barely a pixel tall. Placing its
+   name at that ribbon's centre stacked eleven of Reliance's suppliers into
+   one illegible block on screen. Label slots are therefore evenly spaced and
+   this measures that they stay apart. */
+{
+  const MIN_GAP = 18;   // a two-line label (name + value) needs this much
+  for (const name of ["rich", "tiny", "gappy", "oneSided"]) {
+    const d = FIX[name]; M.NET.d = d;
+    const svg = M.netSankey(d, d.trade.sells_to, d.trade.buys_from);
+    // group label y-positions by column, using the text-anchor to tell sides
+    const bySide = { end: [], start: [] };
+    for (const m of svg.matchAll(
+        /<text class="net-lb" x="([-\d.]+)" y="([-\d.]+)" text-anchor="(end|start)"/g)) {
+      bySide[m[3]].push(parseFloat(m[2]));
+    }
+    for (const [side, ys] of Object.entries(bySide)) {
+      const sorted = [...ys].sort((a, b) => a - b);
+      for (let i = 1; i < sorted.length; i++) {
+        const gap = sorted[i] - sorted[i - 1];
+        ok(gap >= MIN_GAP,
+           `${name}/${side}: labels ${gap.toFixed(1)}px apart, need ${MIN_GAP}`,
+           `${sorted.length} labels`);
+      }
+    }
+  }
+}
+
+/* ---- every label must still point at its own ribbon ----
+   Evenly spacing the labels decouples them from the data, so the leader line
+   is what keeps the picture honest. One per label, no more, no fewer. */
+{
+  const d = FIX.rich; M.NET.d = d;
+  const svg = M.netSankey(d, d.trade.sells_to, d.trade.buys_from);
+  const labels = (svg.match(/<text class="net-lb"/g) || []).length;
+  const leads = (svg.match(/<path class="net-lead"/g) || []).length;
+  ok(labels === leads,
+     "every label needs exactly one leader to the ribbon it describes",
+     `${labels} labels, ${leads} leaders`);
+  ok(labels > 0, "no labels rendered at all");
+}
+
+/* ---- the diagram must not scale its own text ----
+   viewBox scaling magnifies 10.5px label text to 21px on a 2000px window. */
+{
+  const css = fs.readFileSync("src/shunkan/server/static/styles.css", "utf8");
+  const rule = css.slice(css.indexOf(".net-flow {"), css.indexOf(".net-flow {") + 200);
+  ok(/width:\s*1000px/.test(rule), "the flow svg is not width-capped", rule.slice(0, 80));
+  ok(/max-width:\s*100%/.test(rule), "capped but not responsive on narrow screens");
+  ok(/\.net-flow-wrap\s*\{[^}]*overflow-x:\s*auto/.test(css),
+     "wide diagram must scroll in its own container, not the page body");
+}
+
 /* ---- a gap is not a zero ---- */
 {
   const d = FIX.gappy; M.NET.d = d;
