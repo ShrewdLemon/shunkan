@@ -2634,8 +2634,29 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             return {"building": True, "stage": b.get("stage", "starting"), "symbol": sym}
         ex = load_extraction(sym)
         if ex is None:
-            return {"symbol": sym, "extracted": False,
-                    "reason": "no extraction stored - run one from the ADMIN tab"}
+            # "Run one from the ADMIN tab" is the right advice ONLY when a
+            # source document exists. For a company that listed weeks ago -
+            # Emmvee and PhysicsWallah both IPO'd into this index - no annual
+            # report has been filed on either exchange yet, and telling the
+            # reader to press a button that cannot succeed is worse than
+            # telling them nothing. Name which of the two cases it is.
+            reason = "no extraction stored - run one from the ADMIN tab"
+            runnable = True
+            try:
+                from shunkan.data.filings import annual_reports
+                annual_reports(sym)
+            except Exception:                                  # noqa: BLE001
+                try:
+                    from shunkan.data.bse import annual_reports as _bse_reports
+                    _bse_reports(sym)
+                except Exception:                              # noqa: BLE001
+                    runnable = False
+                    reason = ("neither NSE nor BSE lists an annual report for "
+                              f"{sym}. A company that has only just listed has "
+                              "not filed one yet, and there is nothing to "
+                              "extract from until it does.")
+            return {"symbol": sym, "extracted": False, "reason": reason,
+                    "runnable": runnable}
         from dataclasses import asdict as _asdict
 
         out = _asdict(ex)

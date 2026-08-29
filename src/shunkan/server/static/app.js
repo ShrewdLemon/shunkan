@@ -3327,7 +3327,17 @@ async function drawSupplyMap(sym, view) {
       return;
     }
     if (!d.extracted) {
-      h.innerHTML = `<div class="empty" style="padding:10px 14px">
+      // Offer the button ONLY when there is a document to read. Emmvee and
+      // PhysicsWallah listed into this index weeks ago and have filed no
+      // annual report on either exchange, so an EXTRACT NOW there is a
+      // control that cannot succeed - which reads as a broken app rather than
+      // as a source that does not exist yet.
+      h.innerHTML = d.runnable === false
+        ? `<div class="empty" style="padding:10px 14px">${esc(d.reason)}
+           <div class="faint" style="margin-top:4px;font-size:11px">
+             This is a missing SOURCE, not a missing feature — nothing to run until
+             the company files.</div></div>`
+        : `<div class="empty" style="padding:10px 14px">
         ${esc(d.reason || "no extraction stored")} —
         <button id="splc-run" class="chip" style="color:var(--amber);cursor:pointer">EXTRACT NOW</button>
         <div class="faint" style="margin-top:4px;font-size:11px">

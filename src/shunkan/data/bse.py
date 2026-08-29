@@ -123,7 +123,15 @@ def scrip_code(symbol: str) -> int:
     for r in rows:
         if norm(r.get("Scrip_Name")) == target or norm(r.get("Issuer_Name")) == target:
             return int(r["SCRIP_CD"])
-    raise DataError(f"no BSE scrip code for {sym}")
+    # A miss here is usually not a lookup failure. BSE Ltd cannot list on its
+    # own exchange, and CDSL listed away from BSE because BSE promotes it - so
+    # for those two the answer is genuinely "not listed here", and every
+    # BSE-sourced feed is legitimately empty rather than broken. Saying which
+    # of the two it is keeps a real refusal from reading as a bug.
+    raise DataError(
+        f"{sym} is not in BSE's scrip master ({len(rows):,} scrips). "
+        f"NSE-listed-only companies have no BSE scrip code, so BSE's "
+        f"related-party XBRL and annual-report feeds cannot carry them.")
 
 
 def annual_reports(symbol: str) -> list[dict]:
