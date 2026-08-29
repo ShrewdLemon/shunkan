@@ -64,3 +64,46 @@ def test_app_js_does_not_truncate_supply_chain_evidence():
             f"drawSupplyMap truncates evidence again: {line.strip()}"
     assert 'classList.toggle("open")' in body
     assert "/extract" in body, "supply map must read the validated extraction"
+
+
+NET_JS = ROOT / "tests" / "net_render_test.js"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="needs node")
+def test_entity_network_renders_without_junk_or_zeroed_money():
+    """The NET view's own render pass, over payloads shaped like the API's.
+
+    Needs no jsdom: these functions build strings, and building the string
+    wrong is how the money bug shipped - HDFC Bank's whole related-party book,
+    every figure real, every one displayed as "0 Cr".
+    """
+    r = subprocess.run(["node", str(NET_JS)], cwd=ROOT, capture_output=True,
+                       text=True, env=_env())
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_net_flow_uses_one_scale_for_both_directions():
+    """Independently scaling each side is the lie this picture tells well: it
+    would draw a Rs 8,603 Cr purchase at the same height as a Rs 617,086 Cr
+    sale. One rupees-per-pixel figure, computed from the larger side, and
+    printed on the diagram so the reader can check it."""
+    src = (ROOT / "src/shunkan/server/static/app.js").read_text()
+    body = src[src.index("function netSankey"):]
+    body = body[:body.index("\n}\n")]
+    assert body.count("pxPerRs") >= 3, "the shared scale is gone"
+    assert "Math.max(sTot, bTot)" in body, \
+        "the scale must come from the LARGER side, or the small side overflows"
+    assert "per pixel" in body, "the scale must be stated on the diagram"
+    assert "smaller counterparties" in body, \
+        "counterparties past the cut must be summed into a labelled band, " \
+        "never dropped"
+
+
+def test_net_never_formats_a_real_amount_as_zero():
+    """A filed number displayed as 0 is the insider-dealing bug again."""
+    src = (ROOT / "src/shunkan/server/static/app.js").read_text()
+    body = src[src.index("function netCr"):]
+    body = body[:body.index("\n}\n")]
+    assert "maximumFractionDigits: 0 }" not in body, \
+        "fixed 0-decimal crore formatting zeroes out every sub-crore amount"
+    assert "<0.01" in body, "small non-zero amounts need a display floor"
