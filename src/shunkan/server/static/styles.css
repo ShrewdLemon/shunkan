@@ -1400,7 +1400,19 @@ main { padding: 0; }
 .net-flow-ft { color: var(--text-dim); border-top: 1px solid var(--stroke-soft);
   margin-top: 6px; padding-top: 6px; letter-spacing: 0; }
 .net-k.up { color: var(--up); } .net-k.down { color: var(--down); }
-.net-flow { width: 100%; height: auto; display: block; }
+/* The viewBox scales text along with everything else, so at 100% width on a
+   2000px window a 10.5px label renders at 21px and the whole diagram looks
+   like a poster. Capping at the viewBox's own width renders it 1:1 - labels
+   at their intended size - and max-width still shrinks it on narrow screens.
+   The wrapper scrolls rather than the page. */
+.net-flow-wrap { overflow-x: auto; }
+.net-flow { width: 1000px; max-width: 100%; height: auto; display: block;
+  margin: 0 auto; }
+.net-bars { width: 1000px; max-width: 100%; height: auto; display: block;
+  margin: 0 auto; }
+.net-lead { stroke: var(--text-faint); stroke-width: 0.5; fill: none;
+  opacity: 0.55; }
+.net-slab.act:hover .net-lead { stroke: var(--amber); opacity: 1; }
 .net-rb-in  { fill: var(--down); fill-opacity: 0.20; }
 .net-rb-out { fill: var(--up);   fill-opacity: 0.20; }
 .net-rb-in:hover  { fill-opacity: 0.42; }
@@ -1416,7 +1428,6 @@ main { padding: 0; }
 .net-slab.act:hover .net-lv { fill: var(--amber); }
 
 .net-bars-wrap { padding: 6px 12px 10px; }
-.net-bars { width: 100%; height: auto; display: block; }
 .net-ax { stroke: var(--stroke); stroke-width: 1; }
 .net-bar-s { fill: var(--up); fill-opacity: 0.72; }
 .net-bar-b { fill: var(--down); fill-opacity: 0.72; }
