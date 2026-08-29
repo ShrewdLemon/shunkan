@@ -348,6 +348,17 @@ guard rail rather than a security model: it is one shared secret, the licence
 problem above does not go away, and you are still exposing a live broker
 session.
 
+## How the data gets in
+
+Four documents, each about one source and the specific ways it goes wrong:
+
+| doc | covers |
+|---|---|
+| [docs/EXTRACTION.md](docs/EXTRACTION.md) | reading annual reports — the validation gate, why full context beat RAG |
+| [docs/EXTRACTION_PLAYBOOK.md](docs/EXTRACTION_PLAYBOOK.md) | running an extraction end to end |
+| [docs/EXTRACTION_AGENT_SPEC.md](docs/EXTRACTION_AGENT_SPEC.md) | the spec an agent follows to extract one company by hand |
+| [docs/RELATED_PARTY_GRAPH.md](docs/RELATED_PARTY_GRAPH.md) | BSE related-party XBRL — direction, relationship parsing, entity resolution, the NET view |
+
 ## Status
 
 Actively being built. The option chain and the position book are the parts that
