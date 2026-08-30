@@ -6448,14 +6448,28 @@ function netSankey(d, sells, buys) {
       <title>${n.rest ? (n.collapse ? "collapse this side" : "click to list every counterparty on this side")
         : `${esc(n.name)} — ₹${netCr(n.total)} Cr`}</title></g>`;
   };
+  /* A side with nothing filed rendered as blank space, which reads as a
+     broken chart rather than as an answer. Balrampur Chini files purchases,
+     dividends and remuneration and no sale rows at all - so "no customers" is
+     the correct finding, and the diagram has to say so where the ribbons
+     would have been. */
+  const empty = (count, side) => count ? "" : `
+    <text class="net-empty" x="${side === "L" ? (x0 + x1) / 2 : (x2 + x3) / 2}"
+          y="${PAD + band / 2}" text-anchor="middle">${
+      side === "L" ? "no purchases from related parties in these periods"
+                   : "no sales to related parties in these periods"}</text>`;
   const pct = (v, t) => t ? (v / t * 100).toFixed(1) + "%" : "—";
   return `
   <div class="net-flow-wrap">
     <div class="net-flow-hd">
-      <span class="net-k down">▶ ${lB.length} SUPPLIERS · ₹${netCr(bTot)} Cr IN</span>
+      <span class="net-k down">${lB.length
+        ? `▶ ${lB.length} SUPPLIERS · ₹${netCr(bTot)} Cr IN`
+        : "NO PURCHASES FILED"}</span>
       <span class="net-k faint">both sides at one scale — ₹${
         netCr(1 / pxPerRs)} Cr per pixel</span>
-      <span class="net-k up">${lS.length} CUSTOMERS · ₹${netCr(sTot)} Cr OUT ▶</span>
+      <span class="net-k up">${lS.length
+        ? `${lS.length} CUSTOMERS · ₹${netCr(sTot)} Cr OUT ▶`
+        : "NO SALES FILED"}</span>
     </div>
     <svg class="net-flow" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
          aria-label="related-party value flow">
@@ -6468,12 +6482,16 @@ function netSankey(d, sells, buys) {
             text-anchor="middle">${d.periods.length}p aggregate</text>
       ${L.map((n) => label(n, "L")).join("")}
       ${R.map((n) => label(n, "R")).join("")}
+      ${empty(L.length, "L")}
+      ${empty(R.length, "R")}
     </svg>
     <div class="net-flow-ft">
-      <span>Largest supplier <b class="hl">${esc(L[0] ? L[0].name : "—")}</b>${
-        L[0] ? ` · ${pct(L[0].total, bTot)} of purchases` : ""}</span>
-      <span>Largest customer <b class="hl">${esc(R[0] ? R[0].name : "—")}</b>${
-        R[0] ? ` · ${pct(R[0].total, sTot)} of sales` : ""}</span>
+      <span>${L[0] ? `Largest supplier <b class="hl">${esc(L[0].name)}</b> · ${
+        pct(L[0].total, bTot)} of purchases`
+        : `<span class="faint">no purchases filed — nothing to rank</span>`}</span>
+      <span>${R[0] ? `Largest customer <b class="hl">${esc(R[0].name)}</b> · ${
+        pct(R[0].total, sTot)} of sales`
+        : `<span class="faint">no sales filed — nothing to rank</span>`}</span>
     </div>
   </div>`;
 }

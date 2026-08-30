@@ -1523,3 +1523,4 @@ main { padding: 0; }
 .net-slab.band .net-lv { fill: var(--blue); }
 .net-slab.band:hover .net-lb, .net-slab.band:hover .net-lv { fill: var(--amber); }
 .net-slab.band { cursor: pointer; }
+.net-empty { fill: var(--text-faint); font: italic 11px var(--mono); }

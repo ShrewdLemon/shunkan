@@ -253,6 +253,25 @@ for (const [name, d] of Object.entries(FIX)) {
   M.NET_EXPAND.L = M.NET_EXPAND.R = false;
 }
 
+/* ---- an empty side must say why it is empty ----
+   Balrampur Chini files purchases, dividends and remuneration and NO sale
+   rows at all, so "no customers" is the correct finding. Rendered as blank
+   space it reads as a broken chart instead of an answer. */
+{
+  const d = FIX.oneSided; M.NET.d = d;   // customers only, no suppliers
+  M.NET_EXPAND.L = M.NET_EXPAND.R = false;
+  const svg = M.netSankey(d, d.trade.sells_to, d.trade.buys_from);
+  ok(/no purchases from related parties/.test(svg),
+     "the empty supplier side renders as blank space");
+  ok(/NO PURCHASES FILED/.test(svg),
+     "the header still counts an empty side as a real one");
+  ok(!/Largest supplier <b/.test(svg),
+     "names a largest supplier when none was filed");
+  ok(/nothing to rank/.test(svg), "no explanation for the missing ranking");
+  // the populated side must be unaffected
+  ok(/Largest customer <b/.test(svg), "the populated side lost its ranking");
+}
+
 /* ---- a gap is not a zero ---- */
 {
   const d = FIX.gappy; M.NET.d = d;

@@ -110,3 +110,62 @@ def test_every_match_carries_a_name_to_disambiguate(client):
     """A list of bare tickers is a second guessing game."""
     for m in client.get("/api/symbols/search?q=tata&limit=6").json()["matches"]:
         assert m.get("name"), f"{m['symbol']} has no company name"
+
+
+def test_periods_sort_by_date_not_by_text():
+    """Sorting "Mar 2022"/"Sep 2022" as text puts every March before every
+    September, so Reliance's six half-years read Mar 22, Mar 23, Mar 24,
+    Sep 22, Sep 23, Sep 24.
+
+    The bar chart drew them in that order, and the counterparty SPARKLINES
+    plot against this list - so every "trend" was three March readings
+    followed by three September readings. A line through points that are not
+    in time order is not a trend; it is a shape that looks like one.
+
+    Tested on the key function rather than on a live company: conftest points
+    SHUNKAN_HOME at a temp directory, so the suite has no companies in it. The
+    first version of this test looped over real symbols, got 404 for every
+    one, skipped its whole body and passed a guard that only fired because I
+    had written one - a test that asserts nothing is worse than no test.
+    """
+    from shunkan.server.api import _period_key
+
+    scrambled = ["Sep 2024", "Mar 2022", "Sep 2022", "Mar 2024",
+                 "Mar 2023", "Sep 2023"]
+    assert sorted(scrambled, key=_period_key) == [
+        "Mar 2022", "Sep 2022", "Mar 2023", "Sep 2023", "Mar 2024", "Sep 2024"]
+
+    # text sorting would have produced this; make the difference explicit
+    assert sorted(scrambled) != sorted(scrambled, key=_period_key)
+
+    # a year boundary must beat the month
+    assert sorted(["Jan 2025", "Dec 2024"], key=_period_key) == \
+        ["Dec 2024", "Jan 2025"]
+    # every month name parses
+    for i, mon in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1):
+        assert _period_key(f"{mon} 2024")[:3] == (0, 2024, i)
+
+
+def test_period_ordering_survives_an_unknown_label():
+    """A filer inventing a new period format must not take the endpoint down:
+    it sorts last, under its own text, rather than raising."""
+    from shunkan.server.api import _period_key
+
+    for junk in ("Q3 FY24", "", "   ", "2024", "Marzo 2024", "Mar"):
+        key = _period_key(junk)
+        assert key[0] == 1, f"{junk!r} was parsed as a real date"
+    mixed = ["Sep 2022", "Q3 FY24", "Mar 2022"]
+    assert sorted(mixed, key=_period_key) == ["Mar 2022", "Sep 2022", "Q3 FY24"]
+
+
+def test_the_entity_endpoint_uses_that_key():
+    """The helper is only useful if the endpoint actually calls it."""
+    import inspect
+
+    from shunkan.server import api
+
+    body = inspect.getsource(api.create_app)
+    block = body[body.index("periods = sorted("):]
+    assert "_period_key" in block[:200], \
+        "the entity endpoint still sorts periods as text"
