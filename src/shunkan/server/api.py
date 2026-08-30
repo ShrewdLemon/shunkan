@@ -258,6 +258,43 @@ class MLTrainRequest(BaseModel):
     end: str | None = None
 
 
+
+_MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November",
+                "December"]
+# both the abbreviation BSE files and the full name, nothing in between
+_MONTHS = {name[:3]: i for i, name in enumerate(_MONTH_NAMES, 1)}
+_MONTHS.update({name: i for i, name in enumerate(_MONTH_NAMES, 1)})
+_MONTHS["Sept"] = 9
+
+def _period_key(label: str):
+    """Sort "Mar 2022" / "Sep 2024" by DATE, not alphabetically.
+
+    Plain sorted() put every March before every September, so Reliance's
+    six half-years read Mar 2022, Mar 2023, Mar 2024, Sep 2022, Sep 2023,
+    Sep 2024. The bar chart drew them in that order, and worse, the
+    counterparty SPARKLINES plot against this list - so every "trend" was
+    three March readings followed by three September readings. A line
+    through points that are not in time order is not a trend, it is a
+    shape, and it looked exactly like one.
+
+    Unparseable labels sort last under their own text rather than raising:
+    a filer inventing a new period format must not take the endpoint down.
+    """
+    parts = str(label).split()
+    # Match the WHOLE month token, abbreviated or full. A three-character
+    # prefix test accepted "Marzo 2024" as March - a label this code has never
+    # seen, but the point of a fallback is that it holds for labels this code
+    # has never seen.
+    if len(parts) == 2:
+        mon = _MONTHS.get(parts[0].strip().title())
+        if mon:
+            try:
+                return (0, int(parts[1]), mon, "")
+            except ValueError:
+                pass
+    return (1, 0, 0, str(label))
+
 def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> FastAPI:
     """Build the app.
 
@@ -2853,7 +2890,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                                          limit=40)]
 
         periods = sorted({p for side in trade.values() for r in side
-                          for p in r["periods"] if p and p != "?"})
+                          for p in r["periods"] if p and p != "?"},
+                         key=_period_key)
         return {
             "symbol": sym, "node": nid, "name": node.get("name", sym),
             "trade": trade, "periods": periods,
