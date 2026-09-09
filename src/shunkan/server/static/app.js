@@ -3663,6 +3663,7 @@ const ANL_GROUPS = [
     ["company", "CMP", "Company intelligence", "business, promoters, management, financials, NSE peers — refusals where no source exists"],
     ["funds", "MFD", "Mutual funds", "1,095 schemes, disclosed portfolios, and which schemes hold a stock"],
     ["msci", "MSC", "MSCI index review", "predicted additions, deletions and migrations — forced passive flow, dated"],
+    ["macro", "MAC", "Macro — India", "RBI policy corridor read from RBI, and the long-run series behind it — every rate carries the label it was found under"],
     ["network", "NET", "Entity network", "related-party value flow, corporate structure, disclosed chain — one screen, three sources, each named"],
     ["graph", "GPH", "Entity graph", "companies, holders, schemes, people — every edge names its source"],
     ["news", "NWS", "News intelligence", "time-sorted, sector-grouped wires with sentiment provenance"],
@@ -4405,6 +4406,7 @@ const WS_WIDGETS = {
   positions: { title: "POSITIONS & P&L", w: 3, h: 4 },
   pulse:     { title: "PULSE", w: 3, h: 4 },
   heat:      { title: "HEATMAP MINI", w: 4, h: 4 },
+  macro:     { title: "RBI POLICY CORRIDOR", w: 2, h: 3 },
 };
 
 const WS_DEFAULT = [
@@ -4651,10 +4653,49 @@ function wStraddle(body, inst, symInput) {
   addTimer("wnews:load", () => load(inst.config.symbol || "NIFTY"), 300000);
 }
 
+/* The policy corridor as a dashboard tile. Refreshed hourly, not per tick:
+   the MPC meets six times a year, and polling a scraped page every 15 seconds
+   would be rude to RBI and useless to the reader. */
+function wMacro(body, inst) {
+  const paint = async () => {
+    try {
+      const d = await getJSON("/api/macro/rates");
+      if (!document.body.contains(body)) return;
+      const by = {};
+      d.rates.forEach((r) => { by[r.key] = r; });
+      const row = (k, label) => {
+        const r = by[k];
+        const v = r && r.pct != null ? r.pct.toFixed(2) + "%" : "—";
+        return `<tr><td class="txt sym">${label}</td>
+          <td class="${r && r.pct != null ? "" : "faint"}">${v}</td></tr>`;
+      };
+      body.innerHTML = `<table class="tbl"><tbody>
+        ${row("repo", "REPO")}
+        ${row("sdf", "SDF")}
+        ${row("msf", "MSF")}
+        ${row("crr", "CRR")}
+        ${row("slr", "SLR")}
+        <tr><td class="txt faint">CORRIDOR</td>
+          <td class="faint">${d.corridor_width_bps != null ? d.corridor_width_bps + " bps" : "—"}</td></tr>
+        </tbody></table>`;
+    } catch (e) {
+      if (!document.body.contains(body)) return;
+      // A scraped rate that cannot be read is a refusal, never a stale guess.
+      body.innerHTML = `<div class="empty" style="padding:8px">
+        <span class="bad">rates unavailable</span>
+        <div class="faint" style="margin-top:3px;font-size:10px">${esc(e.message)}</div></div>`;
+    }
+  };
+  paint();
+  addTimer(`wmac:${inst.el.id}`, paint, 3600000);
+}
+
 const WS_RENDER = {
+
   watchlist: wWatchlist, chart: wChart, chain: wChain,
   tape: wTape, news: wNews, straddle: wStraddle,
   oi: wOI, migration: wMigration, positions: wPositions, pulse: wPulse, heat: wHeat,
+  macro: wMacro,
 };
 
 function wOI(body, inst, symInput) {
@@ -6763,6 +6804,151 @@ async function netGraph() {
     hover an edge's node to light its links; click any node to walk to it.`;
 }
 
+/* ---------- MACRO (MAC) ----------
+   The rate the whole book is priced off, and the decade behind it.
+
+   Shunkan could price a straddle but could not say what the repo rate was,
+   which is a hole in a derivatives terminal: after the underlying, the
+   risk-free rate is the largest input to an option price, and the MPC sets
+   it.
+
+   Two institutions, kept visibly apart because they differ in KIND and in
+   FRESHNESS. RBI's corridor is the number itself, current, and is what you
+   trade against. The World Bank series are annual and are context - drawn
+   deliberately quieter, and labelled with the year they end, so a 2025 CPI
+   print can never be misread as today's. Blending them into one strip would
+   invite exactly that. */
+
+const MAC = { d: null };
+
+async function renderMacro(view) {
+  view.innerHTML = panel({
+    title: "MACRO — INDIA", id: "mac-panel", flush: true,
+    meta: `<span id="mac-upd"></span>`,
+    body: loading("reading the policy corridor"),
+  });
+  try {
+    const d = await getJSON("/api/macro");
+    MAC.d = d;
+    const h = $("#mac-panel .panel-body");
+    if (!h) return;
+    $("#mac-upd").innerHTML = stamp();
+    h.innerHTML = macCorridor(d) + macSeries(d) + `
+      <div class="net-prov">
+        <div><b class="blue">CORRIDOR</b> ${esc(d.source_note.corridor)}</div>
+        <div><b class="blue">SERIES</b> ${esc(d.source_note.series)}</div>
+      </div>`;
+  } catch (e) {
+    const h = $("#mac-panel .panel-body");
+    if (h) h.innerHTML = `<div class="empty" style="padding:12px 14px">
+      <b class="bad">could not load macro</b>
+      <div style="margin-top:5px;font-size:11px">${esc(e.message)}</div></div>`;
+  }
+}
+
+/* The corridor drawn as what it is: a band with a floor and a ceiling, and
+   the policy rate sitting inside it. A row of seven numbers says the same
+   thing and shows none of the structure - whether policy sits mid-corridor,
+   and how much room the MPC has before it hits its own floor. */
+function macCorridor(d) {
+  const c = d.corridor;
+  if (!c) {
+    return `<div class="empty" style="padding:12px 14px">
+      <b class="bad">policy corridor unavailable</b>
+      <div style="margin-top:5px;font-size:11px">${esc(d.corridor_reason || "")}</div>
+      <div class="faint" style="margin-top:6px;font-size:11px">
+        The rates are read from RBI's own homepage. No fallback value is shown,
+        because a stale repo rate is worse than none.</div></div>`;
+  }
+  const by = {};
+  c.rates.forEach((r) => { by[r.key] = r; });
+  const val = (k) => (by[k] && by[k].pct != null) ? by[k].pct : null;
+  const sdf = val("sdf"), msf = val("msf"), repo = val("repo");
+
+  let band = "";
+  if (sdf != null && msf != null && repo != null && msf > sdf) {
+    const W = 1000, H = 96, PAD = 130;
+    const span = msf - sdf;
+    const x = (v) => PAD + ((v - sdf) / span) * (W - PAD * 2);
+    band = `
+    <svg class="mac-band" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+      <rect class="mac-band-bg" x="${x(sdf)}" y="34" width="${x(msf) - x(sdf)}" height="26"/>
+      ${[["sdf", sdf, "FLOOR · SDF", "start"], ["msf", msf, "CEILING · MSF", "end"]].map(
+        ([k, v, lab, anch]) => `
+        <line class="mac-tick" x1="${x(v)}" y1="28" x2="${x(v)}" y2="66"/>
+        <text class="mac-band-l" x="${x(v)}" y="22" text-anchor="middle">${lab}</text>
+        <text class="mac-band-v" x="${x(v)}" y="82" text-anchor="middle">${v.toFixed(2)}%</text>`).join("")}
+      <line class="mac-repo" x1="${x(repo)}" y1="22" x2="${x(repo)}" y2="72"/>
+      <text class="mac-repo-l" x="${x(repo)}" y="14" text-anchor="middle">POLICY REPO</text>
+      <text class="mac-repo-v" x="${x(repo)}" y="94" text-anchor="middle">${repo.toFixed(2)}%</text>
+    </svg>
+    <div class="mac-band-note">Corridor width <b class="hl">${c.corridor_width_bps} bps</b>
+      · policy sits ${repo === sdf ? "on the floor"
+        : repo === msf ? "on the ceiling"
+        : `${Math.round((repo - sdf) * 100)} bps above the floor`}.
+      A cut moves the whole band down; the floor is where surplus liquidity earns.</div>`;
+  }
+
+  const cell = (r) => `
+    <div class="kv" title="${esc(r.note)}">
+      <div class="k">${esc(r.label.toUpperCase())}</div>
+      <div class="v ${r.pct == null ? "" : "amber"}">${
+        r.pct == null ? "—" : r.pct.toFixed(2) + "%"}</div>
+    </div>`;
+  const missing = c.rates.filter((r) => r.pct == null);
+  return `
+    ${band}
+    <div class="kv-strip">${c.rates.map(cell).join("")}</div>
+    ${missing.length ? `<div class="net-fine"><b class="bad">${missing.length} of ${
+      c.expected} rates could not be read.</b> ${missing.map((r) =>
+      `${esc(r.label)} — ${esc(r.reason || "")}`).join(" · ")}</div>` : ""}
+    <div class="net-fine">Read live from <a href="${esc(c.source)}" target="_blank"
+      rel="noopener">rbi.org.in</a>. ${esc(c.source_note)}. Hover a tile for what it means.</div>`;
+}
+
+/* Small multiples. Area charts rather than bars: these ARE continuous annual
+   series, unlike the half-yearly RPT filings, so a line is the honest shape
+   here where it was the dishonest one there. */
+function macSeries(d) {
+  const card = (s) => {
+    if (!s.points || !s.points.length) {
+      return `<div class="mac-card">
+        <div class="mac-card-h">${esc(s.label)}</div>
+        <div class="empty" style="padding:10px 4px;font-size:11px">${esc(s.reason || "no data")}</div>
+      </div>`;
+    }
+    const pts = s.points, W = 320, H = 84, PAD = 4;
+    const vals = pts.map((p) => p.value);
+    const mn = Math.min(...vals, 0), mx = Math.max(...vals);
+    const rng = (mx - mn) || 1;
+    const x = (i) => PAD + (i / Math.max(1, pts.length - 1)) * (W - PAD * 2);
+    const y = (v) => H - PAD - ((v - mn) / rng) * (H - PAD * 2 - 12);
+    const line = pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join("");
+    const area = `${line}L${x(pts.length - 1).toFixed(1)},${H - PAD}L${x(0).toFixed(1)},${H - PAD}Z`;
+    const last = pts[pts.length - 1];
+    const fmtv = (v) => s.unit === "USD"
+      ? "$" + (v / 1e9).toFixed(0) + "bn"
+      : v.toFixed(2) + (s.unit === "%" || s.unit === "% GDP" ? "%" : "");
+    const prev = pts.length > 1 ? pts[pts.length - 2].value : null;
+    const dir = prev == null ? "" : last.value >= prev ? "up" : "down";
+    return `<div class="mac-card" title="${esc(s.note)}">
+      <div class="mac-card-h">${esc(s.label)}
+        <span class="faint">${esc(s.unit)}</span></div>
+      <div class="mac-card-v ${dir}">${fmtv(last.value)}
+        <span class="faint">${last.year}</span></div>
+      <svg class="mac-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <path class="mac-area" d="${area}"/>
+        <path class="mac-line" d="${line}"/>
+        <circle class="mac-dot" cx="${x(pts.length - 1).toFixed(1)}"
+                cy="${y(last.value).toFixed(1)}" r="2.4"/>
+      </svg>
+      <div class="mac-card-f">${pts[0].year}–${last.year} · ${pts.length} annual observations</div>
+    </div>`;
+  };
+  return `<div class="news-sect">LONG-RUN SERIES <span class="faint">· annual · World Bank open data · context, not a trading signal</span></div>
+    <div class="mac-grid">${d.series.map(card).join("")}</div>`;
+}
+
 const RENDER = {
   pulse: renderPulse, chart: renderChart, chain: renderChain, payoff: renderPayoff,
   iv: renderIV, volume: renderVolume, news: renderNews, backtest: renderBacktest,
@@ -6774,7 +6960,7 @@ const RENDER = {
   datastore: renderDatastore, workspace: renderWorkspace, viz: renderViz,
 
   mlstudio: renderMLStudio, brief: renderBrief, admin: renderAdmin,
-  network: renderNetwork,
+  network: renderNetwork, macro: renderMacro,
 };
 
 /* ---------- websocket ---------- */
@@ -7057,7 +7243,7 @@ const CODE_ALIAS = { OPT: "oc", PRT: "portfolio", PLS: "pulse", ANL: "analyse",
                      // both reachable only by clicking through ANL. A screen
                      // listed in the hub but not typeable is a screen the
                      // muscle memory cannot find.
-                     NET: "network", ADM: "admin" };
+                     NET: "network", ADM: "admin", MAC: "macro" };
 
 /* ---------- ticker suggestions ----------
    NSE tickers are not guessable from the company name: ICICI Bank is

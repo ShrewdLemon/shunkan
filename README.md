@@ -358,6 +358,7 @@ Four documents, each about one source and the specific ways it goes wrong:
 | [docs/EXTRACTION_PLAYBOOK.md](docs/EXTRACTION_PLAYBOOK.md) | running an extraction end to end |
 | [docs/EXTRACTION_AGENT_SPEC.md](docs/EXTRACTION_AGENT_SPEC.md) | the spec an agent follows to extract one company by hand |
 | [docs/RELATED_PARTY_GRAPH.md](docs/RELATED_PARTY_GRAPH.md) | BSE related-party XBRL — direction, relationship parsing, entity resolution, the NET view |
+| [docs/MACRO.md](docs/MACRO.md) | RBI policy corridor and World Bank series — scraping discipline, why a refusal is never cached |
 
 ## Status
 
