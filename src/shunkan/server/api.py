@@ -2763,6 +2763,31 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
     _sym_index: dict = {}
 
+    @app.get("/api/macro")
+    def macro_dashboard(start: int = 2005, end: int = 2026):
+        """India's policy corridor and the long-run series behind it.
+
+        Two institutions over two protocols, kept apart in the payload
+        because they differ in kind and in freshness: RBI's corridor is the
+        number itself and is current; the World Bank series are annual
+        context and are not a trading signal. A screen that blended them
+        would invite reading a 2025 annual CPI print as if it were today's.
+        """
+        from shunkan.data.macro import dashboard
+
+        return _clean(dashboard(start=start, end=end))
+
+    @app.get("/api/macro/rates")
+    def macro_rates():
+        """Just the RBI corridor — for the header strip and the widget."""
+        from shunkan.data.macro import policy_rates
+        from shunkan.data.provider import DataError
+
+        try:
+            return _clean(policy_rates())
+        except DataError as exc:
+            raise HTTPException(503, str(exc)) from exc
+
     @app.get("/api/symbols/search")
     def symbols_search(q: str = "", limit: int = 10):
         """Ticker suggestions for a partial company name.
