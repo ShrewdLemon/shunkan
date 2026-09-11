@@ -19,6 +19,14 @@ import sys
 from rich.console import Console
 from rich.table import Table
 
+
+def _sma_mark(v) -> str:
+    """bool(float("nan")) is True, so a bare truthiness test on this column
+    renders "not enough history" as "above" - the loudest possible version of
+    the bug. NaN is a dash, like every other unavailable metric here."""
+    return "—" if pd.isna(v) else ("✓" if v else "·")
+
+
 console = Console()
 
 
@@ -553,8 +561,8 @@ def cmd_screen(args) -> int:
             f"{row['rsi']:.1f}",
             f"{row['vol_ann']:.0%}",
             _pct(row["from_high"]),
-            "✓" if row["above_sma50"] else "·",
-            "✓" if row["above_sma200"] else "·",
+            _sma_mark(row["above_sma50"]),
+            _sma_mark(row["above_sma200"]),
         )
     console.print(table)
     if result.errors:

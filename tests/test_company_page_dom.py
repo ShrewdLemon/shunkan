@@ -13,6 +13,7 @@ Python-only checkout red.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -252,3 +253,45 @@ def test_entity_graph_handles_its_own_failures():
         line = blk[idx:blk.index("\n", idx)].strip()
         assert guarded, f"unguarded await in the entity graph: {line[:70]}"
     assert "RETRY" in blk, "a failure with no way to retry is a dead end"
+
+
+SNAP_JS = ROOT / "tests" / "snapshot_render_test.js"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="needs node")
+def test_company_snapshot_never_turns_a_gap_into_a_number():
+    """The snapshot is the most dangerous screen in the terminal: it is read
+    WITHOUT scrolling to the provenance underneath, so anything on it is taken
+    as fact at a glance.
+
+    Covers a rich company, a recent IPO with almost nothing filed (EMMVEE and
+    PWL are the real examples), an entirely empty payload, and the Yahoo
+    ownership fallback which must not look like a read exchange filing.
+    """
+    r = subprocess.run(["node", str(SNAP_JS)], cwd=ROOT, capture_output=True,
+                       text=True, env=_env())
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_snapshot_reuses_the_page_payload_rather_than_refetching():
+    """A summary that triples the page's load time is not a summary. The
+    snapshot is handed the /api/company payload renderCompany already has; the
+    one thing it adds - a live price, which that payload does not carry - is
+    non-blocking and simply absent if it fails."""
+    src = (ROOT / "src/shunkan/server/static/app.js").read_text()
+    body = src[src.index("function companySnapshot"):]
+    body = body[:body.index("\nasync function renderCompany")]
+    assert "await getJSON" not in body, \
+        "companySnapshot blocks the company page on a network call"
+
+    # The guard above scans a pure function that could never contain an await
+    # anyway. A blocking refetch would be added HERE - in renderCompany, next
+    # to the call that builds the snapshot - so that is the region to police.
+    rc = src[src.index("async function renderCompany"):]
+    rc = rc[:rc.index("\nasync function drawSegments")]
+    awaits = re.findall(r"await\s+getJSON\(`([^`]+)`", rc)
+    assert len(awaits) == 1, (
+        f"renderCompany now blocks on {len(awaits)} fetches: {awaits}. The page "
+        f"must await /api/company only; anything the snapshot adds has to be "
+        f"non-blocking or the summary triples the page's load time.")
+    assert "/api/company/" in awaits[0], awaits[0]
