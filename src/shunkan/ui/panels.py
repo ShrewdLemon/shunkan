@@ -21,6 +21,14 @@ from shunkan.data.provider import DataError, Quote
 from shunkan.portfolio import Portfolio
 from shunkan.screener import UNIVERSES, run_screen
 
+
+def _sma_mark(v) -> str:
+    """bool(float("nan")) is True, so a bare truthiness test on this column
+    renders "not enough history" as "above" - the loudest possible version of
+    the bug. NaN is a dash, like every other unavailable metric here."""
+    return "—" if pd.isna(v) else ("✓" if v else "·")
+
+
 UP = "#3fb950"
 DOWN = "#f85149"
 DIM = "#8b949e"
@@ -498,8 +506,8 @@ class ScreenerPanel(Panel):
                 f"{row['vol_ann']:.1%}" if pd.notna(row["vol_ann"]) else "—",
                 _pct_text(row["from_high"]) if pd.notna(row["from_high"]) else "—",
                 f"{row['vol_surge']:.2f}×" if pd.notna(row["vol_surge"]) else "—",
-                "✓" if row["above_sma50"] else "·",
-                "✓" if row["above_sma200"] else "·",
+                _sma_mark(row["above_sma50"]),
+                _sma_mark(row["above_sma200"]),
                 key=str(sym),
             )
         msg = (

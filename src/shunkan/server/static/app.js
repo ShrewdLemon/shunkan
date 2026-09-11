@@ -567,6 +567,526 @@ const loading = (msg = "loading") => {
   </div>`;
 };
 
+/* ---------- SAVED COLUMN VIEWS (COLS) ----------
+   Which columns a table shows, named and reusable. Koyfin's idea, taken
+   whole: every table below used to have its <th> text and its <td> template
+   welded into one literal, so "I never look at IV" was not expressible.
+
+   Four rules this block exists to keep, all of them house rules:
+
+   1. A column the user has not chosen is NOT BUILT. There is no display:none
+      anywhere in here. Hiding a rendered cell would mean the browser holds a
+      number the screen denies, which is the same lie as a fabricated one told
+      backwards, and it is also how a "hidden" column silently becomes stale.
+   2. Every cell renders a dash when its value is missing. A blank <td> reads
+      as a rendering fault and gets "fixed"; "—" reads as absence. Pinned over
+      an all-nulls fixture by tests/colview_render_test.js.
+   3. Column ORDER is the registry's, never the user's click order. The chain
+      reads calls | strike | puts and a view that put P·OI left of the strike
+      would not be a preference, it would be unreadable. The picker says so.
+   4. The identity column (`locked`) cannot be dropped. Numbers with nothing
+      to attach them to are not a narrower table, they are a worse one.
+
+   TABLE_COLS is the RENDERER half of a pair. The other half is TABLES in
+   src/shunkan/server/columns.py, which validates what gets persisted. Two
+   registries that disagree about one product is this repo's most repeated
+   bug (git 39df03b, a45f6d7), so ids, labels, order and defaults are pinned
+   together by tests/test_column_views.py::test_the_two_column_registries_agree.
+
+   LIFT BOUNDARY: tests/colview_render_test.js slices app.js between
+   `const COLVIEW_LIFT_START = true;` and `const COLVIEW_LIFT_END = true;` and
+   runs the shipped renderers, so editing a cell here breaks that test rather
+   than drifting away from a re-typed copy. Both markers are deliberate, not
+   whatever declaration happened to sit next door — net_render_test.js ended
+   up swallowing three unrelated renderers by anchoring on a neighbour.
+   Everything between them is compiled inside that sandbox, where only the
+   identifiers the test injects exist. */
+
+const COLVIEW_LIFT_START = true;
+
+// Width of an OI bar. Never NaN: a missing OI is a dash in the number cell,
+// and a bar of no width, not a bar of width "NaN%" which renders full-bleed.
+const cvBar = (v, max) => `${(((Number(v) || 0) / (max || 1)) * 100).toFixed(2)}%`;
+// A ΔOI cell. Suppressed wholesale on a modelled chain: synthetic.py invents
+// the flow, so a green +4.2K there would be a number about nothing.
+const cvDOI = (v, modelled) =>
+  modelled || v === null || v === undefined
+    ? `<td class="faint">—</td>`
+    : `<td class="${cls(v)}">${fmt.compact(v)}</td>`;
+const cvIV = (v) => `<td>${v ? (v * 100).toFixed(1) : "—"}</td>`;
+const cvTxt = (v, extra = "") => `<td class="txt ${extra}">${esc(v || "—")}</td>`;
+// Rupees with a symbol only when there is a number to put it in front of:
+// "₹—" is a currency sign attached to nothing.
+const cvRs = (v, d = 0) => (v === null || v === undefined ? "—" : "₹" + fmt.n(v, d));
+
+// null is "no SMA to compare against", which is not the same claim as "below".
+const cvSMA = (v) => v === null || v === undefined
+  ? `<td class="faint" title="not enough history for that moving average">—</td>`
+  : `<td class="${v ? "up" : "faint"}">${v ? "ABOVE" : "below"}</td>`;
+
+const TABLE_COLS = {
+  chain: {
+    title: "OPTION CHAIN — STRIKES",
+    locked: "strike",
+    def: ["call_oi", "call_doi", "call_vol", "call_iv", "call_bid", "call_ltp",
+          "strike", "put_ltp", "put_ask", "put_iv", "put_vol", "put_doi", "put_oi"],
+    // /api/chain/{symbol} carries exactly these per strike and nothing else,
+    // so there is no unused field to offer here.
+    cols: [
+      { id: "call_oi", label: "C·OI", th: `class="oi-h call"`,
+        cell: (r, x) => `<td class="oi-cell call"><div class="oi-bar call" style="width:${
+          cvBar(r.call.oi, x.maxC)}"></div><span class="oi-num">${fmt.compact(r.call.oi)}</span></td>` },
+      { id: "call_doi", label: "C·ΔOI", cell: (r, x) => cvDOI(r.call.oi_change, x.modelled) },
+      { id: "call_vol", label: "C·VOL", cell: (r) => `<td class="faint">${fmt.compact(r.call.volume)}</td>` },
+      { id: "call_iv", label: "C·IV", cell: (r) => cvIV(r.call.iv) },
+      { id: "call_bid", label: "C·BID", cell: (r) => `<td class="exec-px">${
+          r.call.bid != null ? fmt.n(r.call.bid) : "—"}</td>` },
+      { id: "call_ltp", label: "C·LTP", cell: (r) => `<td class="ltp-cell" data-right="CE" data-strike="${
+          r.strike}" data-ltp="${r.call.ltp}">${fmt.n(r.call.ltp)}</td>` },
+      { id: "strike", label: "STRIKE", th: `class="k-strike"`,
+        cell: (r) => `<td class="k-strike${r.atm ? " amber" : ""}">${fmt.i(r.strike)}</td>` },
+      { id: "put_ltp", label: "P·LTP", cell: (r) => `<td class="ltp-cell" data-right="PE" data-strike="${
+          r.strike}" data-ltp="${r.put.ltp}">${fmt.n(r.put.ltp)}</td>` },
+      { id: "put_ask", label: "P·ASK", cell: (r) => `<td class="exec-px">${
+          r.put.ask != null ? fmt.n(r.put.ask) : "—"}</td>` },
+      { id: "put_iv", label: "P·IV", cell: (r) => cvIV(r.put.iv) },
+      { id: "put_vol", label: "P·VOL", cell: (r) => `<td class="faint">${fmt.compact(r.put.volume)}</td>` },
+      { id: "put_doi", label: "P·ΔOI", cell: (r, x) => cvDOI(r.put.oi_change, x.modelled) },
+      { id: "put_oi", label: "P·OI", th: `class="oi-h put"`,
+        cell: (r, x) => `<td class="oi-cell put"><div class="oi-bar put" style="width:${
+          cvBar(r.put.oi, x.maxP)}"></div><span class="oi-num">${fmt.compact(r.put.oi)}</span></td>` },
+    ],
+  },
+
+  screener: {
+    title: "SCREENER",
+    locked: "symbol",
+    // ret_1d and vol_surge are computed by run_screen and shipped by
+    // /api/screen already — before this picker they were transmitted and
+    // dropped. They are OFF by default so the table is byte-for-byte what it
+    // was for anyone who never opens COLS.
+    def: ["symbol", "price", "ret_1w", "ret_1mo", "ret_3mo", "rsi", "vol_ann",
+          "from_high", "above_sma50", "above_sma200"],
+    cols: [
+      { id: "symbol", label: "SYMBOL", th: `class="txt"`,
+        cell: (r) => `<td class="txt sym" data-scr-sym="${esc(r.symbol)}">${esc(r.symbol)}</td>` },
+      { id: "price", label: "PRICE", cell: (r) => `<td>${fmt.n(r.price)}</td>` },
+      { id: "ret_1d", label: "1D", cell: (r) => `<td class="${cls(r.ret_1d)}">${fmt.pct(r.ret_1d)}</td>` },
+      { id: "ret_1w", label: "1W", cell: (r) => `<td class="${cls(r.ret_1w)}">${fmt.pct(r.ret_1w)}</td>` },
+      { id: "ret_1mo", label: "1M", cell: (r) => `<td class="${cls(r.ret_1mo)}">${fmt.pct(r.ret_1mo)}</td>` },
+      { id: "ret_3mo", label: "3M", cell: (r) => `<td class="${cls(r.ret_3mo)}">${fmt.pct(r.ret_3mo)}</td>` },
+      { id: "rsi", label: "RSI", cell: (r) => `<td>${r.rsi ? r.rsi.toFixed(1) : "—"}</td>` },
+      { id: "vol_ann", label: "VOL ANN",
+        cell: (r) => `<td>${r.vol_ann ? (r.vol_ann * 100).toFixed(0) + "%" : "—"}</td>` },
+      { id: "vol_surge", label: "VOL SURGE",
+        cell: (r) => `<td class="${r.vol_surge == null ? "" : r.vol_surge >= 1 ? "up" : "faint"}">${
+          r.vol_surge == null ? "—" : r.vol_surge.toFixed(2) + "×"}</td>` },
+      { id: "from_high", label: "OFF HIGH", cell: (r) => `<td class="${cls(r.from_high)}">${fmt.pct(r.from_high)}</td>` },
+      // A missing SMA flag is not "below". compute_metrics returns null when
+      // there is not enough history, and printing "below" there would be a
+      // claim about a line that was never drawn.
+      { id: "above_sma50", label: "SMA50", cell: (r) => cvSMA(r.above_sma50) },
+      { id: "above_sma200", label: "SMA200", cell: (r) => cvSMA(r.above_sma200) },
+    ],
+  },
+
+  positions: {
+    title: "PORTFOLIO — POSITIONS",
+    locked: "contract",
+    def: ["contract", "qty", "avg", "last", "value", "pnl"],
+    cols: [
+      { id: "contract", label: "CONTRACT",
+        cell: (p) => `<td class="txt sym">${esc(p.label || p.symbol)}${
+          p.is_short ? '<span class="tag-short">SHORT</span>' : ""}${
+          p.expired ? '<span class="tag-dead">EXPIRED</span>' : ""}${
+          p.settleable ? '<button class="tbtn pf-settle" style="padding:1px 7px;font-size:9px">SETTLE</button>' : ""}</td>` },
+      { id: "kind", label: "KIND", th: `class="txt"`, cell: (p) => cvTxt(p.kind, "faint") },
+      { id: "expiry", label: "EXPIRY", th: `class="txt"`, cell: (p) => cvTxt(p.expiry, "faint") },
+      { id: "strike", label: "STRIKE", cell: (p) => `<td>${p.strike != null ? fmt.i(p.strike) : "—"}</td>` },
+      { id: "qty", label: "QTY",
+        cell: (p) => `<td class="${p.is_short ? "down" : "up"}">${fmt.n(p.quantity, 0)}${
+          p.lot_size ? `<span class="faint"> (${fmt.n(p.quantity / p.lot_size, 0)}L)</span>` : ""}</td>` },
+      { id: "lots", label: "LOTS",
+        cell: (p) => p.lot_size
+          ? `<td>${fmt.n(p.quantity / p.lot_size, 0)}</td>`
+          : `<td class="faint" title="no lot size on this contract, so a lot count cannot be derived">—</td>` },
+      { id: "avg", label: "AVG", cell: (p) => `<td>${fmt.n(p.avg_cost)}</td>` },
+      { id: "last", label: "LAST", cell: (p) => `<td>${fmt.n(p.last)}</td>` },
+      { id: "value", label: "VALUE", cell: (p) => `<td>${cvRs(p.market_value)}</td>` },
+      { id: "pnl", label: "P&L",
+        cell: (p) => `<td class="${cls(p.unrealized)}">${cvRs(p.unrealized)}</td>` },
+    ],
+  },
+
+  insider: {
+    title: "INSIDER DEALING — PIT REG 7",
+    locked: "person",
+    def: ["date", "person", "relation", "deal", "qty", "value", "shares", "stake"],
+    cols: [
+      { id: "date", label: "DATE", th: `class="txt"`,
+        cell: (x) => `<td class="txt faint">${esc(String(x.date || "—").slice(0, 11))}</td>` },
+      { id: "person", label: "PERSON", th: `class="txt"`, cell: (x) => cvTxt(x.name, "sym") },
+      { id: "relation", label: "RELATION", th: `class="txt"`, cell: (x) => cvTxt(x.category, "faint") },
+      { id: "deal", label: "DEAL", th: `class="txt"`,
+        cell: (x) => `<td class="txt ${/buy/i.test(x.type || "") ? "up" : /sell/i.test(x.type || "") ? "down" : ""}">${
+          esc(x.type || "—")}</td>` },
+      // acqMode and secType ride in the same filing and were dropped before
+      // this picker: an ESOP allotment and a market purchase are not the
+      // same fact, and the feed distinguishes them.
+      { id: "mode", label: "MODE", th: `class="txt"`, cell: (x) => cvTxt(x.mode, "faint") },
+      { id: "security", label: "SECURITY", th: `class="txt"`, cell: (x) => cvTxt(x.security, "faint") },
+      { id: "qty", label: "QTY", cell: (x) => `<td>${x.qty ? fmt.compact(x.qty) : "—"}</td>` },
+      { id: "value", label: "VALUE", cell: (x) => `<td>${x.value ? fmt.compact(x.value) : "—"}</td>` },
+      { id: "shares", label: "SHARES BEFORE→AFTER",
+        cell: (x) => `<td class="faint">${x.shares_before != null && x.shares_after != null
+          ? fmt.compact(x.shares_before) + " → " + fmt.compact(x.shares_after) : "—"}</td>` },
+      { id: "stake", label: "STAKE",
+        cell: (x) => `<td class="faint" title="${x.pct_before == null
+          ? "the filing rounds this holding to 0% - the share counts are the fact" : ""}">${
+          x.pct_before != null ? x.pct_before + "% → " + (x.pct_after ?? "—") + "%" : "—"}</td>` },
+    ],
+  },
+
+  fund_holdings: {
+    title: "SCHEME — DISCLOSED HOLDINGS",
+    locked: "holding",
+    def: ["holding", "symbol", "sector", "value_cr", "weight", "chg_1m"],
+    cols: [
+      { id: "holding", label: "HOLDING", th: `class="txt"`, cell: (h) => cvTxt(h.holding) },
+      { id: "symbol", label: "SYMBOL", th: `class="txt"`,
+        cell: (h) => `<td class="txt sym" ${h.symbol ? `data-sym="${esc(h.symbol)}" style="cursor:pointer"` : ""}>${
+          esc(h.symbol || "—")}</td>` },
+      { id: "sector", label: "SECTOR", th: `class="txt"`, cell: (h) => cvTxt(h.sector, "faint") },
+      { id: "value_cr", label: "₹Cr",
+        cell: (h) => `<td>${h.market_value_cr != null ? fmt.n(h.market_value_cr, 0) : "—"}</td>` },
+      { id: "weight", label: "WEIGHT",
+        cell: (h) => `<td>${h.weight_pct != null ? h.weight_pct.toFixed(2) + "%" : "—"}</td>` },
+      { id: "chg_1m", label: "Δ1M",
+        cell: (h) => `<td class="${cls(h.change_1m_pct)}">${
+          h.change_1m_pct != null ? h.change_1m_pct.toFixed(2) : "—"}</td>` },
+      { id: "as_of", label: "AS OF", th: `class="txt"`, cell: (h) => cvTxt(h.as_of, "faint") },
+    ],
+  },
+
+  stock_holders: {
+    title: "SCHEMES HOLDING A STOCK",
+    locked: "scheme",
+    def: ["scheme", "amc", "category", "weight", "value_cr", "chg_1m"],
+    cols: [
+      { id: "scheme", label: "SCHEME", th: `class="txt"`, cell: (x) => cvTxt(x.scheme, "sym") },
+      { id: "amc", label: "AMC", th: `class="txt"`, cell: (x) => cvTxt(x.amc) },
+      { id: "category", label: "CATEGORY", th: `class="txt"`,
+        cell: (x) => `<td class="txt faint" style="font-size:10px">${esc(x.category || "—")}</td>` },
+      { id: "weight", label: "WEIGHT",
+        cell: (x) => `<td>${x.weight_pct != null ? x.weight_pct.toFixed(2) + "%" : "—"}</td>` },
+      { id: "value_cr", label: "₹Cr",
+        cell: (x) => `<td>${x.value_cr != null ? fmt.n(x.value_cr, 0) : "—"}</td>` },
+      { id: "chg_1m", label: "Δ1M",
+        cell: (x) => `<td class="${cls(x.change_1m_pct)}">${
+          x.change_1m_pct != null ? x.change_1m_pct.toFixed(2) : "—"}</td>` },
+    ],
+  },
+};
+
+/* store: table -> the server's blob for it, plus `working` (the set actually
+   on screen) and `dirty` (working differs from what `active` names).
+   `down` is non-empty when /api/views could not be read at all. */
+const COLVIEW = { store: {}, repaint: {}, down: "" };
+let _cvReady = null;
+
+function cvSpec(table) { return TABLE_COLS[table]; }
+
+/* The columns on screen, in registry order, identity column always present. */
+function colVisible(table) {
+  const t = TABLE_COLS[table];
+  const st = COLVIEW.store[table];
+  const want = new Set((st && st.working) || t.def);
+  want.add(t.locked);
+  return t.cols.filter((c) => want.has(c.id));
+}
+
+/* The header ROW, not the <thead>: the option chain repaints its header in
+   place inside a <thead> the shell already owns. */
+function colHead(table) {
+  return `<tr>${colVisible(table)
+    .map((c) => `<th ${c.th || ""}>${esc(c.label)}</th>`).join("")}</tr>`;
+}
+
+function colRows(table, rows, ctx, trAttr) {
+  const cs = colVisible(table);
+  return (rows || []).map((r) => `<tr ${trAttr ? trAttr(r) : ""}>${
+    cs.map((c) => c.cell(r, ctx || {})).join("")}</tr>`).join("");
+}
+
+function colTable(table, rows, o = {}) {
+  return `<table class="tbl${o.cls ? " " + o.cls : ""}"><thead>${colHead(table)}</thead><tbody>${
+    colRows(table, rows, o.ctx, o.tr)}</tbody></table>`;
+}
+
+function cvApply(table) {
+  const st = COLVIEW.store[table], t = TABLE_COLS[table];
+  if (!st || !t) return;
+  const saved = st.active && st.views ? st.views[st.active] : null;
+  st.working = (saved && saved.length ? saved : t.def).slice();
+  st.dirty = false;
+}
+
+async function colviewLoad() {
+  try {
+    const d = await getJSON("/api/views");
+    (d.tables || []).forEach((t) => {
+      if (!TABLE_COLS[t.table]) return;   // a table this build cannot render
+      COLVIEW.store[t.table] = t;
+      cvApply(t.table);
+    });
+    COLVIEW.down = "";
+  } catch (e) {
+    // Losing the preference store is survivable; a spinner or a silently
+    // wrong column set is not. Every table falls back to its shipped
+    // columns, and the picker refuses to appear at all rather than offering
+    // a SAVE that cannot reach disk.
+    COLVIEW.down = e.message;
+  }
+}
+
+/* Memoised: six tables share one round trip, and a table that renders twice
+   in a session does not re-ask. */
+function colviewReady() { return _cvReady || (_cvReady = colviewLoad()); }
+
+/* An empty anchor a view can drop into any template synchronously; the
+   control itself is mounted once the store has answered. */
+function colviewSlot(table) { return `<span class="cv-wrap" data-cv="${table}"></span>`; }
+
+function cvBtnLabel(table) {
+  const t = TABLE_COLS[table], st = COLVIEW.store[table] || {};
+  const name = st.dirty ? "UNSAVED" : st.active ? st.active.toUpperCase() : "DEFAULT";
+  return `COLS ${colVisible(table).length}/${t.cols.length} · ${name}`;
+}
+
+function cvNoteHtml(table) {
+  const t = TABLE_COLS[table], st = COLVIEW.store[table] || {};
+  const stale = (st.stale || {})[st.active];
+  const back = st.active ? esc(st.active) : "the built-in columns";
+  return `${colVisible(table).length} of ${t.cols.length} columns · order is the table's,
+    not your click order${st.dirty ? ` · <b class="amber">unsaved</b> — a reload returns to ${back}` : ""}${
+    stale && stale.length
+      ? `<br><b class="amber">this view named ${esc(stale.join(", "))}</b>, which this build no longer renders — re-save to drop ${
+          stale.length > 1 ? "them" : "it"} for good`
+      : ""}`;
+}
+
+function cvMenuHtml(table) {
+  const t = TABLE_COLS[table], st = COLVIEW.store[table] || {};
+  const on = new Set(st.working || t.def);
+  const names = Object.keys(st.views || {}).sort();
+  const opt = (c) => {
+    const locked = c.id === t.locked;
+    return `<label class="cv-opt"><input type="checkbox" data-col="${c.id}"${
+      on.has(c.id) || locked ? " checked" : ""}${locked ? " disabled" : ""}>
+      <span>${esc(c.label)}</span>${locked ? `<i>identifies the row</i>` : ""}</label>`;
+  };
+  return `<div class="cv-grp">${esc(t.title)}</div>
+    <select class="in cv-sel">
+      <option value="">DEFAULT — the shipped ${t.def.length} columns</option>
+      ${names.map((n) => `<option value="${esc(n)}"${n === st.active ? " selected" : ""}>${
+        esc(n)} (${st.views[n].length})</option>`).join("")}
+    </select>
+    <div class="cv-grp">COLUMNS</div>
+    ${t.cols.map(opt).join("")}
+    <div class="cv-note">${cvNoteHtml(table)}</div>
+    <div class="cv-acts">${cvActsHtml(table)}</div>`;
+}
+
+/* SAVE and DELETE exist only when there is a named view to save over or
+   delete. A greyed-out button is still an offer; a control that cannot
+   succeed is not offered at all. */
+function cvActsHtml(table) {
+  const st = COLVIEW.store[table] || {};
+  return `<button class="btn cv-saveas">SAVE AS…</button>${st.active
+    ? `<button class="btn ghost cv-save">SAVE</button>
+       <button class="btn ghost cv-del">DELETE</button>` : ""}`;
+}
+
+/* Repaint the table, then bring every COLS button and note back in step.
+   The picker deliberately lives OUTSIDE whatever container each repaint
+   rewrites, so ticking a box does not close the menu under the cursor. */
+function cvSync(table) {
+  const fn = COLVIEW.repaint[table];
+  if (fn) fn();
+  document.querySelectorAll(`[data-cv-btn="${table}"]`).forEach((b) => {
+    b.textContent = cvBtnLabel(table);
+  });
+  document.querySelectorAll(`.cv-menu[data-cv="${table}"] .cv-note`).forEach((n) => {
+    n.innerHTML = cvNoteHtml(table);
+  });
+}
+
+function cvRebuild(menu, table) {
+  menu.innerHTML = cvMenuHtml(table);
+  cvWireMenu(menu, table);
+  cvSync(table);
+}
+
+function cvWireMenu(menu, table) {
+  const t = TABLE_COLS[table], st = COLVIEW.store[table];
+  menu.querySelectorAll("input[data-col]").forEach((cb) => {
+    cb.onchange = () => {
+      const set = new Set(st.working);
+      if (cb.checked) set.add(cb.dataset.col); else set.delete(cb.dataset.col);
+      set.add(t.locked);
+      st.working = t.cols.map((c) => c.id).filter((id) => set.has(id));
+      st.dirty = true;
+      cvSync(table);
+    };
+  });
+  const sel = menu.querySelector(".cv-sel");
+  if (sel) {
+    sel.onchange = async () => {
+      const name = sel.value || null;
+      try {
+        await postJSON(`/api/views/${table}/active`, { name });
+        st.active = name;
+        cvApply(table);
+        cvRebuild(menu, table);
+      } catch (e) { toast(e.message, "err"); }
+    };
+  }
+  const saveAs = menu.querySelector(".cv-saveas");
+  if (saveAs) {
+    saveAs.onclick = async () => {
+      const name = prompt(`Name this ${colVisible(table).length}-column view of ${t.title}`);
+      if (name === null) return;
+      await cvPersist(menu, table, name);
+    };
+  }
+  const save = menu.querySelector(".cv-save");
+  if (save) save.onclick = () => cvPersist(menu, table, st.active);
+  const del = menu.querySelector(".cv-del");
+  if (del) {
+    del.onclick = async () => {
+      const name = st.active;
+      if (!confirm(`Delete the column view "${name}"? The table returns to its built-in columns.`)) return;
+      try {
+        await postJSON(`/api/views/${table}?name=${encodeURIComponent(name)}`, undefined, "DELETE");
+        delete st.views[name];
+        if (st.stale) delete st.stale[name];
+        st.active = null;
+        cvApply(table);
+        cvRebuild(menu, table);
+        toast(`deleted column view "${name}"`, "ok");
+      } catch (e) { toast(e.message, "err"); }
+    };
+  }
+}
+
+/* The server, not this file, decides whether a name and a column set are
+   storable — and it answers with a sentence, which is what the toast says.
+   Echoing back what it accepted (the name it cleaned, the order it chose)
+   rather than what was typed keeps the picker showing what is on disk. */
+async function cvPersist(menu, table, name) {
+  const st = COLVIEW.store[table];
+  try {
+    const r = await postJSON(`/api/views/${table}`, {
+      name, columns: st.working,
+    });
+    st.views = st.views || {};
+    st.views[r.name] = r.columns;
+    if (st.stale) delete st.stale[r.name];
+    st.active = r.name;
+    cvApply(table);
+    cvRebuild(menu, table);
+    toast(`saved column view "${r.name}"`, "ok");
+  } catch (e) { toast(e.message, "err"); }
+}
+
+/* Parented to <body> and anchored to the VIEWPORT, not to the button.
+   .panel-body sets overflow-x:auto (styles.css:957) and CSS computes an
+   overflow-y of visible to auto alongside it, so a menu parented inside a
+   panel is clipped by that panel's own scroll box — which is invisible until
+   you open the picker on the funds or company page and get a sliver. */
+function cvToggleMenu(btn, table) {
+  const already = document.querySelector(`.cv-menu[data-cv="${table}"]`);
+  document.querySelectorAll(".cv-menu").forEach((m) => m.remove());
+  if (already) return;                      // the button toggles
+
+  const menu = elv("div", "cv-menu", cvMenuHtml(table));
+  menu.dataset.cv = table;
+  const r = btn.getBoundingClientRect();
+  const W = 262;                            // must match .cv-menu width
+  menu.style.left = `${Math.round(
+    Math.max(Math.min(r.right - W, innerWidth - W - 8), 8))}px`;
+  menu.addEventListener("click", (e) => e.stopPropagation());
+  // Positioned only AFTER it is in the DOM, because its height depends on how
+  // many columns the table has and cannot be known before layout. The chain
+  // picker is ~430px tall; opened from a control low in the viewport it ran
+  // off the bottom of the screen, and a fixed element cannot be scrolled to.
+  menu.style.top = "-9999px";
+  document.body.appendChild(menu);
+  const h = menu.offsetHeight;
+  const below = Math.round(r.bottom + 2);
+  const top = (below + h <= innerHeight - 8)
+    ? below
+    : (r.top - h - 2 >= 8
+        ? Math.round(r.top - h - 2)         // flip above the button
+        : Math.max(8, innerHeight - h - 8)); // neither fits: clamp to viewport
+  menu.style.top = `${top}px`;
+  cvWireMenu(menu, table);
+
+  let onScroll;                            // assigned below; close() clears it
+  const close = () => {
+    menu.remove();
+    document.removeEventListener("click", close);
+    window.removeEventListener("scroll", onScroll, true);
+    window.removeEventListener("resize", close);
+  };
+  // A viewport-anchored menu cannot follow its button, so a PAGE scroll closes
+  // it rather than leaving it hovering over an unrelated control. Scrolling
+  // INSIDE it is the opposite: .cv-menu is max-height 62vh and the chain has
+  // 13 columns, so reaching the lower tickboxes REQUIRES scrolling - and that
+  // closed the menu, making those columns unreachable by the only gesture
+  // that could get to them.
+  onScroll = (e) => { if (!menu.contains(e.target)) close(); };
+  setTimeout(() => {
+    document.addEventListener("click", close, { once: true });
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", close);
+  }, 0);
+  // It lives outside the view now, so it needs telling when the view dies.
+  onTeardown(close);
+}
+
+/* Mount the COLS control into the slot a view left for it, and register how
+   that view repaints its table when the set changes. Await colviewReady()
+   before painting rows, or the first paint shows the built-in set and then
+   flips to the saved one. */
+async function colviewMount(root, table, repaint) {
+  await colviewReady();
+  const wrap = (root || document).querySelector(`.cv-wrap[data-cv="${table}"]`);
+  if (!wrap) return;                       // the view was switched away
+  COLVIEW.repaint[table] = repaint;
+  if (COLVIEW.down) {
+    // The picker itself is NOT offered: saving would fail and selecting would
+    // not survive a reload. What replaces it is the reason plus the one
+    // control that can still succeed. The table below is already showing its
+    // built-in columns, so nothing is missing from the screen — only the
+    // ability to change them.
+    wrap.innerHTML = `<span class="cv-off" title="${esc(COLVIEW.down)}">COLS UNAVAILABLE — ${
+      esc(COLVIEW.down)}</span> <button class="btn ghost cv-retry">RETRY</button>`;
+    wrap.querySelector(".cv-retry").onclick = () => {
+      _cvReady = null;                     // drop the memo; ask once more
+      colviewMount(root, table, repaint).then(() => {
+        if (!COLVIEW.down && repaint) repaint();   // saved columns, at last
+      });
+    };
+    return;
+  }
+  wrap.innerHTML = `<button class="btn ghost cv-btn" data-cv-btn="${table}">${cvBtnLabel(table)}</button>`;
+  const btn = wrap.querySelector(".cv-btn");
+  btn.onclick = (e) => { e.stopPropagation(); cvToggleMenu(btn, table); };
+}
+
+const COLVIEW_LIFT_END = true;
+
 /* ---------- PULSE ---------- */
 
 function pulseRow(q, sparkId) {
@@ -1338,7 +1858,7 @@ function createDrawingLayer(wrap, chart, series) {
 }
 
 /* ---------- OPTION CHAIN ----------
-   The shell is built once and every refresh writes text into cells it already
+   The shell is built once and every refresh repaints only the strike rows it
    owns. Re-rendering the whole view on the timer flashed a spinner, reset the
    strike scroll, wiped a half-typed symbol and leaked one chart plus six
    provenance entries per minute. */
@@ -1352,8 +1872,7 @@ function renderChain(view) {
   const sym = state.symbol;
   let expiry = "";      // "" = let the server pick the front month
   let expiryKey = "";   // rebuild the <select> only when the ladder changes
-  let strikeKey = "";   // rebuild the strike rows only when the strikes change
-  let cells = [];       // one cell-reference set per rendered strike row
+  let strikeKey = "";   // re-centre the ATM row only when the strikes change
   let painted = false;
   let straddleChart = null, straddleSeries = null;
 
@@ -1376,14 +1895,10 @@ function renderChain(view) {
     <div class="chain-desk">
       <div class="desk-left">
         ${panel({ title: `STRIKES <span class="badge" id="chain-win">—</span>`, id: "chain-strikes", flush: true,
-          meta: ``,
+          meta: colviewSlot("chain"),
           body: `<div class="tbl-scroll" id="chain-scroll">
-            <table class="tbl chain-tbl"><thead><tr>
-              <th class="oi-h call">C·OI</th><th>C·ΔOI</th><th>C·VOL</th><th>C·IV</th><th>C·BID</th><th>C·LTP</th>
-              <th class="k-strike">STRIKE</th>
-              <th>P·LTP</th><th>P·ASK</th><th>P·IV</th><th>P·VOL</th><th>P·ΔOI</th><th class="oi-h put">P·OI</th>
-            </tr></thead><tbody id="chain-rows">
-              <tr><td colspan="13">${loading("chain")}</td></tr>
+            <table class="tbl chain-tbl"><thead id="chain-head">${colHead("chain")}</thead><tbody id="chain-rows">
+              <tr><td colspan="${TABLE_COLS.chain.cols.length}">${loading("chain")}</td></tr>
             </tbody></table></div>
           <div class="insight">
             <div class="insight-title">INSIGHT</div>
@@ -1507,26 +2022,47 @@ function renderChain(view) {
     if (b) b.style.display = "";
   };
 
-  const buildRows = (rows) => {
-    const tb = $("#chain-rows");
-    tb.innerHTML = rows.map(() => `
-      <tr>
-        <td class="oi-cell call"><div class="oi-bar call"></div><span class="oi-num">—</span></td>
-        <td>—</td><td class="faint">—</td><td>—</td><td class="exec-px">—</td><td class="ltp-cell" data-right="CE">—</td>
-        <td class="k-strike">—</td>
-        <td class="ltp-cell" data-right="PE">—</td><td class="exec-px">—</td><td>—</td><td class="faint">—</td><td>—</td>
-        <td class="oi-cell put"><div class="oi-bar put"></div><span class="oi-num">—</span></td>
-      </tr>`).join("");
-    cells = [...tb.rows].map((tr) => ({
-      tr,
-      cBar: tr.cells[0].firstElementChild, cOI: tr.cells[0].lastElementChild,
-      cDOI: tr.cells[1], cVol: tr.cells[2], cIV: tr.cells[3],
-      cBID: tr.cells[4], cLTP: tr.cells[5],
-      strike: tr.cells[6],
-      pLTP: tr.cells[7], pASK: tr.cells[8], pIV: tr.cells[9], pVol: tr.cells[10],
-      pDOI: tr.cells[11],
-      pBar: tr.cells[12].firstElementChild, pOI: tr.cells[12].lastElementChild,
-    }));
+  /* The strike grid. This used to cache cell references POSITIONALLY
+     (tr.cells[0]..tr.cells[12]) and write into them by name every 60s, which
+     is precisely why a column picker was impossible here: drop C·IV and every
+     index to its right moves. Now the visible column list builds the row and
+     the row is replaced whole.
+
+     Measured cost of the change: one innerHTML per strike per refresh instead
+     of ~13 textContent writes — 41 rows once a minute. The premium click is
+     delegated on #chain-rows (see the listener at the end of renderChain), so
+     replacing rows does not unbind the order ticket, and the old code
+     destroyed any text selection in the table too. */
+  const paintStrikes = (c, modelled) => {
+    const rows = c.rows || [];
+    const key = rows.length
+      ? `${c.expiry}|${rows[0].strike}|${rows[rows.length - 1].strike}|${rows.length}` : "";
+    const rebuilt = key !== strikeKey;
+    strikeKey = key;
+    const ctx = {
+      modelled,
+      maxC: Math.max(...rows.map((r) => r.call.oi), 1),
+      maxP: Math.max(...rows.map((r) => r.put.oi), 1),
+    };
+    $("#chain-head").innerHTML = colHead("chain");
+    $("#chain-rows").innerHTML = colRows("chain", rows, ctx,
+      (r) => (r.atm ? `class="atm-row"` : ""));
+
+    $("#chain-win").textContent = c.rows_total > rows.length
+      ? `${rows.length} OF ${c.rows_total} STRIKES · ATM±${c.strike_window}`
+      : `${rows.length} STRIKES`;
+
+    if (rebuilt) {
+      // Centre the ATM row in the strike scroller. scrollIntoView walks every
+      // scrollable ancestor and would jerk `main`, so scroll the box itself.
+      // Not on a column change: the strike key is unchanged there, and a
+      // scroll jump under the cursor while ticking boxes is disorienting.
+      const atm = $("#chain-rows tr.atm-row");
+      const box = $("#chain-scroll");
+      if (atm && box) {
+        box.scrollTop = Math.max(atm.offsetTop - (box.clientHeight - atm.offsetHeight) / 2, 0);
+      }
+    }
   };
 
   const paint = (c) => {
@@ -1589,59 +2125,11 @@ function renderChain(view) {
         `— volume ${un.map((u) => u.ratio.toFixed(1) + "×").join(", ")} of OI — fresh positioning, not rollover`;
     }
 
-    const rows = c.rows || [];
-    const key = rows.length
-      ? `${c.expiry}|${rows[0].strike}|${rows[rows.length - 1].strike}|${rows.length}` : "";
-    const rebuilt = key !== strikeKey;
-    if (rebuilt) { strikeKey = key; buildRows(rows); }
-
-    const maxC = Math.max(...rows.map((r) => r.call.oi), 1);
-    const maxP = Math.max(...rows.map((r) => r.put.oi), 1);
-    const dOI = (td, v) => {
-      if (modelled || v === null || v === undefined) { td.textContent = "—"; td.className = "faint"; return; }
-      td.textContent = fmt.compact(v);
-      td.className = cls(v);
-    };
-    rows.forEach((r, i) => {
-      const q = cells[i];
-      if (!q) return;
-      q.tr.className = r.atm ? "atm-row" : "";
-      q.cBar.style.width = `${(r.call.oi / maxC) * 100}%`;
-      q.cOI.textContent = fmt.compact(r.call.oi);
-      dOI(q.cDOI, r.call.oi_change);
-      q.cVol.textContent = fmt.compact(r.call.volume);
-      q.cIV.textContent = r.call.iv ? (r.call.iv * 100).toFixed(1) : "—";
-      q.cBID.textContent = r.call.bid != null ? fmt.n(r.call.bid) : "—";
-      q.cLTP.textContent = fmt.n(r.call.ltp);
-      q.cLTP.dataset.strike = r.strike;
-      q.cLTP.dataset.ltp = r.call.ltp;
-      q.strike.textContent = fmt.i(r.strike);
-      q.strike.className = `k-strike${r.atm ? " amber" : ""}`;
-      q.pLTP.textContent = fmt.n(r.put.ltp);
-      q.pLTP.dataset.strike = r.strike;
-      q.pLTP.dataset.ltp = r.put.ltp;
-      q.pASK.textContent = r.put.ask != null ? fmt.n(r.put.ask) : "—";
-      q.pIV.textContent = r.put.iv ? (r.put.iv * 100).toFixed(1) : "—";
-      q.pVol.textContent = fmt.compact(r.put.volume);
-      dOI(q.pDOI, r.put.oi_change);
-      q.pBar.style.width = `${(r.put.oi / maxP) * 100}%`;
-      q.pOI.textContent = fmt.compact(r.put.oi);
-    });
-
-    $("#chain-win").textContent = c.rows_total > rows.length
-      ? `${rows.length} OF ${c.rows_total} STRIKES · ATM±${c.strike_window}`
-      : `${rows.length} STRIKES`;
+    paintStrikes(c, modelled);
     $("#chain-doi").innerHTML = modelled
       ? `<span class="amber">ΔOI + UNUSUAL SUPPRESSED — MODELLED CHAIN</span>`
       : stamp(`ΔOI BASIS: ${c.delta_oi_basis.toUpperCase()}`);
 
-    if (rebuilt) {
-      // Centre the ATM row in the strike scroller. scrollIntoView walks every
-      // scrollable ancestor and would jerk `main`, so scroll the box itself.
-      const atm = cells[rows.findIndex((r) => r.atm)];
-      const box = $("#chain-scroll");
-      if (atm) box.scrollTop = Math.max(atm.tr.offsetTop - (box.clientHeight - atm.tr.offsetHeight) / 2, 0);
-    }
     painted = true;
 
     // Straddle chart from today's REAL captured snapshots (>=2 needed).
@@ -1744,6 +2232,11 @@ function renderChain(view) {
 
   const load = async () => {
     try {
+      // The saved column set must be known before the first paint, or the
+      // grid shows 13 columns and then visibly loses the ones you dropped.
+      // colviewReady() never rejects, so it cannot turn a live chain into
+      // the refusal below.
+      await colviewReady();
       const c = await getJSON(`/api/chain/${sym}${expiry ? `?expiry=${expiry}` : ""}`);
       if (!document.body.contains(view)) return;  // view switched mid-flight
       paint(c);
@@ -1753,7 +2246,7 @@ function renderChain(view) {
       $("#chain-upd").innerHTML = `<span class="down">REFRESH FAILED ${fmt.ist()}</span>`;
       if (painted) return;  // a failed poll must never wipe the last good table
       const trail = (e.detail && e.detail.source_trail) || [];
-      $("#chain-rows").innerHTML = `<tr><td colspan="13">
+      $("#chain-rows").innerHTML = `<tr><td colspan="${TABLE_COLS.chain.cols.length}">
         <div class="refusal">
           <div class="refusal-head">NO LIVE OPTION CHAIN</div>
           <p>Shunkan will not show a modelled book in place of one it could not
@@ -1770,9 +2263,24 @@ function renderChain(view) {
   load();
   addTimer("chain:refresh", load, 60000);
 
+  // Delegated on the tbody, which outlives every row replacement.
   $("#chain-rows").addEventListener("click", (ev) => {
     const cell = ev.target.closest(".ltp-cell");
     if (cell && last) openTicket(cell, last);
+  });
+  // Repaints the strikes only. Re-running paint() would re-stamp provenance
+  // and re-fit the straddle chart for a question that was only about columns.
+  // The <thead> above is painted synchronously, BEFORE the saved views have
+  // loaded, so it shows the built-in 13 columns while the COLS button already
+  // reads "3/13". Repainting the header on mount - not only after a
+  // successful chain load - keeps the two agreeing even while /api/chain is
+  // still in flight or has failed outright.
+  colviewReady().then(() => {
+    const head = $("#chain-head");
+    if (head) head.innerHTML = colHead("chain");
+  });
+  colviewMount(view, "chain", () => {
+    if (last) paintStrikes(last, isModelledChain(last.source));
   });
   onView(document, "mousedown", (ev) => {
     if (ticket && !ticket.el.contains(ev.target) && !ev.target.closest(".ltp-cell")) {
@@ -2814,6 +3322,7 @@ async function renderFunds(view, params = {}) {
     const b = body(); if (!b) return;
     b.innerHTML = loading("opening the scheme");
     const d = await getJSON(`/api/funds/${encodeURIComponent(isin)}`);
+    await colviewReady();   // never rejects; see colviewLoad
     const bar = (label, v, colour) => v == null ? "" : `
       <div class="own-row"><span>${label}</span>
         <div class="own-track"><div class="own-fill" style="width:${Math.min(v, 100)}%;background:${colour}"></div></div>
@@ -2843,19 +3352,33 @@ async function renderFunds(view, params = {}) {
         <div class="map-grid">${d.sectors.map((x) => `<div class="map-tile">
           <div class="mt-sym">${esc(x.sector.slice(0, 18))}</div>
           <div class="mt-chg">${x.weight_pct.toFixed(1)}%</div></div>`).join("")}</div>` : ""}
-      <div class="news-sect">HOLDINGS <span class="faint">${(d.holdings || []).length}</span></div>
-      <table class="tbl"><thead><tr><th class="txt">HOLDING</th><th class="txt">SYMBOL</th>
-        <th class="txt">SECTOR</th><th>₹Cr</th><th>WEIGHT</th><th>Δ1M</th></tr></thead><tbody>
-        ${(d.holdings || []).map((h) => `<tr>
-          <td class="txt">${esc(h.holding)}</td>
-          <td class="txt sym" ${h.symbol ? `data-sym="${esc(h.symbol)}" style="cursor:pointer"` : ""}>${esc(h.symbol || "—")}</td>
-          <td class="txt faint">${esc(h.sector || "")}</td>
-          <td>${h.market_value_cr != null ? fmt.n(h.market_value_cr, 0) : "—"}</td>
-          <td>${h.weight_pct != null ? h.weight_pct.toFixed(2) + "%" : "—"}</td>
-          <td class="${cls(h.change_1m_pct)}">${h.change_1m_pct != null ? h.change_1m_pct.toFixed(2) : "—"}</td>
-        </tr>`).join("")}</tbody></table>`;
-    b.querySelectorAll("[data-sym]").forEach((el) => {
-      el.onclick = () => show("company", { symbol: el.dataset.sym });
+      <div class="news-sect">HOLDINGS <span class="faint">${
+        (() => {
+          // The feed caps the rows it returns but still reports the true
+          // count. Printing the row count as the holding count told a reader
+          // a 1,004-stock index fund held 120 - a silent truncation wearing a
+          // total's clothing, which house rule 4 forbids.
+          const shown = (d.holdings || []).length;
+          const total = d.n_holdings != null ? Math.round(d.n_holdings) : null;
+          return (total != null && total > shown)
+            ? `${shown} of ${fmt.i(total)} shown · the feed caps this list`
+            : `${shown}`;
+        })()}</span>
+        ${colviewSlot("fund_holdings")}</div>
+      <div id="mfd-hold-tbl">${colTable("fund_holdings", d.holdings || [])}</div>`;
+    // Re-wired after every repaint: the rows are replaced, so handlers bound
+    // to the old ones go with them.
+    const wireHold = () => {
+      b.querySelectorAll("#mfd-hold-tbl [data-sym]").forEach((el) => {
+        el.onclick = () => show("company", { symbol: el.dataset.sym });
+      });
+    };
+    wireHold();
+    colviewMount(b, "fund_holdings", () => {
+      const host = $("#mfd-hold-tbl");
+      if (!host) return;
+      host.innerHTML = colTable("fund_holdings", d.holdings || []);
+      wireHold();
     });
     drawPerf(isin);
   };
@@ -2925,6 +3448,7 @@ async function renderFunds(view, params = {}) {
     b.innerHTML = loading(`schemes holding ${esc(sym)}`);
     try {
       const d = await getJSON(`/api/funds/holders/${encodeURIComponent(sym)}`);
+      await colviewReady();   // never rejects; see colviewLoad
       b.innerHTML = `
         <div class="kv-strip">
           <div class="kv"><div class="k">STOCK</div><div class="v sm">${esc(d.symbol)}</div></div>
@@ -2935,20 +3459,26 @@ async function renderFunds(view, params = {}) {
         ${d.by_amc.length ? `<div class="news-sect">BY AMC</div><div class="map-grid">
           ${d.by_amc.map((a) => `<div class="map-tile"><div class="mt-sym">${esc(a.amc)}</div>
             <div class="mt-chg amber">₹${fmt.compact(a.value_cr * 1e7)}</div></div>`).join("")}</div>` : ""}
-        <div class="news-sect">SCHEMES</div>
-        <table class="tbl"><thead><tr><th class="txt">SCHEME</th><th class="txt">AMC</th>
-          <th class="txt">CATEGORY</th><th>WEIGHT</th><th>₹Cr</th><th>Δ1M</th></tr></thead><tbody>
-          ${d.schemes.map((x) => `<tr data-isin="${esc(x.isin)}" style="cursor:pointer">
-            <td class="txt sym">${esc(x.scheme || "")}</td>
-            <td class="txt">${esc(x.amc || "")}</td>
-            <td class="txt faint" style="font-size:10px">${esc(x.category || "")}</td>
-            <td>${x.weight_pct != null ? x.weight_pct.toFixed(2) + "%" : "—"}</td>
-            <td>${x.value_cr != null ? fmt.n(x.value_cr, 0) : "—"}</td>
-            <td class="${cls(x.change_1m_pct)}">${x.change_1m_pct != null ? x.change_1m_pct.toFixed(2) : "—"}</td>
-          </tr>`).join("")}</tbody></table>
+        <div class="news-sect">SCHEMES ${colviewSlot("stock_holders")}</div>
+        <div id="mfd-holders-tbl">${colTable("stock_holders", d.schemes,
+          { tr: (x) => `data-isin="${esc(x.isin)}" style="cursor:pointer"` })}</div>
+        ${d.schemes.length < d.n_schemes ? `<div class="empty" style="padding:4px 14px">
+          <span class="amber">SHOWING ${d.schemes.length} OF ${d.n_schemes} SCHEMES</span>
+          <span class="faint">— funds.holders() caps the list at 150 by disclosed value;
+          the count and the ₹Cr total above are over all of them.</span></div>` : ""}
         <div class="empty" style="padding:4px 14px"><span class="faint">${esc(d.note)}</span></div>`;
-      b.querySelectorAll("[data-isin]").forEach((tr) => {
-        tr.onclick = () => openScheme(tr.dataset.isin);
+      const wireHolders = () => {
+        b.querySelectorAll("#mfd-holders-tbl [data-isin]").forEach((tr) => {
+          tr.onclick = () => openScheme(tr.dataset.isin);
+        });
+      };
+      wireHolders();
+      colviewMount(b, "stock_holders", () => {
+        const host = $("#mfd-holders-tbl");
+        if (!host) return;
+        host.innerHTML = colTable("stock_holders", d.schemes,
+          { tr: (x) => `data-isin="${esc(x.isin)}" style="cursor:pointer"` });
+        wireHolders();
       });
     } catch (e) {
       b.innerHTML = `<div class="empty" style="padding:10px 14px">${esc(e.message)}</div>`;
@@ -2985,6 +3515,483 @@ function secBlock(title, count, bodyHtml, { open = false, scroll = true } = {}) 
   </details>`;
 }
 
+/* ---------- COMPANY SNAPSHOT — the answer above the fold ----------
+   This page used to open on a stack of collapsed sections, so "what is this
+   company and how is it doing" cost four expansions and a scroll.
+
+   It adds NO request. Every figure is already in the /api/company payload
+   renderCompany awaits, and the one late-arriving line - who it sells to -
+   is filled by drawSupplyMap out of the /extract call the page already
+   fires in parallel, so a slow extraction cannot hold the strip up.
+
+   Three absences look identical on screen and mean different things. This
+   file keeps them apart, because collapsing them is exactly how the pledge
+   line further down shipped "0 shares" in green on a network error:
+       null            the source published no value for this company
+       {error: "..."}  the FEED failed - nothing is known either way
+       0               the filing says zero, which is a fact worth reading
+   A missing figure therefore renders a dash whose title names the cause AND
+   is collected into a visible NOT AVAILABLE line under the strips: a reason
+   that lives only in a tooltip is a reason nobody reads before "fixing" the
+   dash into a plausible number.
+
+   The functions are lifted whole by tests/snapshot_render_test.js between the
+   two markers below - editing them breaks that test instead of drifting away
+   from it. Nothing in here may reference anything outside esc, fmt and
+   metricsStrip, because the lift injects only those three. */
+const SNAP_LIFT_START = true;
+
+/* A finite number, or null. A string that sneaked out of a feed would throw
+   on .toFixed and replace this whole page with one error line - and the
+   snapshot is the first thing on screen, so it has to fail soft. */
+function snapNum(v) {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/* Crore formatter with netCr's discipline: no real amount may ever print as
+   "0". HDFC Bank's entire related-party book once rendered as "0 Cr" because
+   the formatter was fixed at zero decimals, and MCAP and REVENUE are the same
+   kind of number. Precision tracks magnitude; below a lakh it says "<0.01",
+   which is a statement about the display and not about the value. */
+function snapCr(v) {
+  const n = snapNum(v);
+  if (n === null) return null;
+  const c = n / 1e7;
+  const a = Math.abs(c);
+  if (a === 0) return "0";
+  if (a < 0.01) return (c < 0 ? "-" : "") + "<0.01";
+  const d = a >= 1000 ? 0 : a >= 10 ? 1 : 2;
+  return c.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+/* NSE spells its dates one way and the XBRL another. Parsing them matters
+   because this strip says NEXT RESULTS: calling a meeting that has already
+   happened "next" is a fabricated fact, and comparing these as TEXT is the
+   bug that turned six half-yearly periods into three Marches followed by
+   three Septembers.
+   Handled: "2026-08-05" (ISO, what the filings carry) and "05-Aug-2026" /
+   "05-Aug-2026 16:30:00" (what the NSE corporate feeds carry). An all-numeric
+   "05-08-2026" is REFUSED rather than guessed - day-month and month-day are
+   indistinguishable for the first twelve days of every month, and a silently
+   wrong earnings date is worse than a refusal that names itself. */
+const SNAP_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun",
+                     "jul", "aug", "sep", "oct", "nov", "dec"];
+function snapDate(s) {
+  const t = String(s == null ? "" : s).trim();
+  if (!t) return null;
+  let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) {
+    const dt = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+    return Number.isFinite(dt.getTime()) ? dt : null;
+  }
+  m = t.match(/^(\d{1,2})[-/ ]([A-Za-z]{3})[A-Za-z]*[-/ ](\d{4})/);
+  if (m) {
+    const mo = SNAP_MONTHS.indexOf(m[2].toLowerCase());
+    if (mo < 0) return null;
+    return new Date(Date.UTC(+m[3], mo, +m[1]));
+  }
+  return null;
+}
+
+function snapDay(dt) {
+  return dt ? dt.toISOString().slice(0, 10) : null;
+}
+
+/* The IST calendar day. The browser's UTC day would call a meeting scheduled
+   for today "past" for the first five and a half hours of every Indian
+   trading day - which is precisely when someone checks it. */
+function snapToday(now) {
+  const ist = new Date(now.getTime() + 5.5 * 3600 * 1000);
+  return Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate());
+}
+
+function snapAge(ms) {
+  if (!Number.isFinite(ms)) return null;
+  const m = Math.max(0, Math.round(ms / 60000));
+  if (m < 60) return `${m}m`;
+  if (m < 1440) return `${Math.floor(m / 60)}h ${m % 60}m`;
+  return `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`;
+}
+
+/* When the Yahoo half of this payload was actually fetched. The browser clock
+   cannot stand in for it: the server answers from a 1-hour memory cache and a
+   6-hour disk cache, so a page painted at 16:00 may be carrying numbers
+   fetched at 10:00, and stamping it "FETCHED 16:00" is a freshness claim that
+   is wrong by six hours. A payload written before the server stamped
+   fetched_at says so rather than borrowing the render time. */
+function snapFetched(iso, now) {
+  const ms = iso ? now.getTime() - Date.parse(iso) : NaN;
+  if (!iso || !Number.isFinite(ms)) {
+    return {
+      text: "fetch time not recorded in this payload",
+      title: "this response came from a cache written before the server "
+           + "stamped fetched_at; the browser clock is not the fetch time",
+    };
+  }
+  return {
+    text: `fetched ${String(iso).slice(0, 16).replace("T", " ")}Z · ${snapAge(ms)} old`,
+    title: "server-side fetch time from the company payload; the server may "
+         + "serve this response from cache for up to 6 hours",
+  };
+}
+
+/* Every snapshot cell goes through here, so a cell cannot be written without
+   a reason for its absence - the label, the value and the why-not travel
+   together. Returns the [label, value, class] triple metricsStrip expects. */
+function snapCell(gaps, label, r) {
+  if (r.v == null) {
+    const why = r.reason
+      || "the snapshot recorded no reason for this gap, which is a defect in "
+       + "this build and not a fact about the company";
+    gaps.push([label, why]);
+    return [label, `<span class="faint" title="${esc(why)}">—</span>`, "faint"];
+  }
+  return [label, `<span title="${esc(r.title || "")}">${r.v}</span>`, r.k || ""];
+}
+
+/* The next results date, from the company's own LODR Reg 29 intimation.
+   Every branch that cannot name a future date returns the most useful true
+   thing it knows instead - the next non-results meeting, or the last results
+   meeting that has already happened - because "no data" on an earnings date
+   is what gets "fixed" into a guess. */
+function snapNextResults(bm, sym, now) {
+  if (bm && !Array.isArray(bm) && bm.error) {
+    return { v: null, reason: `the NSE board-meeting feed failed (${bm.error}) — `
+      + "no meeting is known either way, which is not the same as none notified" };
+  }
+  if (!Array.isArray(bm)) {
+    return { v: null, reason: `no board-meeting list in this payload for ${sym}` };
+  }
+  const today = snapToday(now);
+  const rows = bm.map((x) => ({ x, t: snapDate(x && x.date) }));
+  const unread = rows.filter((r) => !r.t).length;
+  const clip = unread
+    ? ` · ${unread} of ${rows.length} feed dates were unreadable and are excluded`
+    : "";
+  const fut = rows.filter((r) => r.t && r.t.getTime() >= today)
+                  .sort((a, b) => a.t - b.t);
+  const hit = fut.find((r) => r.x.is_results);
+  if (hit) {
+    const days = Math.round((hit.t.getTime() - today) / 86400000);
+    return {
+      v: `${esc(snapDay(hit.t))} <span class="faint">· in ${days}d</span>`,
+      title: `NSE board-meeting intimation (LODR Reg 29): ${String(hit.x.purpose
+        || hit.x.description || "results").slice(0, 90)}${clip}`,
+    };
+  }
+  if (fut.length) {
+    return { v: null, reason: `no RESULTS meeting notified; the next notified board `
+      + `meeting is ${snapDay(fut[0].t)} (${String(fut[0].x.purpose || "purpose not "
+      + "stated").slice(0, 60)})${clip}` };
+  }
+  const past = rows.filter((r) => r.t && r.x.is_results).sort((a, b) => b.t - a.t);
+  if (past.length) {
+    return { v: null, reason: `no upcoming results date notified — the last one `
+      + `intimated was ${snapDay(past[0].t)}${clip}` };
+  }
+  return { v: null, reason: `NSE lists no board-meeting intimation for ${sym}${clip}` };
+}
+
+/* The newest Ind AS quarterly filing on the exchange - how current the
+   fundamentals below actually are. Chosen by parsed date rather than by
+   trusting the feed's order, because "newest first" is a promise made in a
+   docstring and this cell is a claim made on screen. */
+function snapLastFiled(q, sym) {
+  if (q && !Array.isArray(q) && q.error) {
+    return { v: null, reason: `the Ind AS quarterly filing list failed (${q.error})` };
+  }
+  if (!Array.isArray(q) || !q.length) {
+    return { v: null, reason: `the exchange lists no Ind AS quarterly filing for ${sym}` };
+  }
+  const rows = q.map((x) => ({ x, t: snapDate(x && x.to) })).filter((r) => r.t)
+                .sort((a, b) => b.t - a.t);
+  if (!rows.length) {
+    return { v: null, reason: `${q.length} quarterly filings are listed and none `
+      + "carries a period-end date this build can read" };
+  }
+  const top = rows[0].x;
+  return {
+    v: esc(snapDay(rows[0].t)),
+    title: `newest Ind AS quarterly filing · period to ${top.to || "—"} · basis `
+         + `${top.basis || "not stated"} · filed ${String(top.filed || "—").slice(0, 11)} · NSE`,
+  };
+}
+
+/* The financial trend on one line: the filed revenue series in time order,
+   the year-on-year change, and the margin it converts to. Never a chart -
+   four numbers a reader can check against the table below beat a shape. */
+function snapTrend(fin, sym) {
+  const lbl = `<span style="color:var(--blue)">FINANCIALS</span> `;
+  if (!fin || fin.error) {
+    return lbl + `<span class="faint">${esc(fin && fin.error
+      ? fin.error : `no annual statements in this payload for ${sym}`)}</span>`;
+  }
+  const rev = (fin.annual || {}).revenue || {};
+  // ISO period keys ("2025-03-31") sort correctly as text. The labels that did
+  // NOT - "Mar 2024", "Sep 2023" - are what drew a trend through points that
+  // were not in time order, so anything unparseable is dropped and counted.
+  const years = Object.keys(rev).filter((y) => snapNum(rev[y]) !== null).sort();
+  if (!years.length) {
+    return lbl + `<span class="faint">${esc(fin.source || "the annual statements")}`
+      + ` carry no revenue row for ${esc(sym)}</span>`;
+  }
+  const shown = years.slice(-4);
+  const series = shown.map((y) =>
+    `<span class="faint">${esc(y.slice(0, 7))}</span> ${snapCr(rev[y])}`).join(" → ");
+  const last = years[years.length - 1], prev = years[years.length - 2];
+  let yoy;
+  if (!prev) {
+    yoy = `<span class="faint" title="a year-on-year change needs two filed years; `
+        + `this payload carries one (${esc(last)})">YoY —</span>`;
+  } else if (!(snapNum(rev[prev]) > 0)) {
+    yoy = `<span class="faint" title="the prior year (${esc(prev)}) filed revenue of `
+        + `${esc(String(rev[prev]))}; a percentage change off a zero or negative base `
+        + `is not a percentage">YoY —</span>`;
+  } else {
+    const p = (rev[last] / rev[prev] - 1) * 100;
+    yoy = `<span class="faint">YoY</span> <b class="${p >= 0 ? "up" : "down"}" `
+        + `title="computed here: revenue ${esc(last)} ÷ revenue ${esc(prev)} − 1 · `
+        + `${esc(fin.source || "")}">${p >= 0 ? "+" : ""}${p.toFixed(1)}%</b>`;
+  }
+  const marg = fin.net_margin_pct || {};
+  const mLast = snapNum(marg[last]), mFirst = snapNum(marg[shown[0]]);
+  let mg;
+  if (mLast === null) {
+    mg = `<span class="faint" title="net margin needs both a revenue and a net income `
+       + `row for ${esc(last)}; this payload carries only one">NET MARGIN —</span>`;
+  } else {
+    mg = `<span class="faint">NET MARGIN</span> `
+       + (shown.length > 1 && mFirst !== null && shown[0] !== last
+          ? `<span class="faint">${mFirst.toFixed(1)}% (${esc(shown[0].slice(0, 7))}) →</span> ` : "")
+       + `<b class="${mLast >= 0 ? "up" : "down"}">${mLast.toFixed(1)}%</b>`;
+  }
+  const more = years.length - shown.length;
+  return lbl + `<span class="faint">REVENUE ₹Cr</span> ${series} · ${yoy} · ${mg}`
+    + ` · <span class="faint">${esc(fin.source || "source not named")}`
+    + `${fin.note ? " · " + esc(fin.note) : ""}`
+    + `${more > 0 ? ` · ${more} earlier filed year${more > 1 ? "s" : ""} not shown here` : ""}`
+    + `</span>`;
+}
+
+/* What it makes, in one sentence, quoted rather than paraphrased. A summary
+   clipped without saying so reads as the whole story, so the clip is stated
+   and the full text stays in BUSINESS below. */
+const SNAP_ABBR = /(?:\b(?:Ltd|Inc|Co|Corp|Pvt|Pty|No|Nos|St|Mr|Mrs|Ms|Dr|Jr|Sr)\.)$/;
+function snapMakes(b) {
+  const s = String((b && b.summary) || "").trim();
+  const src = (b && b.source) || "the business-summary source";
+  if (!s || /^no business description published$/i.test(s)) {
+    return `<span class="faint">${esc(src)} carries no business description — `
+         + `nothing is inferred to fill the gap</span>`;
+  }
+  // Sentence-split, then keep joining while the piece ends on an abbreviation:
+  // "Reliance Industries Ltd. engages in..." is one sentence, not two.
+  const parts = s.split(/(?<=[.!?])\s+/);
+  let one = "";
+  for (const p of parts) {
+    one = one ? one + " " + p : p;
+    if (!SNAP_ABBR.test(one) && one.length >= 40) break;
+  }
+  let how = "first sentence";
+  if (one.length > 300) { one = one.slice(0, 300).trim(); how = "first 300 characters"; }
+  if (one.length >= s.length) return `${esc(s)} <span class="faint">· ${esc(src)}</span>`;
+  return `${esc(one)} <span class="faint">· ${how} of ${esc(src)} — full text in `
+       + `BUSINESS below</span>`;
+}
+
+/* Who it sells to, filled in late by drawSupplyMap from the /extract payload
+   that block already fetches - this issues no request of its own. Every
+   branch is terminal and named: {failed} is the fetch dying, building is the
+   extraction still running (it self-polls), !extracted is no stored
+   extraction, and an empty customer list is the ANSWER rather than a gap. */
+function snapSellsHtml(ex) {
+  if (!ex) {
+    return `<span class="faint">reading the filed annual report — no extra `
+         + `request, the SUPPLY CHAIN block below already fetches it</span>`;
+  }
+  if (ex.failed) {
+    return `<span class="faint">the annual-report extraction could not be read: `
+         + `${esc(ex.failed)}</span>`;
+  }
+  if (ex.building) {
+    return `<span class="faint">reading the filed annual report — `
+         + `${esc(ex.stage || "extracting")}</span>`;
+  }
+  if (!ex.extracted) {
+    return `<span class="faint">no named customer: ${esc(ex.reason || "no extraction stored")}`
+         + `${ex.runnable === false
+             ? " — a missing SOURCE, not a missing feature"
+             : " — EXTRACT NOW in SUPPLY CHAIN below"}</span>`;
+  }
+  const cs = (ex.customers || []).filter((c) => c && c.name);
+  if (!cs.length) {
+    return `<span class="faint">${esc(ex.document || "the filed annual report")} names `
+         + `no customer — zero named customers is the answer, not a gap</span>`;
+  }
+  const top = cs.slice(0, 4);
+  return top.map((c) => `<b>${esc(String(c.name).toUpperCase())}</b>`).join(" · ")
+    + (cs.length > top.length
+        ? ` <span class="faint">· ${cs.length - top.length} more in SUPPLY CHAIN below</span>` : "")
+    + ` <span class="faint">· quoted from ${esc(ex.document || "the filed annual report")},`
+    + ` each quote checked verbatim against the document</span>`;
+}
+
+function companySnapshot(d, sym, now) {
+  now = now || new Date();
+  d = d || {};
+  const pr = d.profile || {}, own = d.ownership || {}, fin = d.financials || {};
+  const gaps = [];
+  const psrc = pr.source || "the profile source";
+  const got = snapFetched(d.fetched_at, now);
+  const vsrc = `${psrc} · ${got.text}`;
+  const osrc = own.source || "no shareholding source named in this payload";
+  const oAs = own.as_of ? `as of ${own.as_of}` : "the filing carries no as-of date";
+  // The Yahoo fallback fires when the NSE filing cannot be read, and it looks
+  // exactly like the filing on screen. It gets a visible mark, not a silent
+  // substitution: an estimate and a filed figure are different claims.
+  const est = /estimate/i.test(osrc);
+  const estMark = est
+    ? ` <span class="faint" title="${esc(`estimate, not the filing — ${own.label_note
+        || osrc}`)}">≈</span>` : "";
+
+  const mcap = snapCr(pr.market_cap);
+  const pe = snapNum(pr.trailing_pe), pb = snapNum(pr.price_to_book);
+  const lo = snapNum(pr["52w_low"]), hi = snapNum(pr["52w_high"]);
+  const beta = snapNum(pr.beta), dy = snapNum(pr.dividend_yield_pct);
+  const revRows = (fin.annual || {}).revenue || {};
+  const niRows = (fin.annual || {}).net_income || {};
+  const lastY = Object.keys(revRows).sort().slice(-1)[0]
+             || Object.keys(niRows).sort().slice(-1)[0];
+  const lastNi = lastY ? snapNum(niRows[lastY]) : null;
+
+  const stripA = metricsStrip([
+    snapCell(gaps, "MCAP", mcap === null
+      ? { v: null, reason: `${psrc} carries no market capitalisation for ${sym}.NS` }
+      : { v: `₹${mcap} Cr`, title: `Yahoo Finance marketCap · ${vsrc}` }),
+    snapCell(gaps, "P/E", pe === null
+      ? { v: null, reason: lastNi !== null && lastNi < 0
+          ? `Yahoo publishes no trailing P/E for ${sym}.NS; the last filed year (to `
+            + `${lastY}) shows a net LOSS of ₹${snapCr(Math.abs(lastNi))} Cr`
+          : `Yahoo publishes no trailing P/E for ${sym}.NS — it needs four filed `
+            + `quarters of earnings` }
+      : { v: pe.toFixed(1), title: `Yahoo Finance trailingPE · ${vsrc}` }),
+    snapCell(gaps, "P/B", pb === null
+      ? { v: null, reason: `Yahoo publishes no priceToBook for ${sym}.NS` }
+      : { v: pb.toFixed(1), title: `Yahoo Finance priceToBook · ${vsrc}` }),
+    // Passed through EXACTLY as the old header printed it - deliberately not
+    // rescaled and not restated. Yahoo has published this field as a fraction
+    // in some API versions and as a percent in others, and the installed
+    // yfinance (1.4.1, grepped: the package never touches dividendYield)
+    // forwards it untransformed, so this build cannot establish the unit.
+    // Multiplying by 100 "to fix it" would be exactly the plausible-looking
+    // wrong number this file exists to prevent; the title names the raw field
+    // so a reader can check it against the source.
+    snapCell(gaps, "DIV YLD", dy === null
+      ? { v: null, reason: `${psrc} carries no dividend yield for ${sym}.NS` }
+      : { v: `${dy.toFixed(2)}%`, title: `Yahoo Finance dividendYield for ${sym}.NS, `
+          + `passed through unscaled · ${vsrc}` }),
+    snapCell(gaps, "BETA", beta === null
+      ? { v: null, reason: `Yahoo publishes no beta for ${sym}.NS — beta is computed `
+          + `from about five years of monthly returns` }
+      : { v: beta.toFixed(2), title: `Yahoo Finance beta · ${vsrc}` }),
+    snapCell(gaps, "52W RANGE", (lo === null || hi === null)
+      ? { v: null, reason: lo === null && hi === null
+          ? `${psrc} carries no 52-week range for ${sym}.NS`
+          : lo === null
+            ? "the profile carries a 52-week HIGH and no low; half a range is not a range"
+            : "the profile carries a 52-week LOW and no high; half a range is not a range" }
+      : { v: `${fmt.n(lo)}–${fmt.n(hi)}`, title: `Yahoo Finance fiftyTwoWeekLow/High · `
+          + `${vsrc}. This payload carries no last price, so the strip does not say `
+          + `where the stock sits inside the range.` }),
+  ]);
+
+  const idom = snapNum(own.inst_domestic_pct), ifgn = snapNum(own.inst_foreign_pct);
+  const prom = snapNum(own.promoter_pct);
+  const pl = d.pledge;
+  const plShares = pl && !pl.error ? snapNum(pl.pledged_shares) : null;
+
+  const stripB = metricsStrip([
+    // A null promoter stake beside 100% public is NOT missing data. HDFC Bank
+    // and ICICI Bank are professionally managed and file no promoter category
+    // at all - that is a fact about the company, and one a reader wants. The
+    // old branch pasted the filing's generic legend ("Promoter + public sum to
+    // 100...") in as the "reason", which explains the schema and says nothing
+    // about this company. Only a genuinely unreadable filing dashes.
+    snapCell(gaps, "PROMOTER", prom !== null
+      ? { v: `${prom.toFixed(1)}%${estMark}`, title: `${osrc} · ${oAs} · SEBI LODR Reg 31` }
+      : (snapNum(own.public_pct) !== null && Math.abs(own.public_pct - 100) < 0.05
+        ? { v: `none${estMark}`,
+            title: `the filing reports 100% public and no promoter category — `
+                 + `a professionally managed company. ${osrc} · ${oAs}` }
+        : { v: null, reason: own.label_note
+            ? `the shareholding filing was not read: ${
+                String(own.label_note).slice(0, 90)}`
+            : `${osrc} reports neither a promoter total nor a 100% public `
+              + `holding for ${sym}, so the split cannot be stated` })),
+    snapCell(gaps, "INSTITUTIONS", (idom === null || ifgn === null)
+      ? { v: null, reason: (idom === null && ifgn === null)
+          ? `no institutional split: ${String(own.label_note || osrc).slice(0, 100)}`
+          : `only the ${idom === null ? "FOREIGN" : "DOMESTIC"} institutional total is `
+            + `published here — adding a known number to an unknown one fabricates the total` }
+      : { v: `${(idom + ifgn).toFixed(1)}%${estMark}`,
+          title: `domestic ${idom.toFixed(2)}% + foreign ${ifgn.toFixed(2)}%, summed here `
+               + `· ${osrc} · ${oAs} · both sit INSIDE public in SEBI's tree` }),
+    snapCell(gaps, "PLEDGED", pl && pl.error
+      ? { v: null, reason: `the SAST Reg 31 encumbrance feed failed (${String(pl.error).slice(0, 80)})`
+          + ` — nothing is known either way, which is not zero` }
+      : !pl
+        ? { v: null, reason: `no SAST Reg 31 encumbrance filing on record for ${sym} — `
+            + `not the same as zero` }
+        : plShares === null
+          ? { v: null, reason: `the encumbrance filing for ${sym} carries no share count` }
+          : { v: `${fmt.compact(plShares)} sh`, k: plShares > 0 ? "down" : "up",
+              title: `SAST Reg 31 promoter encumbrance · as of `
+                   + `${String(pl.as_of || "").slice(0, 11) || "no date in the filing"} `
+                   + `· NSE corporate-pledgedata` }),
+    snapCell(gaps, "NEXT RESULTS", snapNextResults(d.board_meetings, sym, now)),
+    snapCell(gaps, "LAST FILED", snapLastFiled(d.quarterly, sym)),
+  ]);
+
+  const idBits = [
+    pr.yahoo_sector ? esc(pr.yahoo_sector) : `<span class="faint">no sector published</span>`,
+    pr.yahoo_industry ? esc(pr.yahoo_industry) : `<span class="faint">no industry published</span>`,
+    pr.hq ? esc(pr.hq) : `<span class="faint">no head office published</span>`,
+    snapNum(pr.employees) === null
+      ? `<span class="faint">employee count not published</span>`
+      : `${fmt.n(pr.employees, 0)} employees`,
+  ];
+  if (pr.website) {
+    idBits.push(`<a href="${esc(pr.website)}" target="_blank" rel="noopener">${esc(pr.website)}</a>`);
+  }
+
+  const line = "padding:4px 12px;text-align:left";
+  return `
+    <div class="kv-strip" style="display:block;${line}">
+      <b class="hl">${esc(pr.name || sym)}</b>
+      <span class="faint"> · ${idBits.join(" · ")}</span>
+    </div>
+    ${stripA}
+    ${stripB}
+    <div class="empty" style="${line}">${snapTrend(fin, sym)}</div>
+    <div class="empty" style="${line}">
+      <span style="color:var(--blue)">MAKES</span> ${snapMakes(d.business)}<br>
+      <span style="color:var(--blue)">SELLS TO</span> <span id="snap-sells">${snapSellsHtml(null)}</span>
+    </div>
+    ${gaps.length ? `<div class="empty" style="${line}"><span class="faint">
+      <b>NOT AVAILABLE</b> · ${gaps.map(([k, why]) => `${esc(k)}: ${esc(why)}`).join(" · ")}
+      </span></div>` : ""}
+    <div class="empty" style="${line};border-bottom:1px solid var(--stroke-soft)"><span class="faint">
+      SOURCES · valuation: ${esc(psrc)}, ${esc(got.text)}
+      <span title="${esc(got.title)}">(the server may serve this from cache for up to 6 h)</span>
+      · ownership: ${esc(osrc)}, ${esc(oAs)}
+      · financials: ${esc(fin.source || "not in this payload")}${fin.note ? ` (${esc(fin.note)})` : ""}
+      · calendar, encumbrance and quarterly filings: NSE corporate feeds, LODR Reg 29 · SAST Reg 31 · Ind AS
+      · this snapshot issues no request of its own — every figure above comes from the call this page already made
+      </span></div>`;
+}
+
+const SNAP_LIFT_END = true;
+
 /* ---------- COMPANY INTELLIGENCE (CMP) ----------
    The DES page, honestly sourced: every section names where it came from,
    and the two things only licensed data carries - the holder registry and
@@ -3005,10 +4012,27 @@ async function renderCompany(view, params = {}) {
   $("#cmp-sym").onkeydown = (e) => { if (e.key === "Enter") $("#cmp-go").click(); };
   try {
     const d = await getJSON(`/api/company/${encodeURIComponent(sym)}`);
+    await colviewReady();   // never rejects; see colviewLoad
     const host = $("#cmp-panel .panel-body");
     if (!host) return;
     const pr = d.profile, own = d.ownership, fin = d.financials, peers = d.peers;
-    $("#cmp-upd").innerHTML = ageStamp(null);
+    // The payload's own fetch time, not the browser's clock. This response can
+    // come from a 1-hour memory cache or a 6-hour disk cache, and ageStamp(null)
+    // printed "FETCHED <now>" over numbers that could be six hours old. Not
+    // ageStamp(d.fetched_at) either: that branch says "AS OF" and titles itself
+    // "source timestamp", and this is when WE fetched, not when Yahoo published.
+    // The thresholds are the server's two cache TTLs, so amber means "past the
+    // memory cache" and red means "at the far end of the disk cache".
+    const fetchAge = ageOf(d.fetched_at);
+    // ageStamp(null) renders "FETCHED <now>" from the BROWSER clock. On a disk
+    // cache entry written before the server stamped fetched_at, that is a
+    // freshness claim about numbers which may be six hours old. Say the time
+    // is unknown instead - an unknown age is not a fresh one.
+    $("#cmp-upd").innerHTML = fetchAge === null
+      ? `<span class="age" title="this response came from a cache written before the server recorded a fetch time; its true age is unknown">FETCH TIME NOT RECORDED</span>`
+      : `<span class="age ${ageClass(fetchAge, 3600e3, 6 * 3600e3)}"
+           title="server-side fetch time carried in the payload; the server may serve it from cache for up to 6 hours"
+           >FETCHED ${fmt.ist(new Date(d.fetched_at))} · ${ageText(fetchAge)} OLD</span>`;
     const cr = (v) => v == null ? "—" : v >= 1e7 ? `₹${fmt.n(v / 1e7, 0)} Cr` : fmt.n(v);
     const ownBar = (label, pct, color) => pct == null ? "" : `
       <div class="own-row"><span>${label}</span>
@@ -3016,16 +4040,7 @@ async function renderCompany(view, params = {}) {
         <b>${pct.toFixed(1)}%</b></div>`;
     const years = fin.annual ? Object.keys(fin.annual.revenue || {}).sort().reverse().slice(0, 4) : [];
     host.innerHTML = `
-      <div class="kv-strip">
-        <div class="kv"><div class="k">NAME</div><div class="v sm">${esc(pr.name || sym)}</div></div>
-        <div class="kv"><div class="k">HQ</div><div class="v sm">${esc(pr.hq || "—")}</div></div>
-        <div class="kv"><div class="k">EMPLOYEES</div><div class="v sm">${pr.employees ? fmt.n(pr.employees, 0) : "—"}</div></div>
-        <div class="kv"><div class="k">MCAP</div><div class="v sm">${cr(pr.market_cap)}</div></div>
-        <div class="kv"><div class="k">P/E</div><div class="v sm">${pr.trailing_pe ? pr.trailing_pe.toFixed(1) : "—"}</div></div>
-        <div class="kv"><div class="k">P/B</div><div class="v sm">${pr.price_to_book ? pr.price_to_book.toFixed(1) : "—"}</div></div>
-        <div class="kv"><div class="k">DIV YLD</div><div class="v sm">${pr.dividend_yield_pct != null ? pr.dividend_yield_pct.toFixed(2) + "%" : "—"}</div></div>
-        <div class="kv"><div class="k">52W</div><div class="v sm">${pr["52w_low"] ? fmt.n(pr["52w_low"]) + "–" + fmt.n(pr["52w_high"]) : "—"}</div></div>
-      </div>
+      ${companySnapshot(d, sym)}
       ${d.msci && d.msci.call && d.msci.call.toLowerCase() !== "hold" ? `
         <div class="empty" style="padding:4px 12px"><span class="badge amb">MSCI · ${esc(String(d.msci.call).toUpperCase())}</span>
           <span class="faint"> p=${d.msci.p_in_index ?? "—"} · mcap $${d.msci.full_mcap_usd_bn ?? "—"}bn · ${esc(String(d.msci.reason || "").slice(0, 130))}</span></div>` : ""}
@@ -3098,22 +4113,8 @@ async function renderCompany(view, params = {}) {
       ${secBlock("INSIDER DEALING — PIT REG 7", Array.isArray(d.insider) ? d.insider.length : null,
         !Array.isArray(d.insider) || !d.insider.length
           ? `<div class="empty" style="padding:8px 14px">no insider filing on record</div>`
-          : `<div class="x-scroll"><table class="tbl"><thead><tr><th class="txt">DATE</th><th class="txt">PERSON</th>
-              <th class="txt">RELATION</th><th class="txt">DEAL</th><th>QTY</th><th>VALUE</th>
-              <th>SHARES BEFORE→AFTER</th><th>STAKE</th></tr></thead><tbody>
-            ${d.insider.map((x) => `<tr>
-              <td class="txt faint">${esc(String(x.date || "").slice(0, 11))}</td>
-              <td class="txt sym">${esc(x.name || "")}</td>
-              <td class="txt faint">${esc(x.category || "")}</td>
-              <td class="txt ${/buy/i.test(x.type || "") ? "up" : /sell/i.test(x.type || "") ? "down" : ""}">${esc(x.type || "")}</td>
-              <td>${x.qty ? fmt.compact(x.qty) : "—"}</td>
-              <td>${x.value ? fmt.compact(x.value) : "—"}</td>
-              <td class="faint">${x.shares_before != null && x.shares_after != null
-                  ? fmt.compact(x.shares_before) + " → " + fmt.compact(x.shares_after) : "—"}</td>
-              <td class="faint" title="${x.pct_before == null
-                  ? "the filing rounds this holding to 0% - the share counts are the fact" : ""}">${
-                  x.pct_before != null ? x.pct_before + "% → " + (x.pct_after ?? "—") + "%" : "—"}</td>
-            </tr>`).join("")}</tbody></table></div>
+          : `<div class="cv-bar">${colviewSlot("insider")}</div>
+            <div class="x-scroll" id="cmp-insider-tbl">${colTable("insider", d.insider)}</div>
             <div class="empty" style="padding:4px 14px 8px"><span class="faint">
               SEBI (Prohibition of Insider Trading) Reg 7(2) via NSE /api/corporates-pit — a designated
               person, promoter or immediate relative must file any trade above ₹10 lakh within two
@@ -3137,9 +4138,22 @@ async function renderCompany(view, params = {}) {
 
       ${secBlock("CREDIT & ENCUMBRANCE",
         (Array.isArray(d.credit_ratings) ? d.credit_ratings.length : 0), `
-        ${d.pledge ? `<div class="empty" style="padding:6px 14px">
-          promoter pledge: <b class="${d.pledge.pledged_shares ? "down" : "up"}">${fmt.n(d.pledge.pledged_shares || 0, 0)}</b> shares
-          <span class="faint">· SAST Reg 31 · as of ${esc(String(d.pledge.as_of || "").slice(0, 11))}</span></div>`
+        ${(d.pledge && d.pledge.error)
+          // A FEED failure is not a filing that says zero. This branch used to
+          // fall through to the one below it, and because {error: "..."} is a
+          // truthy object with no pledged_shares, `|| 0` printed "promoter
+          // pledge: 0 shares" in green - a fabricated fact, in the direction
+          // colour that means "good", on a network error.
+          ? `<div class="empty" style="padding:6px 14px"><span class="faint">encumbrance unknown —
+             the SAST Reg 31 feed failed: ${esc(String(d.pledge.error).slice(0, 140))}.
+             Nothing is known either way, which is not zero.</span></div>`
+          : (d.pledge && d.pledge.pledged_shares != null)
+          ? `<div class="empty" style="padding:6px 14px">
+            promoter pledge: <b class="${d.pledge.pledged_shares ? "down" : "up"}">${fmt.n(d.pledge.pledged_shares, 0)}</b> shares
+            <span class="faint">· SAST Reg 31 · as of ${esc(String(d.pledge.as_of || "").slice(0, 11)) || "no date in the filing"}</span></div>`
+          : d.pledge
+          ? `<div class="empty" style="padding:6px 14px"><span class="faint">an encumbrance filing exists for this
+             company and carries no share count — the number is missing from the filing, not zero</span></div>`
           : `<div class="empty" style="padding:6px 14px"><span class="faint">no encumbrance filing on record — not the same as zero</span></div>`}
         ${(Array.isArray(d.credit_ratings) && d.credit_ratings.length) ? `<table class="tbl"><thead><tr>
           <th class="txt">DATE</th><th class="txt">AGENCY</th><th class="txt">RATING</th><th class="txt">ACTION</th>
@@ -3184,6 +4198,14 @@ async function renderCompany(view, params = {}) {
     drawRelatedParties(sym, view);
     drawFundOwnership(sym, view);
     drawSegments(sym, view);
+    // Only the insider table is rebuilt on a column change — the rest of this
+    // page is a dozen other sections that a column choice says nothing about.
+    if (Array.isArray(d.insider) && d.insider.length) {
+      colviewMount(host, "insider", () => {
+        const box = $("#cmp-insider-tbl");
+        if (box) box.innerHTML = colTable("insider", d.insider);
+      });
+    }
     host.querySelectorAll(".map-tile").forEach((el) => {
       el.onclick = () => show("company", { symbol: el.dataset.sym });
     });
@@ -3350,6 +4372,16 @@ async function drawSupplyMap(sym, view) {
      and anything that failed that check is shown in its own section rather
      than quietly dropped. */
   const host = () => $("#cmp-splc");
+  // The snapshot's SELLS TO line is filled from THIS payload - the company
+  // page fires /extract once and both blocks read it, so the snapshot costs
+  // no extra request and a 2-minute extraction cannot hold the strip up.
+  // Every branch below calls it, including the catch: a line that says
+  // "reading the filed annual report" forever is a spinner with better
+  // manners, and this page has shipped one of those before.
+  const sells = (ex) => {
+    const slot = $("#snap-sells");
+    if (slot) slot.innerHTML = snapSellsHtml(ex);
+  };
   const col = (title, nodes, cls_) => `
     <div class="splc-col">
       <div class="splc-head ${cls_}">${title} <span class="faint">${nodes.length}</span></div>
@@ -3367,6 +4399,12 @@ async function drawSupplyMap(sym, view) {
     const d = await getJSON(`/api/company/${encodeURIComponent(sym)}/extract`);
     const h = host();
     if (!h) return;
+    // An extraction can take minutes (it downloads a 400-page PDF). If the
+    // reader typed another ticker meanwhile, this response belongs to the
+    // PREVIOUS company and must be dropped - otherwise company A's customers
+    // are written into company B's snapshot, sourced and confident.
+    if (state.symbol !== sym) return;
+    sells(d);
     if (d.building) {
       h.innerHTML = loading(esc(d.stage || "extracting"));
       setTimeout(() => { if (document.body.contains(view)) drawSupplyMap(sym, view); }, 5000);
@@ -3447,6 +4485,7 @@ async function drawSupplyMap(sym, view) {
       });
     }
   } catch (e) {
+    sells({ failed: e.message });
     const h = host();
     if (h) h.innerHTML = `<div class="bad" style="padding:10px 14px">${esc(e.message)}</div>`;
   }
@@ -3947,7 +4986,7 @@ async function renderScreener(view) {
       <select class="in" id="scr-uni">${["nifty50","banks","it","fno","mega","tech","semis","etf"]
         .map((u) => `<option>${u}</option>`).join("")}</select>
       <input class="in" id="scr-rules" placeholder="rsi<40, above_sma200" size="20">
-      <button class="btn" id="scr-go">SCREEN</button></span>`,
+      <button class="btn" id="scr-go">SCREEN</button>${colviewSlot("screener")}</span>`,
     body: `<div class="empty">Rules AND together: rsi, ret_1w/1mo/3mo, vol_ann, from_high, vol_surge, above_sma50/200</div>`,
   });
 
@@ -3955,7 +4994,15 @@ async function renderScreener(view) {
   // currently typed: half-finished text in the box must never fire a sweep.
   // Null until the trader screens once, because a universe sweep is a history
   // fetch per symbol and nobody asked for one by opening the view.
-  let query = null, inflight = false;
+  let query = null, inflight = false, lastResp = null;
+
+  // A column change repaints from the response already in hand. Re-running
+  // the screen would be a fresh history fetch per symbol to answer a question
+  // that has already been answered, and the two answers could differ.
+  const paintRows = (r) => {
+    const b = $("#scr-panel .panel-body");
+    if (b) b.innerHTML = colTable("screener", r.rows);
+  };
 
   const run = async (q, manual) => {
     if (inflight) {
@@ -3969,25 +5016,16 @@ async function renderScreener(view) {
       const r = await getJSON(
         `/api/screen?universe=${q.universe}&rules=${encodeURIComponent(q.rules)}`);
       if (!document.body.contains(view)) return;  // view switched mid-flight
+      // The saved column set must be known BEFORE the first paint, or the
+      // table shows the shipped columns and then visibly flips.
+      await colviewReady();
+      if (!document.body.contains(view)) return;
       query = q;
+      lastResp = r;
       $("#scr-upd").innerHTML = stamp(
         `${r.rows.length}/${r.universe_size} PASS${r.errors ? ` · ${r.errors} ERRORS` : ""} · AUTO 5m`)
         + " " + ageStamp(null);
-      body.innerHTML = `
-        <table class="tbl"><thead><tr><th>SYMBOL</th><th>PRICE</th><th>1W</th><th>1M</th><th>3M</th>
-        <th>RSI</th><th>VOL ANN</th><th>OFF HIGH</th><th>SMA50</th><th>SMA200</th></tr></thead>
-        <tbody>${r.rows.map((row) => `<tr>
-          <td class="txt sym" onclick="show('chart',{symbol:'${row.symbol}'})">${row.symbol}</td>
-          <td>${fmt.n(row.price)}</td>
-          <td class="${cls(row.ret_1w)}">${fmt.pct(row.ret_1w)}</td>
-          <td class="${cls(row.ret_1mo)}">${fmt.pct(row.ret_1mo)}</td>
-          <td class="${cls(row.ret_3mo)}">${fmt.pct(row.ret_3mo)}</td>
-          <td>${row.rsi ? row.rsi.toFixed(1) : "—"}</td>
-          <td>${row.vol_ann ? (row.vol_ann * 100).toFixed(0) + "%" : "—"}</td>
-          <td class="${cls(row.from_high)}">${fmt.pct(row.from_high)}</td>
-          <td class="${row.above_sma50 ? "up" : "faint"}">${row.above_sma50 ? "ABOVE" : "below"}</td>
-          <td class="${row.above_sma200 ? "up" : "faint"}">${row.above_sma200 ? "ABOVE" : "below"}</td>
-        </tr>`).join("")}</tbody></table>`;
+      paintRows(r);
     } catch (e) {
       if (!document.body.contains(view)) return;  // view switched mid-flight
       // A failed poll must never wipe the last good table; a failed manual
@@ -4003,6 +5041,13 @@ async function renderScreener(view) {
     universe: $("#scr-uni").value,
     rules: $("#scr-rules").value.split(",").map((s) => s.trim()).filter(Boolean).join(","),
   }, true);
+  // Delegated, not an onclick attribute: a quote in an interpolated symbol
+  // breaks out of the attribute, which is the bug pulseRow's comment records.
+  onView(view, "click", (ev) => {
+    const el = ev.target.closest("[data-scr-sym]");
+    if (el) show("chart", { symbol: el.dataset.scrSym });
+  });
+  colviewMount(view, "screener", () => { if (lastResp) paintRows(lastResp); });
   // Every metric here is derived from daily candles behind a 15-minute history
   // cache (provider.py:169-170), so 5 minutes picks up a cache turnover well
   // inside its life without re-deriving identical rows every minute.
@@ -4038,7 +5083,7 @@ let prtBasket = [];   // staged legs, view-independent so a mis-click keeps them
 
 async function renderPortfolio(view) {
   view.innerHTML = `
-    ${panel({ title: "BOOK", id: "pf-panel", flush: true, meta: "—",
+    ${panel({ title: "BOOK", id: "pf-panel", flush: true, meta: colviewSlot("positions"),
       body: loading("valuing") })}
     <div class="row" style="display:grid;grid-template-columns:1fr 1fr;gap:0">
     ${panel({ title: "NEW TRADE — PAPER", id: "pf-trade", flush: true,
@@ -4139,11 +5184,23 @@ async function renderPortfolio(view) {
     ticket = el;
   };
 
+  // The row attributes openSettle() reads off the <tr>. They ride the row, not
+  // a cell, so they survive whatever column set is on screen — SETTLE must not
+  // stop working because someone dropped a column.
+  let lastBook = null;
+  const posTable = (positions) => colTable("positions", positions, {
+    tr: (pos) => `class="${pos.expired ? "row-dead" : ""}" data-key="${esc(pos.symbol)}"`
+      + ` data-label="${esc(pos.label || pos.symbol)}" data-qty="${pos.quantity}"`
+      + ` data-avg="${pos.avg_cost}"`,
+  });
+
   const draw = async () => {
     try {
       const p = await getJSON("/api/portfolio");
+      await colviewReady();   // never rejects; see colviewLoad
       const host = $("#pf-panel .panel-body");
       if (!host) return;
+      lastBook = p;
       const r = p.risk || { net: {}, by_underlying: {}, unmarked: [], complete: true };
       const net = r.net || {};
       state.lastRisk = r;
@@ -4157,9 +5214,21 @@ async function renderPortfolio(view) {
       }
       state.lastMarkAt = Date.now();
 
+      // The COLS picker lives in this same meta span. Replacing innerHTML
+      // wholesale destroyed it on the first draw and on every 30s refresh
+      // after, so the control mounted, rendered, and could never be clicked.
+      // Rebuild only the stamp, and re-mount the picker beside it.
       $("#pf-panel .panel-meta").innerHTML = ageStamp(p.as_of)
         + ' <span class="faint">· AUTO 30s</span>'
-        + (r.summary ? ` · <span class="badge">${esc(r.summary)}</span>` : "");
+        + (r.summary ? ` · <span class="badge">${esc(r.summary)}</span>` : "")
+        + colviewSlot("positions");
+      // Re-mount with the SAME repaint the initial mount uses: the picker must
+      // repaint from the book already in hand, never re-fetch. Re-fetching
+      // would answer a question about columns with a different set of prices.
+      colviewMount(view, "positions", () => {
+        const box = $("#pf-pos-tbl");
+        if (box && lastBook) box.innerHTML = posTable(lastBook.positions);
+      });
 
       host.innerHTML = `
         ${metricsStrip([
@@ -4186,21 +5255,8 @@ async function renderPortfolio(view) {
           UNMARKED LEG${r.unmarked.length > 1 ? "S" : ""}: ${esc(r.unmarked.join(" · "))}
           — no chain to mark against, so they are left out rather than counted as zero.</div>`}
 
-        ${p.positions.length ? `<div class="tbl-scroll"><table class="tbl"><thead><tr>
-          <th>CONTRACT</th><th>QTY</th><th>AVG</th><th>LAST</th><th>VALUE</th><th>P&amp;L</th></tr></thead>
-          <tbody>${p.positions.map((pos) => `<tr class="${pos.expired ? "row-dead" : ""}"
-            data-key="${esc(pos.symbol)}" data-label="${esc(pos.label || pos.symbol)}"
-            data-qty="${pos.quantity}" data-avg="${pos.avg_cost}">
-            <td class="txt sym">${esc(pos.label || pos.symbol)}
-              ${pos.is_short ? '<span class="tag-short">SHORT</span>' : ""}
-              ${pos.expired ? '<span class="tag-dead">EXPIRED</span>' : ""}
-              ${pos.settleable ? '<button class="tbtn pf-settle" style="padding:1px 7px;font-size:9px">SETTLE</button>' : ""}</td>
-            <td class="${pos.is_short ? "down" : "up"}">${fmt.n(pos.quantity, 0)}${
-              pos.lot_size ? `<span class="faint"> (${fmt.n(pos.quantity / pos.lot_size, 0)}L)</span>` : ""}</td>
-            <td>${fmt.n(pos.avg_cost)}</td><td>${fmt.n(pos.last)}</td>
-            <td>\u20b9${fmt.n(pos.market_value, 0)}</td>
-            <td class="${cls(pos.unrealized)}">\u20b9${fmt.n(pos.unrealized, 0)}</td></tr>`).join("")}
-          </tbody></table></div>`
+        ${p.positions.length
+          ? `<div class="tbl-scroll" id="pf-pos-tbl">${posTable(p.positions)}</div>`
           : `<div class="empty">Flat. Paper-only — orders never reach a broker.
              Book a leg from the OPT chain by clicking a premium.</div>`}
 
@@ -4253,6 +5309,13 @@ async function renderPortfolio(view) {
   });
   draw();
   addTimer("portfolio:draw", draw, 30000);
+  // Repaint from the book already in hand: /api/portfolio marks every leg
+  // against live quotes, and re-fetching it would answer a question about
+  // columns with a different set of prices.
+  colviewMount(view, "positions", () => {
+    const box = $("#pf-pos-tbl");
+    if (box && lastBook) box.innerHTML = posTable(lastBook.positions);
+  });
 
   // ---- NEW TRADE + BASKET wiring ----
   const legFromForm = () => {

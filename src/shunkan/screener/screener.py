@@ -86,6 +86,16 @@ def compute_metrics(hist: pd.DataFrame) -> dict[str, float]:
         s = series.dropna()
         return float(s.iloc[-1]) if len(s) else default
 
+    def _above(px: float, ref: float) -> float:
+        """1.0 above, 0.0 below, NaN when there is nothing to compare against.
+
+        _clean() maps NaN to None on the way out, so the UI's
+        dash-with-a-reason branch fires instead of asserting a direction.
+        """
+        if np.isnan(px) or np.isnan(ref):
+            return np.nan
+        return float(px > ref)
+
     price = last(close)
     high_6mo = float(close.tail(126).max()) if len(close) else np.nan
     return {
@@ -100,8 +110,15 @@ def compute_metrics(hist: pd.DataFrame) -> dict[str, float]:
         "vol_surge": float(hist["volume"].iloc[-1] / vol3mo.iloc[-1])
         if len(vol3mo.dropna()) and vol3mo.iloc[-1] > 0
         else np.nan,
-        "above_sma50": float(price > last(sma50, np.inf)),
-        "above_sma200": float(price > last(sma200, np.inf)),
+        # NO MOVING AVERAGE IS NOT THE SAME CLAIM AS "BELOW IT".
+        # These read `last(sma, np.inf)` - a stock with fewer sessions than the
+        # window has an all-NaN SMA, last() falls back to +inf, `price > inf`
+        # is False, and the row shipped 0.0. The screener then printed "below"
+        # for a stock at its all-time high, about a line that was never drawn.
+        # Every sibling metric above guards short history with NaN; these two
+        # substituted a value instead, which encodes "missing" as a direction.
+        "above_sma50": _above(price, last(sma50)),
+        "above_sma200": _above(price, last(sma200)),
     }
 
 

@@ -1559,3 +1559,43 @@ main { padding: 0; }
   vector-effect: non-scaling-stroke; }
 .mac-dot { fill: var(--amber); }
 .mac-card-f { font-size: 9.5px; color: var(--text-faint); padding-top: 2px; }
+
+/* ---------- saved column views (COLS) ----------
+   Square, 1px, no shadow: this is a desk control, not a web dropdown. The
+   older .chart-ind-menu above predates the square rule and is left alone
+   rather than restyled in a build about columns. */
+.cv-wrap { position: relative; display: inline-flex; align-items: center; }
+.cv-btn { font-size: 9.5px; letter-spacing: 0.06em; white-space: nowrap; }
+/* Not a button: when /api/views cannot be read, saving would fail and
+   selecting would not survive a reload, so the reason takes the slot. */
+/* Ellipsised, never truncated: the full sentence stays in the title, and
+   the RETRY beside it is the only control that can still succeed. */
+.cv-off { font-size: 9.5px; letter-spacing: 0.06em; color: var(--text-faint);
+  display: inline-block; max-width: 30ch; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.cv-retry { font-size: 9.5px; }
+.cv-bar { padding: 5px 14px 0; }
+
+/* Fixed, not absolute: the menu is parented to <body> because .panel-body
+   scrolls and would otherwise clip it. Width is mirrored in cvToggleMenu,
+   which positions it from the button's rect. */
+.cv-menu {
+  position: fixed; z-index: 60; width: 262px;
+  background: var(--bg-panel-2); border: 1px solid var(--stroke);
+  border-radius: var(--r); padding: 6px; max-height: 62vh; overflow-y: auto;
+  text-align: left; text-transform: none; letter-spacing: 0; }
+.cv-menu .cv-grp { font-size: 9.5px; letter-spacing: 0.09em; color: var(--blue);
+  padding: 5px 5px 3px; text-transform: uppercase; }
+.cv-menu .cv-sel { width: 100%; margin: 2px 0 4px; }
+.cv-opt { display: flex; align-items: center; gap: 6px; padding: 3px 5px;
+  font-size: 11px; color: var(--text); cursor: pointer; }
+.cv-opt:hover { background: var(--amber-dim); }
+.cv-opt input { accent-color: var(--amber); margin: 0; cursor: pointer; }
+.cv-opt input:disabled { cursor: default; }
+.cv-opt input:disabled + span { color: var(--text-dim); }
+.cv-opt i { margin-left: auto; font-style: normal; font-size: 9px;
+  color: var(--text-faint); }
+.cv-note { font-size: 9.5px; line-height: 1.45; color: var(--text-dim);
+  padding: 5px 5px 4px; border-top: 1px solid var(--stroke-soft); margin-top: 4px; }
+.cv-acts { display: flex; gap: 5px; flex-wrap: wrap; padding: 2px 3px 3px; }
+.cv-acts .btn { font-size: 9.5px; }

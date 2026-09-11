@@ -3202,6 +3202,13 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             "hint": "GET /api/company/{symbol}/supply — built from the filed "
                     "annual report, every node quoting its sentence",
         }
+        # The as-of every Yahoo figure on this page is stamped with. Without
+        # it the browser can only print its own clock, and this response is
+        # served from a 1-hour memory cache and a 6-hour disk cache - so a
+        # page painted at 16:00 could stamp "FETCHED 16:00" over numbers
+        # fetched at 10:00. Stamped BEFORE the caches are written, so a cache
+        # hit reports when the data was fetched and not when it was replayed.
+        out["fetched_at"] = datetime.now(timezone.utc).isoformat()
         out = _clean(out)
         _scan_cache[ck] = (_time.monotonic(), out)
         _disk_put(ck, out, "company", 6 * 3600)
@@ -4521,6 +4528,191 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             _layouts_path().write_text(json.dumps(all_, indent=2))
             return {"ok": True}
         raise HTTPException(400, "cannot delete the last layout")
+
+    # -- saved column views ---------------------------------------------------
+    # A sibling store to layouts.json, NOT a corner of it. See the module
+    # docstring in shunkan/server/columns.py for why sharing that key space
+    # would have put column views in the workspace-layout dropdown.
+
+    def _views_path():
+        from shunkan.config import APP_DIR
+
+        return APP_DIR / "column_views.json"
+
+    def _load_views() -> dict:
+        """{table: {"active": name|None, "views": {name: [col_ids]}}}.
+
+        Unreadable file -> empty, never an exception: a corrupt preference
+        must cost you your saved views, not your terminal.
+        """
+        path = _views_path()
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            # Returning {} here made every saved view VANISH with no stated
+            # cause, and the next save silently overwrote whatever survived.
+            # A corrupt store is a refusal that names itself, and the damaged
+            # file is moved aside rather than destroyed - it is the only
+            # record of what the user had.
+            broken = path.with_name(path.name + ".corrupt")
+            try:
+                path.replace(broken)
+            except OSError:
+                broken = None
+            raise HTTPException(503, {
+                "error": "column_views.json could not be read",
+                "detail": f"{type(exc).__name__}: {str(exc)[:120]}",
+                "recovered": (f"moved aside to {broken.name}; a fresh store "
+                              f"will be created on the next save")
+                if broken else "the file could not be moved aside",
+            }) from exc
+        if not isinstance(data, dict):
+            raise HTTPException(503, {
+                "error": "column_views.json is valid JSON of the wrong shape",
+                "detail": f"expected an object, found {type(data).__name__}",
+            })
+        # Per-table entries are hand-editable, so one bad entry must not take
+        # the whole store down with a 500.
+        return {k: v for k, v in data.items() if isinstance(v, dict)}
+
+    def _write_views(all_: dict) -> None:
+        from shunkan.config import ensure_dirs
+
+        ensure_dirs()
+        _views_path().write_text(json.dumps(all_, indent=2))
+
+    def _view_state(kind: str, all_: dict) -> dict:
+        """One table's saved views, filtered against the live registry.
+
+        A saved id that no longer exists (a column removed by an upgrade) is
+        dropped from `views` AND named in `stale`, so the picker can say
+        "this view lost VOL SURGE" instead of quietly rendering one column
+        fewer than the user saved. Silent repair is how a preference turns
+        into a lie about what you asked for.
+        """
+        from shunkan.server import columns as colreg
+
+        table = colreg.get_table(kind)
+        raw = all_.get(kind) or {}
+        saved = raw.get("views") if isinstance(raw.get("views"), dict) else {}
+        views, stale = {}, {}
+        for name, cols in (saved or {}).items():
+            if not isinstance(cols, list):
+                continue
+            gone = [c for c in cols if c not in table.ids]
+            # The locked column is re-added rather than dropped-with-a-note:
+            # validate() refuses to save a view without it, so a file missing
+            # it was hand-edited, and a table whose rows have no identity
+            # column does not render at all.
+            keep = [c for c in table.ids
+                    if c in cols or c == table.locked]
+            views[name] = keep
+            if gone:
+                stale[name] = gone
+        active = raw.get("active")
+        if active not in views:
+            active = None
+        out = colreg.describe(kind)
+        out.update({"active": active, "views": views, "stale": stale})
+        return out
+
+    @app.get("/api/views")
+    def list_column_views():
+        """Every table kind, its columns, and the user's saved views.
+
+        One round trip: the frontend needs the whole registry before it paints
+        its first table, and six requests to do that is six chances to paint
+        the default set and then flip.
+        """
+        from shunkan.server import columns as colreg
+
+        all_ = _load_views()
+        return {"tables": [_view_state(k, all_) for k in colreg.known_tables()]}
+
+    @app.get("/api/views/{table}")
+    def get_column_view(table: str):
+        from shunkan.server import columns as colreg
+
+        try:
+            colreg.get_table(table)
+        except KeyError as exc:
+            raise HTTPException(404, exc.args[0]) from exc
+        return _view_state(table, _load_views())
+
+    @app.post("/api/views/{table}")
+    def save_column_view(table: str, body: dict):
+        """Persist a named column set, and select it.
+
+        Refuses rather than stores: an unknown column id would come back as a
+        blank column with no way to tell it from a column whose data is
+        missing, which is the exact ambiguity this codebase exists to avoid.
+        """
+        from shunkan.server import columns as colreg
+
+        try:
+            colreg.get_table(table)
+        except KeyError as exc:
+            raise HTTPException(404, exc.args[0]) from exc
+        try:
+            name = colreg.clean_name(body.get("name"))
+            cols = colreg.validate(table, body.get("columns"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        all_ = _load_views()
+        slot = all_.setdefault(table, {})
+        slot.setdefault("views", {})[name] = cols
+        slot["active"] = name
+        _write_views(all_)
+        return {"ok": True, "table": table, "name": name, "columns": cols}
+
+    @app.post("/api/views/{table}/active")
+    def select_column_view(table: str, body: dict):
+        """Select a saved view, or None for the built-in default set."""
+        from shunkan.server import columns as colreg
+
+        try:
+            colreg.get_table(table)
+        except KeyError as exc:
+            raise HTTPException(404, exc.args[0]) from exc
+        name = body.get("name")
+        all_ = _load_views()
+        slot = all_.setdefault(table, {})
+        saved = slot.get("views") or {}
+        if name is not None:
+            name = str(name)
+            if name not in saved:
+                raise HTTPException(
+                    404, f"{table}: no saved view named {name!r} — "
+                         f"saved views: {', '.join(sorted(saved)) or 'none'}")
+        slot["active"] = name
+        _write_views(all_)
+        return {"ok": True, "table": table, "active": name}
+
+    @app.delete("/api/views/{table}")
+    def delete_column_view(table: str, name: str):
+        """Unlike /api/layout this will happily delete the last one: falling
+        back to the built-in column set is always a valid place to land."""
+        from shunkan.server import columns as colreg
+
+        try:
+            colreg.get_table(table)
+        except KeyError as exc:
+            raise HTTPException(404, exc.args[0]) from exc
+        all_ = _load_views()
+        slot = all_.get(table) or {}
+        saved = slot.get("views") or {}
+        if name not in saved:
+            raise HTTPException(
+                404, f"{table}: no saved view named {name!r} — "
+                     f"saved views: {', '.join(sorted(saved)) or 'none'}")
+        del saved[name]
+        if slot.get("active") == name:
+            slot["active"] = None
+        _write_views(all_)
+        return {"ok": True, "table": table, "deleted": name}
 
     @app.get("/api/commodities")
     def commodities():
