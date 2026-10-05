@@ -307,8 +307,5 @@ vision model ships; the modality is correct, the model is not.
 
 ## Reproducing the study
 
-Artifacts and the full bake-off report:
-<https://claude.ai/code/artifact/1e633bc4-b671-453c-81bf-6a4e4ce1fa7c>
-
 Tests covering the gate, including the real fabrication case, are in
 `tests/test_llm_extraction.py`.

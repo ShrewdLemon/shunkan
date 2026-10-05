@@ -11,7 +11,7 @@ cost a rejected node.
 ```python
 import json, pathlib, warnings; warnings.filterwarnings("ignore")
 from shunkan.data.manual import digest_text, commit
-P = pathlib.Path("/private/tmp/claude-501/-Users-shrewdlemon-Projects-Shunkan/deaee33b-ad0b-46f9-a341-84d888097caa/scratchpad/prep")
+P = pathlib.Path("prep")
 text = (P/f"{SYM}_full.txt").read_text()          # already downloaded for you
 meta = json.loads((P/f"{SYM}_meta.json").read_text())
 open(f"/tmp/{SYM}_digest.txt","w").write(digest_text(text, 32))   # ~7k tokens
