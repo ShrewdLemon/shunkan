@@ -14,7 +14,7 @@ are both wrong answers. A dash plus a reason is the right one.
 
 ```
 python -m venv .venv && source .venv/bin/activate
-pip install -e .
+pip install -e ".[dev]"   # pytest and pytest-asyncio come with [dev]
 pytest tests -q
 ```
 
@@ -46,5 +46,5 @@ query string in `index.html` or your change won't reach anyone's browser.
 
 ## Scope
 
-The terminal already has 17 views. New surface is almost always the wrong
+The terminal already has plenty of views. New surface is almost always the wrong
 prescription. Deepening what's there is almost always the right one.

@@ -273,14 +273,14 @@ positions LIC had split across spellings - the reverse map had been
 undercounting.
 
 **Self-contained.** The container cannot see `~/Projects` at all; it
-serves ownership, funds, MSCI and the graph from its own store. The
+serves ownership, funds and the graph from its own store. The
 sibling projects are import sources, not runtime dependencies.
 
-## Mutual funds and MSCI: the flow layer (2026-08-24)
+## Mutual funds: the flow layer (2026-08-24)
 
-Two sibling projects on this machine already solved problems Shunkan was
-about to re-solve, so the terminal imports their output into its own store
-rather than duplicating their pipelines.
+A sibling project on this machine already solved a problem Shunkan was
+about to re-solve, so the terminal imports its output into its own store
+rather than duplicating its pipeline.
 
 **Funds.** SEBI's shareholding pattern names the AMC ("SBI Mutual Fund,
 6.96%") - the legal owner. The economic owner is a SCHEME, with a mandate
@@ -295,16 +295,7 @@ question: RELIANCE is held by 452 schemes worth Rs 1.35 lakh crore (index
 ETFs on top, correctly); BALRAMCHIN by 68 worth Rs 2,967 crore (small-cap
 funds, correctly). Company pages carry it beside the SEBI registry.
 
-**MSCI.** Index membership is a flow event before it is anything else: an
-addition forces every tracking fund to buy on one date at one price.
-`data/msci.py` imports the local rule engine's constituent lists and
-review predictions - 669 names screened, 103 moves called, each carrying
-the rule that decided it (ADANIGREEN standard addition p=0.98; LAURUSLABS
-small->standard migration). "hold" is filtered out of the move list
-because 566 of them would bury the 103 that matter. The engine's call is
-not MSCI's announcement and the page says so.
-
-Both importers read from the sibling projects on the HOST; the container
+The importer reads from the sibling project on the HOST; the container
 sees the result through the shared store, and says exactly that when run
 where the sources are not mounted.
 
@@ -334,8 +325,8 @@ a partial scan must never read as a holder's full book.
 
 ## Company intelligence and the SPLC map (2026-08-24)
 
-The Bloomberg comparison, answered with what Indian disclosure actually
-forces into the open.
+What a paid terminal sells here, answered with what Indian disclosure
+actually forces into the open.
 
 **Ownership is no longer a refusal.** SEBI LODR Reg 31 publishes the
 quarterly shareholding pattern as XBRL on nsearchives, not as a PDF, so

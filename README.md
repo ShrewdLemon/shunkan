@@ -1,62 +1,48 @@
 # Shunkan 瞬間
 
 [![tests](https://github.com/ShrewdLemon/shunkan/actions/workflows/tests.yml/badge.svg)](https://github.com/ShrewdLemon/shunkan/actions/workflows/tests.yml)
+[![pypi](https://img.shields.io/pypi/v/shunkan)](https://pypi.org/project/shunkan/)
 [![python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 
-A derivatives terminal for Indian markets. Built for people who already know
-what they're looking at: option chains with real open interest, a position book
-that can actually go short, net Greeks across the whole book, and exchange
-priced margin instead of a guess.
+A local derivatives terminal for Indian F&O traders: live option chains with
+real open interest changes, net Greeks across the whole book, and margin priced
+by the exchange through Kite's basket SPAN calculator. It never shows a
+made-up number as if it were real.
 
-Runs locally. `shunkan serve` opens a web terminal on 127.0.0.1. Your broker
-credentials never leave your machine.
+It is for people who trade options on NSE, BSE and MCX and don't need theta
+explained to them. It runs on your machine, on 127.0.0.1, and your broker
+credentials never leave it.
 
-```
-pip install -e .
-shunkan connect zerodha     # one browser login, once per trading day
-shunkan serve
-```
+## What a trader sees
 
-### Or run it in Docker
+**OPT, the option chain.** The screen the product exists for. Live chain off
+Kite or NSE, the correct contract lot, an expiry selector, ATM held in view,
+and a source badge saying where every number came from. It repaints in place
+rather than rebuilding, so it never blanks and never loses your scroll
+position.
 
-If you would rather not start it from a terminal every day:
+**ΔOI against a real basis.** OI build-up is measured against a stored
+previous-session snapshot. If there is no snapshot yet, the column shows
+dashes and the header says so. It never shows zeros that read as "no change".
 
-```
-SHUNKAN_UID=$(id -u) SHUNKAN_GID=$(id -g) docker compose up -d
-```
+**PRT, the book.** Net delta, gamma, theta and vega across every position,
+plus a per-underlying breakdown. A short straddle shows up as delta flat, short
+gamma, earning theta, short vega, which is what you actually need to see. A
+position with no chain to mark against is named and left out of the totals,
+never counted as zero.
 
-Then open http://127.0.0.1:8720. It restarts on boot and after a crash.
+**Exchange-priced margin.** The whole basket goes to Kite's SPAN calculator
+(`POST /margins/basket`), so hedges get netted the way the exchange nets them.
+Verified live in [docs/STATUS.md](docs/STATUS.md): a naked short call at
+1,76,265, a short straddle at 2,00,583 and an iron condor at 71,387. No local
+approximation gets that spread right. If any leg can't be priced, margin shows
+as unknown rather than a total that quietly skips it.
 
-Use `docker compose`, not `docker run` and not Docker Desktop's Run button.
-Those start the image without applying the compose file, so the ports are
-*exposed* but never *published*: the container reports healthy (its healthcheck
-runs inside itself and passes) while nothing on your machine can reach it. The
-symptom is a terminal that renders but shows WS OFFLINE, `API —` and spinners
-that never resolve.
-
-`~/.shunkan` is bind-mounted, so the container shares one state directory with
-a bare `shunkan serve` on the host: same credentials, same paper book, same
-archive, no drift between them. That is also why it runs as your uid, which is
-what the two variables above are for.
-
-Two things about the compose file worth not changing casually. The ports are
-published to `127.0.0.1` only, because Shunkan has no accounts and a wider
-bind hands a live broker session to your network (and, under Zerodha's terms,
-their market data with it). And port 8722 is published because Kite redirects
-the login to `127.0.0.1:8722/callback` on the host; without it
-`shunkan connect` waits forever for a request that can never arrive.
-
-The daily token still needs you once each morning. In the container the login
-URL is printed rather than opened, so copy it into a browser:
-
-```
-docker compose exec shunkan shunkan connect zerodha
-```
-
-*Shunkan (瞬間) means "the instant". Hot paths are pure numpy vector code with
-latency budget tests enforcing it: full chain Greeks in microseconds, 10 year
-backtests in single digit milliseconds.*
+**Order ticket.** Click a premium in the chain. It opens on SELL because that's
+the default intent on an option. `S`/`B` flip side, digits set lots, Enter
+books, Esc closes. It books at the premium you clicked, never a market order.
+Paper only: the book is a local ledger and nothing is sent to a broker.
 
 ## The one rule that shapes everything
 
@@ -84,36 +70,47 @@ every source it tried and why each one failed, not a stand in book. Concretely:
 
 If you find somewhere this rule is broken, that's a bug worth filing.
 
-## Who it's for
+## Install
 
-Traders working across equity, index and commodity derivatives on Indian
-venues, who don't need theta explained to them. Dense tables, tabular numerals,
-keyboard first, no chrome. The design target is Bloomberg discipline rather than
-a dashboard.
-
-Global markets are read only context right now. There's a Pulse board with US,
-European and Asian indices for cues, but no execution path outside India.
-
-## Setup
-
-The short way, from PyPI:
+Python 3.12+.
 
 ```
 pip install shunkan
-shunkan serve          # web terminal at http://127.0.0.1:8720
-shunkan                # or the TUI
-shunkan connect zerodha   # wire a live broker (token needed daily)
 ```
 
-Runs offline out of the box on a synthetic feed (`SHUNKAN_OFFLINE=1` forces
-it), goes live when a broker is connected. Everything it stores lives under
-`~/.shunkan`.
+Or from source:
 
-From source, or for the Docker route:
+```
+git clone https://github.com/ShrewdLemon/shunkan.git
+cd shunkan
+pip install -e ".[dev]"
+```
 
-### Requirements
+## Quickstart
 
-Python 3.12+ and a Zerodha account with a Kite Connect subscription. It has to
+Try it with no broker first. Offline mode runs on a synthetic chain. The web
+terminal labels everything `MODELLED` in amber, withholds ΔOI and refuses to
+store any of it. The CLI chain says `synthetic (offline demo)` in its title.
+
+```
+SHUNKAN_OFFLINE=1 shunkan serve     # web terminal at http://127.0.0.1:8720
+SHUNKAN_OFFLINE=1 shunkan chain NIFTY
+```
+
+Then go live:
+
+```
+shunkan connect zerodha     # one browser login, once per trading day
+shunkan serve
+```
+
+`shunkan` on its own opens the older Textual TUI. `shunkan --help` lists the
+other commands (backtest, walkforward, payoff, iv, screen, news and more).
+Everything it stores lives under `~/.shunkan`.
+
+### Requirements for live data
+
+A Zerodha account with a Kite Connect subscription. It has to
 be the paid Connect app, not the free Personal one, which returns
 `PermissionException` on market data calls.
 
@@ -149,23 +146,43 @@ some networks. When it's blocked you get the refusal card, which is the point.
 `SHUNKAN_OFFLINE=1` gives you a fully synthetic demo. Everything is labelled
 `MODELLED` in amber, ΔOI is withheld, and the store refuses to persist any of it.
 
-## What's in it
+### Docker
 
-**OPT, the option chain.** The screen the product exists for. Live chain off
-Kite or NSE, correct contract lot, an expiry selector, ATM held in view, OI
-build-up measured against a real previous-session basis, and a source badge
-saying where every number came from. It repaints in place rather than
-rebuilding, so it never blanks and never loses your scroll position.
+If you would rather not start it from a terminal every day:
 
-**Order ticket.** Click a premium in the chain. Opens on SELL because that's the
-default intent on an option, `S`/`B` flip side, digits set lots, Enter books, Esc
-closes. It books at the premium you clicked, never a market order.
+```
+SHUNKAN_UID=$(id -u) SHUNKAN_GID=$(id -g) docker compose up -d
+```
 
-**PRT, the book.** Net delta, gamma, theta and vega across every position, plus
-a per-underlying breakdown. A short straddle shows up as delta flat, short gamma,
-earning theta, short vega, which is what you actually need to see. Exchange
-priced margin via Kite's SPAN calculator, because an iron condor's real margin is
-about a third of a naked short's and no local approximation gets close.
+Then open http://127.0.0.1:8720. It restarts on boot and after a crash.
+
+Use `docker compose`, not `docker run` and not Docker Desktop's Run button.
+Those start the image without applying the compose file, so the ports are
+*exposed* but never *published*: the container reports healthy (its healthcheck
+runs inside itself and passes) while nothing on your machine can reach it. The
+symptom is a terminal that renders but shows WS OFFLINE, `API —` and spinners
+that never resolve.
+
+`~/.shunkan` is bind-mounted, so the container shares one state directory with
+a bare `shunkan serve` on the host: same credentials, same paper book, same
+archive, no drift between them. That is also why it runs as your uid, which is
+what the two variables above are for.
+
+Two things about the compose file worth not changing casually. The ports are
+published to `127.0.0.1` only, because Shunkan has no accounts and a wider
+bind hands a live broker session to your network (and, under Zerodha's terms,
+their market data with it). And port 8722 is published because Kite redirects
+the login to `127.0.0.1:8722/callback` on the host; without it
+`shunkan connect` waits forever for a request that can never arrive.
+
+The daily token still needs you once each morning. In the container the login
+URL is printed rather than opened, so copy it into a browser:
+
+```
+docker compose exec shunkan shunkan connect zerodha
+```
+
+## Everything else
 
 **Vol surface calibration.** SABR fitted to the smile a live chain is actually
 quoting, via Hagan's closed form, about 2.5ms per expiry. Fits alpha, rho and
@@ -258,7 +275,30 @@ the edge is real, and it used to claim it could.
 None of this substitutes for out-of-sample data. It is what you run before you
 have any.
 
-## Architecture
+## How it's tested
+
+```
+pytest tests -q
+```
+
+690 tests at the time of writing (688 pass and 2 skip on Python 3.14 locally).
+CI runs the suite on Python 3.12 and 3.13 against the synthetic chain, so it
+needs no broker credentials, and syntax-checks the web terminal's JavaScript.
+
+A good share of the tests pin down honesty properties rather than features,
+like `test_store_refuses_model_chain_with_real_source`,
+`test_margin_goes_unknown_when_only_the_SIZE_changes`, or
+`test_an_unreadable_file_is_quarantined_never_overwritten`.
+
+Speed is tested too. `tests/test_perf.py` sets latency budgets with wide
+headroom so CI noise doesn't flake them: full-chain Greeks under 5ms, a
+full-chain IV solve under 25ms, a 10 year daily backtest under 25ms.
+
+There is also a research log, `research/DECISIONS.md`, where every trade and
+no-trade call gets written down with the numbers that made it. So far it
+mostly records ideas being killed, which is the point.
+
+## Design decisions
 
 ```
 src/shunkan/
@@ -317,21 +357,30 @@ The chain store refuses to persist a modelled chain. That's enforced on an
 `is_model` flag rather than by string matching a source name, because
 relabelling a synthetic chain used to walk straight past the old check.
 
-## Tests
+## How the data gets in
 
-```
-pytest tests -q
-```
+Four documents, each about one source and the specific ways it goes wrong:
 
-452 tests. Worth reading if you want the invariants: a good chunk of them exist
-specifically to pin down honesty properties, like
-`test_store_refuses_model_chain_with_real_source`,
-`test_margin_goes_unknown_when_only_the_SIZE_changes`, or
-`test_an_unreadable_file_is_quarantined_never_overwritten`.
+| doc | covers |
+|---|---|
+| [docs/EXTRACTION.md](docs/EXTRACTION.md) | reading annual reports — the validation gate, why full context beat RAG |
+| [docs/EXTRACTION_PLAYBOOK.md](docs/EXTRACTION_PLAYBOOK.md) | running an extraction end to end |
+| [docs/EXTRACTION_AGENT_SPEC.md](docs/EXTRACTION_AGENT_SPEC.md) | the spec an agent follows to extract one company by hand |
+| [docs/RELATED_PARTY_GRAPH.md](docs/RELATED_PARTY_GRAPH.md) | BSE related-party XBRL — direction, relationship parsing, entity resolution, the NET view |
+| [docs/MACRO.md](docs/MACRO.md) | RBI policy corridor and World Bank series — scraping discipline, why a refusal is never cached |
 
-There is also a research log, `research/DECISIONS.md`, where every trade and
-no-trade call gets written down with the numbers that made it. So far it
-mostly records ideas being killed, which is the point.
+## Limitations and roadmap
+
+- **Paper trading only.** There is no code path that places a real order.
+- **Live data needs Zerodha Kite Connect**, the paid app. Without it chains
+  come from NSE's public API, which is delayed and blocked on some networks.
+- **The Kite token expires every morning** and has to be renewed by hand in a
+  browser. Zerodha's terms don't allow automating that login.
+- **Single user, localhost.** No accounts, by design. See Terms below.
+- **Execution is India only.** Global indices are read-only context.
+- **Alpha.** The option chain and the position book have had the most work and
+  the most tests. Other panels are thinner. Known rough edges are tracked in
+  [docs/STATUS.md](docs/STATUS.md), which is kept honest on purpose.
 
 ## Terms, and please read this one
 
@@ -348,24 +397,6 @@ guard rail rather than a security model: it is one shared secret, the licence
 problem above does not go away, and you are still exposing a live broker
 session.
 
-## How the data gets in
-
-Four documents, each about one source and the specific ways it goes wrong:
-
-| doc | covers |
-|---|---|
-| [docs/EXTRACTION.md](docs/EXTRACTION.md) | reading annual reports — the validation gate, why full context beat RAG |
-| [docs/EXTRACTION_PLAYBOOK.md](docs/EXTRACTION_PLAYBOOK.md) | running an extraction end to end |
-| [docs/EXTRACTION_AGENT_SPEC.md](docs/EXTRACTION_AGENT_SPEC.md) | the spec an agent follows to extract one company by hand |
-| [docs/RELATED_PARTY_GRAPH.md](docs/RELATED_PARTY_GRAPH.md) | BSE related-party XBRL — direction, relationship parsing, entity resolution, the NET view |
-| [docs/MACRO.md](docs/MACRO.md) | RBI policy corridor and World Bank series — scraping discipline, why a refusal is never cached |
-
-## Status
-
-Actively being built. The option chain and the position book are the parts that
-have had the most work and the most tests. Known rough edges are tracked in
-[docs/STATUS.md](docs/STATUS.md), which is kept honest on purpose.
-
 ## Disclaimers
 
 Paper trading only. Shunkan never places a real order and there's no code path
@@ -378,3 +409,12 @@ sceptical of your own results, not less.
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+## Contact
+
+Built by [ShrewdLemon](https://github.com/ShrewdLemon). Bugs and questions go
+in [issues](https://github.com/ShrewdLemon/shunkan/issues). If you find a place
+where a made-up number renders as real, that's the bug I most want to hear
+about.
+
+*Shunkan (瞬間) means "the instant".*
