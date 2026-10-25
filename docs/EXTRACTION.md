@@ -289,8 +289,8 @@ The whole bake-off that produced this document cost **$0.93**.
 **Suppliers are usually not disclosed.** Reliance's "Raw Material Security"
 section says only *"long-term supply arrangements and strategic
 partnerships"*. No parser and no model extracts what was never filed. This is
-the real gap to Bloomberg SPLC, which sources supplier arrows from customs and
-shipping records rather than filings. Single-commodity names like Balrampur
+the real gap to paid supply-chain datasets, which source supplier arrows from
+customs and shipping records rather than filings. Single-commodity names like Balrampur
 disclose their value chain in detail; diversified groups deliberately do not.
 
 **Numbers must never come from report text.** These reports embed a font
