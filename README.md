@@ -149,6 +149,23 @@ some networks. When it's blocked you get the refusal card, which is the point.
 `SHUNKAN_OFFLINE=1` gives you a fully synthetic demo. Everything is labelled
 `MODELLED` in amber, ΔOI is withheld, and the store refuses to persist any of it.
 
+### Bring your own data
+
+Shunkan ships no market data. Every real number is fetched to your machine
+from a public source or your own broker key, and its badge says which.
+
+- **Your Kite key.** The live path: chains, ticks and exchange priced margin,
+  all off your own Connect app (see Broker above).
+- **`shunkan demo`.** For an empty store. Pulls daily history for NIFTY,
+  BANKNIFTY and India VIX, plus about 60 sessions of NSE's participant-wise
+  OI, so ANA and the charts have real public end-of-day numbers to draw.
+  `--days` sets how far back the participant archive goes. It needs the
+  network, so it refuses under `SHUNKAN_OFFLINE=1`, and it exits non-zero
+  when a fetch comes back short rather than calling a partial store done.
+- **Plugins.** Any installed package that declares a `shunkan.plugins` entry
+  point gets a `register(host)` call at startup and can add API routes,
+  background loops and screens without touching this repo.
+
 ## What's in it
 
 **OPT, the option chain.** The screen the product exists for. Live chain off
@@ -323,7 +340,7 @@ relabelling a synthetic chain used to walk straight past the old check.
 pytest tests -q
 ```
 
-452 tests. Worth reading if you want the invariants: a good chunk of them exist
+561 tests. Worth reading if you want the invariants: a good chunk of them exist
 specifically to pin down honesty properties, like
 `test_store_refuses_model_chain_with_real_source`,
 `test_margin_goes_unknown_when_only_the_SIZE_changes`, or
@@ -350,14 +367,10 @@ session.
 
 ## How the data gets in
 
-Four documents, each about one source and the specific ways it goes wrong:
+Each document covers one source and the specific ways it goes wrong:
 
 | doc | covers |
 |---|---|
-| [docs/EXTRACTION.md](docs/EXTRACTION.md) | reading annual reports — the validation gate, why full context beat RAG |
-| [docs/EXTRACTION_PLAYBOOK.md](docs/EXTRACTION_PLAYBOOK.md) | running an extraction end to end |
-| [docs/EXTRACTION_AGENT_SPEC.md](docs/EXTRACTION_AGENT_SPEC.md) | the spec an agent follows to extract one company by hand |
-| [docs/RELATED_PARTY_GRAPH.md](docs/RELATED_PARTY_GRAPH.md) | BSE related-party XBRL — direction, relationship parsing, entity resolution, the NET view |
 | [docs/MACRO.md](docs/MACRO.md) | RBI policy corridor and World Bank series — scraping discipline, why a refusal is never cached |
 
 ## Status

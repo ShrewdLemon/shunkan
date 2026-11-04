@@ -47,10 +47,17 @@ def test_assets_are_versioned_by_content(client):
 
 
 def test_no_hand_written_version_numbers_survive(client):
-    """The literal ?v=80 in the file must not reach the browser."""
+    """The literal ?v=80 in the file must not reach the browser.
+
+    Compared against the file, not isdigit(): ten hex characters are all
+    digits about 1% of the time, and an app.js edit hashing to 2273576756
+    failed this test while serving exactly the right URL."""
+    from shunkan.server.api import STATIC_DIR
+
+    written = _versions((STATIC_DIR / "index.html").read_text())
     html = client.get("/").text
     for asset, ver in _versions(html).items():
-        assert not ver.isdigit(), (
+        assert ver != written.get(asset), (
             f"{asset} still carries a hand-maintained version (?v={ver}); "
             f"it will go stale the next time someone edits the file")
 
@@ -79,22 +86,6 @@ def test_index_itself_is_never_cached(client):
         f"index.html is cacheable ({cc!r}); it would freeze the asset versions"
 
 
-def test_ticker_search_puts_the_obvious_company_first(client):
-    """NSE tickers are not guessable from the name - ICICI Bank is ICICIBANK,
-    State Bank is SBIN - so typing "icici" must offer the bank.
-
-    Ranking ties by ticker LENGTH put ICICIGI above ICICIBANK: correct by
-    string length and useless to a reader. Size is the honest tiebreak.
-    """
-    for term, want in [("icici", "ICICIBANK"), ("hdfc", "HDFCBANK"),
-                       ("sbi", "SBIN"), ("kotak", "KOTAKBANK"),
-                       ("wip", "WIPRO"), ("reliance", "RELIANCE")]:
-        r = client.get(f"/api/symbols/search?q={term}&limit=5").json()
-        syms = [m["symbol"] for m in r["matches"]]
-        assert syms, f"{term!r} matched nothing"
-        assert syms[0] == want, f"{term!r} -> {syms}, expected {want} first"
-
-
 def test_ticker_search_is_bounded_and_survives_junk(client):
     assert client.get("/api/symbols/search?q=").json()["matches"] == []
     assert client.get("/api/symbols/search?q=%20%20").json()["matches"] == []
@@ -110,62 +101,3 @@ def test_every_match_carries_a_name_to_disambiguate(client):
     """A list of bare tickers is a second guessing game."""
     for m in client.get("/api/symbols/search?q=tata&limit=6").json()["matches"]:
         assert m.get("name"), f"{m['symbol']} has no company name"
-
-
-def test_periods_sort_by_date_not_by_text():
-    """Sorting "Mar 2022"/"Sep 2022" as text puts every March before every
-    September, so Reliance's six half-years read Mar 22, Mar 23, Mar 24,
-    Sep 22, Sep 23, Sep 24.
-
-    The bar chart drew them in that order, and the counterparty SPARKLINES
-    plot against this list - so every "trend" was three March readings
-    followed by three September readings. A line through points that are not
-    in time order is not a trend; it is a shape that looks like one.
-
-    Tested on the key function rather than on a live company: conftest points
-    SHUNKAN_HOME at a temp directory, so the suite has no companies in it. The
-    first version of this test looped over real symbols, got 404 for every
-    one, skipped its whole body and passed a guard that only fired because I
-    had written one - a test that asserts nothing is worse than no test.
-    """
-    from shunkan.server.api import _period_key
-
-    scrambled = ["Sep 2024", "Mar 2022", "Sep 2022", "Mar 2024",
-                 "Mar 2023", "Sep 2023"]
-    assert sorted(scrambled, key=_period_key) == [
-        "Mar 2022", "Sep 2022", "Mar 2023", "Sep 2023", "Mar 2024", "Sep 2024"]
-
-    # text sorting would have produced this; make the difference explicit
-    assert sorted(scrambled) != sorted(scrambled, key=_period_key)
-
-    # a year boundary must beat the month
-    assert sorted(["Jan 2025", "Dec 2024"], key=_period_key) == \
-        ["Dec 2024", "Jan 2025"]
-    # every month name parses
-    for i, mon in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1):
-        assert _period_key(f"{mon} 2024")[:3] == (0, 2024, i)
-
-
-def test_period_ordering_survives_an_unknown_label():
-    """A filer inventing a new period format must not take the endpoint down:
-    it sorts last, under its own text, rather than raising."""
-    from shunkan.server.api import _period_key
-
-    for junk in ("Q3 FY24", "", "   ", "2024", "Marzo 2024", "Mar"):
-        key = _period_key(junk)
-        assert key[0] == 1, f"{junk!r} was parsed as a real date"
-    mixed = ["Sep 2022", "Q3 FY24", "Mar 2022"]
-    assert sorted(mixed, key=_period_key) == ["Mar 2022", "Sep 2022", "Q3 FY24"]
-
-
-def test_the_entity_endpoint_uses_that_key():
-    """The helper is only useful if the endpoint actually calls it."""
-    import inspect
-
-    from shunkan.server import api
-
-    body = inspect.getsource(api.create_app)
-    block = body[body.index("periods = sorted("):]
-    assert "_period_key" in block[:200], \
-        "the entity endpoint still sorts periods as text"

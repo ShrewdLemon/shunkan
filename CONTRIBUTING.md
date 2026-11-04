@@ -21,6 +21,10 @@ pytest tests -q
 `SHUNKAN_OFFLINE=1` runs everything against a synthetic demo chain, which is
 what the test suite uses. No broker needed to develop.
 
+`git config core.hooksPath scripts/hooks` installs the pre-push gate, which runs
+the secret scan and the public boundary test. Set `SHUNKAN_PY` if your venv's
+python isn't `python3`.
+
 ## Tests
 
 New behaviour needs a test. Honesty properties especially: if you fix a place

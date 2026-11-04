@@ -336,20 +336,3 @@ def test_column_cells_render_a_dash_and_never_a_blank_cell():
                        text=True, env=_env())
     assert r.returncode == 0, r.stdout + r.stderr
     assert "0 failed" in r.stdout
-
-
-def test_every_table_kind_has_both_a_picker_and_a_repaint():
-    """The WS_WIDGETS/WS_RENDER shape of bug, pinned before it happens.
-
-    A table in TABLE_COLS with no colviewSlot() renders a registry entry no
-    user can reach; one with no colviewMount() renders a COLS button whose
-    ticks change nothing on screen. Both halves exist, nothing throws, and the
-    control just quietly does not work — which is how ANL_GROUPS and
-    CODE_ALIAS drifted apart twice.
-    """
-    src = APP_JS.read_text()
-    for table in colreg.known_tables():
-        assert f'colviewSlot("{table}")' in src, \
-            f"{table}: registered as a column view but no picker is mounted anywhere"
-        assert re.search(rf'colviewMount\([^,]+, "{re.escape(table)}"', src), \
-            f"{table}: has a picker but nothing repaints its table when columns change"

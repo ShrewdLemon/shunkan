@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+PY="${SHUNKAN_PY:-}"
+if [ -z "$PY" ]; then
+  if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=python3; fi
+fi
+if ! "$PY" -c "import pytest" 2>/dev/null; then
+  echo "push blocked: $PY cannot import pytest; set SHUNKAN_PY to a python that has it"; exit 1
+fi
+if [ "${SHUNKAN_SCAN_ALLOW_EMPTY:-}" != "1" ] && { [ -z "${SHUNKAN_PRIVATE_WORDS:-}" ] || [ ! -r "${SHUNKAN_PRIVATE_WORDS:-}" ]; }; then
+  echo "push blocked: SHUNKAN_PRIVATE_WORDS must name a readable private word list (or set SHUNKAN_SCAN_ALLOW_EMPTY=1)"; exit 1
+fi
+if ! "$PY" scripts/secret_scan.py; then
+  echo "push blocked: secret scan failed"; exit 1
+fi
+if ! "$PY" -m pytest -q -p no:cacheprovider tests/test_public_boundary.py; then
+  echo "push blocked: public boundary broken"; exit 1
+fi

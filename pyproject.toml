@@ -32,7 +32,6 @@ dependencies = [
     "pyarrow>=15.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
-    "pypdfium2>=4.30",     # annual-report text extraction (BSD; 18x pypdf, keeps diagram labels)
 ]
 
 [project.optional-dependencies]
@@ -53,6 +52,8 @@ where = ["src"]
 # The web terminal is static files, not Python. Without this a non-editable
 # install lands with no UI at all and `shunkan serve` 404s on everything.
 "shunkan.server" = ["static/*", "static/vendor/*"]
+# The TUI's stylesheet. Without it a non-editable install's `shunkan` dies on start.
+"shunkan.ui" = ["*.tcss"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

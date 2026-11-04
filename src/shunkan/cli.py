@@ -125,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
     p_conn.add_argument("--api-secret", default=None, help="Zerodha api_secret")
     p_conn.add_argument("--token", default=None, help="Groww api_token")
 
+    p_demo = sub.add_parser("demo", help="Fetch public end-of-day data so the terminal has something to show")
+    p_demo.add_argument("--days", type=int, default=90,
+                        help="Calendar days of the NSE participant archive to fetch "
+                             "(the default 90 is about 60 sessions)")
+
     args = parser.parse_args(argv)
 
     try:
@@ -165,6 +170,11 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_news(args)
         if args.command == "connect":
             return cmd_connect(args)
+        if args.command == "demo":
+            from shunkan.demo import run
+
+            res = run(days=args.days)
+            return 1 if res["failed"] else 0
     except KeyboardInterrupt:
         return 130
     except Exception as exc:

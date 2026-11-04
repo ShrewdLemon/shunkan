@@ -109,12 +109,35 @@ harvest_status: dict = {"runs": 0, "failed": 0}
 participant_status: dict = {"failed": 0}
 news_status: dict = {"failed": 0}
 journal_status: dict = {"written": 0}
-graph_status: dict = {"failed": 0}
 keepalive_status: dict = {"active": False}
 
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def _plugin_status(fn) -> dict:
+    try:
+        return dict(fn())
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"[:160]}
+
+
+async def _supervised(factory, st: dict, retry: float = 60.0) -> None:
+    while True:
+        st["running"] = True
+        try:
+            await factory()
+            st["last_ok"] = _now_iso()
+            return
+        except Exception as exc:
+            st["failed"] += 1
+            st["last_error"] = f"{type(exc).__name__}: {exc}"[:160]
+            if asyncio.current_task().cancelling():
+                return
+        finally:
+            st["running"] = False
+        await asyncio.sleep(retry)
 
 
 def _chain_error(symbol: str, exc: Exception) -> HTTPException:
@@ -259,43 +282,46 @@ class MLTrainRequest(BaseModel):
 
 
 
-_MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
-                "July", "August", "September", "October", "November",
-                "December"]
-# both the abbreviation BSE files and the full name, nothing in between
-_MONTHS = {name[:3]: i for i, name in enumerate(_MONTH_NAMES, 1)}
-_MONTHS.update({name: i for i, name in enumerate(_MONTH_NAMES, 1)})
-_MONTHS["Sept"] = 9
+HEAT_UNIVERSES = {
+    "core":     ("NIFTY50", "BANKNIFTY"),
+    "next50":   ("NIFTYNEXT50",),
+    "n100":     ("NIFTY100",),
+    "n200":     ("NIFTY200",),
+    "n500":     ("NIFTY500",),
+    "mid150":   ("MIDCAP150",),
+    "small250": ("SMALLCAP250",),
+}
 
-def _period_key(label: str):
-    """Sort "Mar 2022" / "Sep 2024" by DATE, not alphabetically.
 
-    Plain sorted() put every March before every September, so Reliance's
-    six half-years read Mar 2022, Mar 2023, Mar 2024, Sep 2022, Sep 2023,
-    Sep 2024. The bar chart drew them in that order, and worse, the
-    counterparty SPARKLINES plot against this list - so every "trend" was
-    three March readings followed by three September readings. A line
-    through points that are not in time order is not a trend, it is a
-    shape, and it looked exactly like one.
+def _bulk_day_change(ns_symbols: list[str], progress=None) -> dict:
+    """Last close vs previous close for MANY symbols, chunked at 80 per
+    Yahoo call - one 500-ticker call hangs on throttling (measured 3min+),
+    chunks run ~3s each. Returns {SYM: (price, chg_pct)}."""
+    import yfinance as yf
 
-    Unparseable labels sort last under their own text rather than raising:
-    a filer inventing a new period format must not take the endpoint down.
-    """
-    parts = str(label).split()
-    # Match the WHOLE month token, abbreviated or full. A three-character
-    # prefix test accepted "Marzo 2024" as March - a label this code has never
-    # seen, but the point of a fallback is that it holds for labels this code
-    # has never seen.
-    if len(parts) == 2:
-        mon = _MONTHS.get(parts[0].strip().title())
-        if mon:
+    out: dict = {}
+    for i in range(0, len(ns_symbols), 80):
+        chunk = ns_symbols[i:i + 80]
+        try:
+            data = yf.download(chunk, period="5d", interval="1d",
+                               group_by="ticker", threads=True,
+                               progress=False, auto_adjust=False)
+        except Exception:
+            continue
+        for sym in chunk:
             try:
-                return (0, int(parts[1]), mon, "")
-            except ValueError:
-                pass
-    return (1, 0, 0, str(label))
+                closes = data[sym]["Close"].dropna()
+                if len(closes) >= 2:
+                    last, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
+                    out[sym.replace(".NS", "").upper()] = (last, (last / prev - 1) * 100)
+            except (KeyError, IndexError, TypeError):
+                continue
+        if progress:
+            progress(min(i + 80, len(ns_symbols)))
+    return out
 
-def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> FastAPI:
+
+def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plugins=None) -> FastAPI:
     """Build the app.
 
     `access_token` and `allowed_hosts` are set by `shunkan serve` when it binds
@@ -307,6 +333,12 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
     portfolio = Portfolio.load()
     alert_book = AlertBook()
     hub = TickHub()
+    from shunkan import plugins as _plugins
+
+    ext = _plugins.load(plugins, context={"provider": provider, "portfolio": portfolio,
+                                          "alert_book": alert_book, "hub": hub})
+    plugin_loops = {name: {"running": False, "failed": 0, "last_ok": None, "last_error": None}
+                    for name, _ in ext.loops}
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -531,27 +563,6 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                     keepalive_status["last_error"] = str(exc)[:160]
                 await asyncio.sleep(60.0)
 
-        async def graph_loop():
-            """Keep the knowledge graph current with the parquet stores.
-
-            Cheap (seconds) and idempotent, so it runs on a slow cycle and
-            after startup - the terminal should never open a company page
-            against a graph that predates this morning's scans."""
-            from shunkan.data.ingest import rebuild
-
-            await asyncio.sleep(45.0)
-            while True:
-                try:
-                    r = await asyncio.to_thread(rebuild)
-                    graph_status.update({k: v for k, v in r.items() if k != "stats"})
-                    graph_status["nodes"] = r["stats"]["nodes"]
-                    graph_status["edges"] = r["stats"]["edges"]
-                    graph_status["last_ok"] = _now_iso()
-                except Exception as exc:
-                    graph_status["failed"] = graph_status.get("failed", 0) + 1
-                    graph_status["last_error"] = str(exc)[:160]
-                await asyncio.sleep(6 * 3600.0)
-
         async def analysis_journal_loop():
             """Record what the terminal said at each close, once per day.
 
@@ -690,8 +701,9 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         tasks = [asyncio.create_task(t()) for t in
                  (alert_loop, bar_flush_loop, chain_capture_loop, history_sync_loop,
                   instruments_archive_loop, harvest_loop, participant_loop,
-                  news_archive_loop, feed_keepalive_loop, analysis_journal_loop,
-                  graph_loop)]
+                  news_archive_loop, feed_keepalive_loop, analysis_journal_loop)]
+        tasks += [asyncio.create_task(_supervised(factory, plugin_loops[name]))
+                  for name, factory in ext.loops]
         yield
         for t in tasks:
             t.cancel()
@@ -875,7 +887,9 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             "ticks": hub.stats(),
             "feed_keepalive": dict(keepalive_status),
             "analysis_journal": dict(journal_status),
-            "graph": dict(graph_status),
+            "plugins": {"loaded": list(ext.loaded), "failed": dict(ext.failed),
+                        "loops": {k: dict(v) for k, v in plugin_loops.items()}},
+            **{k: _plugin_status(fn) for k, fn in ext.statuses.items()},
             "server_time": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -2249,25 +2263,6 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
 
     _scan_cache: dict = {}
 
-    def _disk_get(key: str, max_age_s: float):
-        """Read-through cache that survives restarts. The in-memory dict
-        only ever knew about this process; a terminal that forgets a
-        400-page annual report on restart is a terminal that refetches it."""
-        try:
-            from shunkan.store.graph import graph
-
-            return graph().cache_get(key, max_age_s)
-        except Exception:
-            return None
-
-    def _disk_put(key: str, payload, kind: str = "", ttl_s: float = 21600):
-        try:
-            from shunkan.store.graph import graph
-
-            graph().cache_put(key, payload, kind, ttl_s)
-        except Exception:
-            pass
-
     @app.get("/api/calendar")
     def calendar():
         """The expiry calendar, from the instruments dumps - real listings,
@@ -2302,464 +2297,6 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             "earnings": {"error": "no earnings-date source wired yet - "
                                   "refusing to guess dates money depends on"},
         })
-
-    _own_scan: dict = {"running": False}
-
-    @app.post("/api/ownership/scan")
-    def ownership_scan(universe: str = "core", limit: int = 60):
-        """Populate the ownership registry across a universe.
-
-        One shareholding filing per company, politely paced. This is what
-        turns 'which companies does LIC hold' from a two-company answer
-        into a real one - and the coverage number always travels with the
-        result, so a partial scan never reads as a full book."""
-        import threading
-        import time as _time
-
-        if _own_scan.get("running"):
-            return {"running": True, **_own_scan}
-        if universe not in HEAT_UNIVERSES:
-            raise HTTPException(400, f"universe must be one of {sorted(HEAT_UNIVERSES)}")
-        try:
-            from shunkan.data.constituents import universe as _uni
-
-            symbols = [c.symbol for c in _uni(HEAT_UNIVERSES[universe])][:limit]
-        except Exception as exc:
-            raise HTTPException(502, f"constituents unavailable: {str(exc)[:110]}") from exc
-
-        _own_scan.update({"running": True, "done": 0, "total": len(symbols),
-                          "ok": 0, "failed": 0, "universe": universe})
-
-        def run():
-            from shunkan.data.filings import latest_shareholding
-
-            for i, sym in enumerate(symbols, 1):
-                try:
-                    latest_shareholding(sym)      # persists as a side effect
-                    _own_scan["ok"] += 1
-                except Exception as exc:
-                    _own_scan["failed"] += 1
-                    _own_scan["last_error"] = f"{sym}: {str(exc)[:90]}"
-                _own_scan["done"] = i
-                _time.sleep(0.8)                  # polite to the exchange
-            _own_scan["running"] = False
-            _own_scan["finished_at"] = _now_iso()
-
-        threading.Thread(target=run, daemon=True).start()
-        return {"running": True, **_own_scan}
-
-    @app.get("/api/ownership/scan")
-    def ownership_scan_status():
-        from shunkan.data.filings import registry_stats
-
-        return _clean({**_own_scan, "registry": registry_stats()})
-
-    # -- knowledge graph ---------------------------------------------------
-
-    @app.get("/api/graph")
-    def graph_stats():
-        from shunkan.store.graph import graph
-
-        g = graph()
-        out = g.stats()
-        # Ship the health verdict WITH the counts, always. A truncated
-        # database still answers COUNT(*) with a plausible-looking number -
-        # 4,374 nodes where there had been 62,220 - so a stats block without a
-        # verdict is exactly the reassuring-but-wrong screen this codebase
-        # exists to avoid.
-        out["health"] = g.health()
-        return _clean(out)
-
-    @app.get("/api/graph/health")
-    def graph_health(deep: bool = False):
-        """Structural check. `deep=true` runs the full integrity_check.
-
-        Deliberately does NOT construct a GraphStore: opening one runs the
-        schema script, which raises on a file damaged badly enough to matter,
-        so routing this through the store would make the endpoint fail in the
-        one case it exists to report.
-        """
-        from shunkan.store.graph import check_health
-
-        return _clean(check_health(deep=deep))
-
-    @app.post("/api/graph/rebuild")
-    def graph_rebuild():
-        """Rebuild the graph from every parquet store. Seconds, idempotent."""
-        from shunkan.data.ingest import rebuild
-
-        return _clean(rebuild())
-
-    @app.get("/api/graph/resolve")
-    def graph_resolve(q: str, kind: str | None = None):
-        """The mapping service: any spelling of an entity, one canonical id."""
-        from shunkan.store.graph import graph
-
-        g = graph()
-        nid = g.resolve(q, kind)
-        return _clean({"query": q, "node_id": nid,
-                       "node": g.node(nid) if nid else None,
-                       "candidates": g.search(q, kind, 12) if not nid else []})
-
-    @app.get("/api/graph/node")
-    def graph_node(id: str, rel: str | None = None, limit: int = 200):
-        from shunkan.store.graph import graph
-
-        g = graph()
-        n = g.node(id)
-        if n is None:
-            raise HTTPException(404, f"no node {id}")
-        nb = g.neighbours(id, rel, "both", limit)
-        return _clean({"node": n, "neighbours": [vars(x) for x in nb]})
-
-    @app.get("/api/graph/coheld/{symbol}")
-    def graph_coheld(symbol: str, rel: str = "scheme_holds", limit: int = 25):
-        """What else do this stock's holders hold - crowding, in one hop."""
-        from shunkan.store.graph import graph
-
-        g = graph()
-        nid = g.resolve(symbol, "company")
-        if not nid:
-            raise HTTPException(404, f"{symbol} is not in the graph")
-        return _clean({"symbol": symbol.upper(), "rel": rel,
-                       "rows": g.co_held(nid, rel, limit)})
-
-    # -- MSCI index review -------------------------------------------------
-
-    @app.post("/api/msci/import")
-    def msci_import(source: str | None = None):
-        from shunkan.data.msci import import_msci
-
-        try:
-            return _clean(import_msci(source))
-        except DataError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
-    @app.get("/api/msci/changes")
-    def msci_changes():
-        """Names the local rule engine expects to move at the next review -
-        forced passive flow, dated."""
-        from shunkan.data.msci import review_changes
-
-        try:
-            return _clean(review_changes())
-        except DataError as exc:
-            raise HTTPException(404, str(exc)) from exc
-
-    # -- mutual funds ------------------------------------------------------
-
-    @app.post("/api/funds/import")
-    def funds_import(source: str | None = None):
-        """Pull the mfresearch pipeline's stores into Shunkan's own."""
-        from shunkan.data.funds import import_from_pipeline
-
-        try:
-            return _clean(import_from_pipeline(source))
-        except DataError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
-    @app.get("/api/funds")
-    def funds_stats():
-        from shunkan.data.funds import store_stats
-
-        return _clean(store_stats())
-
-    @app.get("/api/funds/search")
-    def funds_search(q: str = "", limit: int = 40):
-        from shunkan.data.funds import search_schemes
-
-        try:
-            return {"rows": search_schemes(q, limit)}
-        except DataError as exc:
-            raise HTTPException(404, str(exc)) from exc
-
-    @app.get("/api/funds/holders/{symbol}")
-    def funds_holders(symbol: str):
-        """Which SCHEMES hold this stock - the economic owner behind the
-        AMC name that appears in the SEBI shareholding pattern."""
-        from shunkan.data.funds import schemes_holding
-
-        try:
-            return _clean(schemes_holding(symbol))
-        except DataError as exc:
-            raise HTTPException(404, str(exc)) from exc
-
-    @app.get("/api/funds/perf/{isin}")
-    def funds_perf(isin: str):
-        """Returns and risk computed from the fund's own NAV series, with
-        its benchmark beside it."""
-        from shunkan.data.funds import scheme_performance
-
-        try:
-            return _clean(scheme_performance(isin))
-        except DataError as exc:
-            raise HTTPException(404, str(exc)) from exc
-
-    @app.get("/api/funds/category/{category}")
-    def funds_category(category: str, window: str = "1y"):
-        """A category ranked on one window - the quartile view."""
-        from shunkan.data.funds import category_table
-
-        try:
-            return _clean(category_table(category, window))
-        except DataError as exc:
-            raise HTTPException(404, str(exc)) from exc
-
-    @app.get("/api/funds/{isin}")
-    def funds_detail(isin: str):
-        from shunkan.data.funds import scheme_detail
-
-        try:
-            return _clean(scheme_detail(isin))
-        except DataError as exc:
-            raise HTTPException(404, str(exc)) from exc
-
-    @app.get("/api/holder")
-    def holder_lookup(q: str):
-        """Reverse ownership: every company in the local registry this holder
-        appears in. Coverage is what has been scanned, and says so."""
-        from shunkan.data.filings import holder_positions
-
-        if len(q.strip()) < 3:
-            raise HTTPException(400, "query needs at least 3 characters")
-        return _clean(holder_positions(q.strip()))
-
-    def _split_sbo(text: str) -> list:
-        try:
-            from shunkan.store.graph import split_beneficial_owners
-
-            return split_beneficial_owners(text or "")
-        except Exception:
-            return []
-
-    _supply_builds: dict = {}
-
-    _warm: dict = {"running": False}
-
-    @app.post("/api/company/warm")
-    def warm_companies(universe: str = "core", segments: int = 1):
-        """Pre-build the structured layers for a whole universe.
-
-        Profile, filings, ownership and segments per company, written to the
-        disk cache and the graph, so every company page afterwards opens
-        from local storage. Annual reports are deliberately NOT included -
-        they are 15 MB each and change once a year, so they stay lazy."""
-        import threading
-        import time as _time
-
-        if _warm.get("running"):
-            return {"running": True, **_warm}
-        if universe not in HEAT_UNIVERSES:
-            raise HTTPException(400, f"universe must be one of {sorted(HEAT_UNIVERSES)}")
-        try:
-            from shunkan.data.constituents import universe as _uni
-
-            symbols = [c.symbol for c in _uni(HEAT_UNIVERSES[universe])]
-        except Exception as exc:
-            raise HTTPException(502, f"constituents unavailable: {str(exc)[:110]}") from exc
-
-        _warm.update({"running": True, "done": 0, "total": len(symbols),
-                      "ok": 0, "failed": 0, "universe": universe,
-                      "started": _now_iso()})
-
-        def run():
-            for i, sym in enumerate(symbols, 1):
-                try:
-                    company(sym)                     # profile + all filings
-                    if segments:
-                        company_segments(sym)        # Ind AS 108
-                    _warm["ok"] += 1
-                except Exception as exc:
-                    _warm["failed"] += 1
-                    _warm["last_error"] = f"{sym}: {str(exc)[:80]}"
-                _warm["done"] = i
-                _warm["current"] = sym
-                _time.sleep(0.4)
-            _warm["running"] = False
-            _warm["finished"] = _now_iso()
-            try:
-                from shunkan.data.ingest import rebuild
-
-                rebuild()
-            except Exception:
-                pass
-
-        threading.Thread(target=run, daemon=True).start()
-        return {"running": True, **_warm}
-
-    @app.get("/api/company/warm")
-    def warm_status():
-        return _clean(dict(_warm))
-
-    @app.get("/api/company/{symbol}/segments")
-    def company_segments(symbol: str):
-        """Ind AS 108 segment reporting from the newest quarterly filing -
-        revenue and profit by the businesses the company actually runs."""
-        import time as _time
-
-        sym = symbol.upper().replace(".NS", "")
-        ck = f"segments:{sym}"
-        disk = _disk_get(ck, 7 * 86400)
-        if disk is not None:
-            return disk
-        try:
-            from shunkan.data.indas import segments_for
-
-            out = _clean(segments_for(sym))
-        except DataError as exc:
-            out = {"error": str(exc)[:200], "symbol": sym}
-        _disk_put(ck, out, "segments", 7 * 86400)
-        return out
-
-    @app.get("/api/company/{symbol}/supply")
-    def company_supply(symbol: str, refresh: int = 0):
-        """The SPLC map, built from the company's own annual report.
-
-        Bloomberg draws this from licensed supplier/customer data. No such
-        feed exists for NSE names, so the map is EVIDENCE RETRIEVAL from
-        the filed report: every node carries the sentence it came from and
-        nothing is inferred. Downloads and parses a 200-400 page PDF, so it
-        builds in the background and the client polls."""
-        import time as _time
-        import threading
-
-        sym = symbol.upper().replace(".NS", "")
-        ck = f"supply:{sym}"
-        hit = _scan_cache.get(ck)
-        if hit and not refresh and _time.monotonic() - hit[0] < 86400:
-            return hit[1]
-        if not refresh:
-            disk = _disk_get(ck, 7 * 86400)
-            if disk is not None:
-                _scan_cache[ck] = (_time.monotonic(), disk)
-                return disk
-        b = _supply_builds.get(sym)
-        if b:
-            return {"building": True, "stage": b.get("stage", "starting"), "symbol": sym}
-        if is_offline():
-            raise HTTPException(502, "supply map needs the network")
-
-        _supply_builds[sym] = {"stage": "locating the annual report"}
-
-        def build():
-            try:
-                from shunkan.data.filings import latest_readable_report
-                from shunkan.data.supply_chain import build_supply_map
-
-                _supply_builds[sym]["stage"] = "downloading the annual report"
-                # newest READABLE, not newest: see latest_readable_report
-                ar, text, pages = latest_readable_report(sym)
-                _supply_builds[sym]["stage"] = (
-                    f"read FY{ar.get('to_year')} report ({ar.get('size')})")
-                _supply_builds[sym]["stage"] = f"reading {pages} pages"
-                name = ""
-                try:
-                    name = (_scan_cache.get(f"company:{sym}", (0, {}))[1]
-                            .get("profile", {}).get("name") or "")
-                except Exception:
-                    pass
-                m = build_supply_map(sym, text, ar["url"], pages, name)
-                out = _clean({**m.to_dict(),
-                              "report_year": f"{ar['from_year']}-{ar['to_year']}",
-                              "report_size": ar["size"],
-                              "filed": ar.get("filed"),
-                              "available_years": [f"{r['from_year']}-{r['to_year']}"
-                                                  for r in ars[:12]]})
-                _scan_cache[ck] = (_time.monotonic(), out)
-                _disk_put(ck, out, "supply", 7 * 86400)
-            except Exception as exc:
-                _scan_cache[ck] = (_time.monotonic(),
-                                   {"error": str(exc)[:200], "symbol": sym})
-            finally:
-                _supply_builds.pop(sym, None)
-
-        threading.Thread(target=build, daemon=True).start()
-        return {"building": True, "stage": "locating the annual report", "symbol": sym}
-
-    # ---- LLM extraction -------------------------------------------------
-    # Registered BEFORE /api/company/{symbol}: FastAPI matches in declaration
-    # order and the bare path would otherwise swallow /extract as a symbol.
-    # That exact bug already cost us /api/candles/scan once.
-
-    _extract_builds: dict = {}
-
-    @app.get("/api/company/{symbol}/extract")
-    def company_extract_get(symbol: str):
-        """The stored extraction for a symbol, or what it is currently doing."""
-        from shunkan.data.llm import load_extraction
-
-        sym = symbol.upper().replace(".NS", "")
-        b = _extract_builds.get(sym)
-        if b:
-            return {"building": True, "stage": b.get("stage", "starting"), "symbol": sym}
-        ex = load_extraction(sym)
-        if ex is None:
-            # "Run one from the ADMIN tab" is the right advice ONLY when a
-            # source document exists. For a company that listed weeks ago -
-            # Emmvee and PhysicsWallah both IPO'd into this index - no annual
-            # report has been filed on either exchange yet, and telling the
-            # reader to press a button that cannot succeed is worse than
-            # telling them nothing. Name which of the two cases it is.
-            reason = "no extraction stored - run one from the ADMIN tab"
-            runnable = True
-            try:
-                from shunkan.data.filings import annual_reports
-                annual_reports(sym)
-            except Exception:                                  # noqa: BLE001
-                try:
-                    from shunkan.data.bse import annual_reports as _bse_reports
-                    _bse_reports(sym)
-                except Exception:                              # noqa: BLE001
-                    runnable = False
-                    reason = ("neither NSE nor BSE lists an annual report for "
-                              f"{sym}. A company that has only just listed has "
-                              "not filed one yet, and there is nothing to "
-                              "extract from until it does.")
-            return {"symbol": sym, "extracted": False, "reason": reason,
-                    "runnable": runnable}
-        from dataclasses import asdict as _asdict
-
-        out = _asdict(ex)
-        out["extracted"] = True
-        out["counts"] = ex.counts()
-        return out
-
-    @app.post("/api/company/{symbol}/extract")
-    def company_extract_run(symbol: str):
-        """Run an extraction in the background; the client polls the GET.
-
-        Background because a 500-page download plus a medium-effort call runs
-        two to three minutes, which is well past any sane request timeout.
-        """
-        import threading
-
-        from shunkan.data.llm import extract_company, load_settings
-
-        sym = symbol.upper().replace(".NS", "")
-        if _extract_builds.get(sym):
-            return {"building": True, "stage": _extract_builds[sym].get("stage"),
-                    "symbol": sym}
-        s = load_settings()
-        if not s.enabled:
-            raise HTTPException(400, "LLM extraction is disabled - enable it in ADMIN")
-        if is_offline():
-            raise HTTPException(502, "extraction needs the network")
-        _extract_builds[sym] = {"stage": "queued"}
-
-        def run():
-            try:
-                extract_company(
-                    sym, settings=s,
-                    progress=lambda m: _extract_builds.setdefault(sym, {}).update(stage=m))
-            except Exception as exc:
-                _extract_builds[sym] = {"stage": f"failed: {str(exc)[:180]}"}
-                import time as _t
-                _t.sleep(20)   # leave the error visible to one poll cycle
-            finally:
-                _extract_builds.pop(sym, None)
-
-        threading.Thread(target=run, daemon=True).start()
-        return {"building": True, "stage": "queued", "symbol": sym}
 
     _sym_index: dict = {}
 
@@ -2808,27 +2345,10 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         if not term:
             return {"query": q, "matches": []}
         if not _sym_index:
-            # Tie-break by SIZE, not by ticker length. Ranking the shortest
-            # symbol first put ICICIGI above ICICIBANK - correct by string
-            # length and useless to a reader who typed "icici". BSE's scrip
-            # master carries a market cap per scrip, which is a real signal
-            # for which company someone probably meant.
-            caps: dict = {}
-            try:
-                from shunkan.data.bse import scrip_master
-
-                for row in scrip_master():
-                    sid = str(row.get("scrip_id") or "").upper().strip()
-                    try:
-                        caps[sid] = float(row.get("Mktcap") or 0)
-                    except (TypeError, ValueError):
-                        caps[sid] = 0.0
-            except Exception:                                  # noqa: BLE001
-                caps = {}          # ranking degrades to alphabetical, not broken
             for c in universe(("NIFTY500",)):
-                _sym_index[c.symbol] = (c, caps.get(c.symbol.upper(), 0.0))
+                _sym_index[c.symbol] = c
         out = []
-        for sym, (c, mcap) in _sym_index.items():
+        for sym, c in _sym_index.items():
             name = (c.name or "").upper()
             if sym == term:
                 rank = 0
@@ -2844,375 +2364,29 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
                 rank = 5
             else:
                 continue
-            out.append((rank, -mcap, sym, c))
-        out.sort(key=lambda r: (r[0], r[1], r[2]))
-        return {"query": q, "matches": [
-            {"symbol": sym, "name": c.name, "industry": c.industry}
-            for _, _, sym, c in out[:max(1, min(limit, 25))]]}
-
-    @app.get("/api/entity/{symbol}")
-    def entity_map(symbol: str, hops: int = 2, top: int = 20):
-        """Everything the graph knows about one entity, in one call.
-
-        The company page needs four things that used to be four round trips -
-        who it trades with, who it IS related to, what it makes and buys, and
-        who owns it. They come from different sources (BSE XBRL, an annual
-        report sentence, a mutual-fund disclosure) so each block states its
-        own provenance rather than presenting a single undifferentiated blob.
-        """
-        from shunkan.store.graph import GraphStore
-
-        g = GraphStore()
-        # Drilling from a counterparty passes the node id it was drawn with
-        # ("company:RELIANCE INTERNATIONAL") rather than a ticker, because a
-        # counterparty usually HAS no ticker. Accept both.
-        sym = symbol.replace(".NS", "")
-        nid = (sym if ":" in sym and g.node(sym)
-               else g.resolve(sym.upper(), kind="company")
-               or g.resolve(sym.upper()))
-        if not nid:
-            raise HTTPException(404, f"{sym} is not in the graph")
-        sym = sym.upper() if ":" not in sym else sym
-        node = g.node(nid) or {}
-
-        trade = g.trade_summary(nid, top=top)
-        # The cap is PER RELATION. Counts come from COUNT(*) rather than from
-        # len() of the capped list, so a truncated group reports as truncated
-        # instead of quietly redefining its own total.
-        STRUCT_CAP = 600
-        struct = g.structure(nid, limit=STRUCT_CAP)
-        true_counts = g.structure_counts(nid)
-        by_rel: dict = {}
-        for r in struct:
-            by_rel.setdefault(r["rel"], []).append(r)
-        capped = {rel: true_counts.get(rel, len(v))
-                  for rel, v in by_rel.items()
-                  if true_counts.get(rel, 0) > len(v)}
-
-        # The verbatim quote lives in edge.meta, which neighbours() drops.
-        # Query directly: a supply-chain claim without the sentence that
-        # supports it is exactly the kind of unsourced assertion this
-        # codebase refuses to render.
-        disclosed: dict = {}
-        rows = g._con.execute(
-            "SELECT e.rel, e.dst id, n.name, e.as_of, e.source, e.meta "
-            "FROM edge e JOIN node n ON n.id = e.dst "
-            "WHERE e.src = ? AND e.rel IN "
-            "('consumes','produces','sells_to','operates') "
-            "ORDER BY e.rel, n.name", (nid,)).fetchall()
-        for r in rows:
-            m = json.loads(r["meta"] or "{}")
-            disclosed.setdefault(r["rel"], []).append({
-                "id": r["id"], "name": r["name"], "quote": m.get("quote"),
-                "match": m.get("match"), "as_of": r["as_of"],
-                "source": r["source"]})
-
-        owners = [{"id": n.id, "name": n.name, "pct": n.weight, "as_of": n.as_of,
-                   "source": n.source}
-                  for n in g.neighbours(nid, rel="holds", direction="in", limit=60)]
-        schemes = [{"id": n.id, "name": n.name, "value": n.weight, "as_of": n.as_of}
-                   for n in g.neighbours(nid, rel="scheme_holds", direction="in",
-                                         limit=40)]
-
-        periods = sorted({p for side in trade.values() for r in side
-                          for p in r["periods"] if p and p != "?"},
-                         key=_period_key)
-        return {
-            "symbol": sym, "node": nid, "name": node.get("name", sym),
-            "trade": trade, "periods": periods,
-            "structure": by_rel,
-            "structure_counts": {k: true_counts.get(k, len(v))
-                                 for k, v in by_rel.items()},
-            "structure_capped": capped,
-            "structure_cap": STRUCT_CAP,
-            "disclosed": disclosed,
-            "owners": owners[:40], "schemes": schemes,
-            "sources": {
-                "trade": "BSE related-party XBRL (SEBI LODR Reg 23(9)) — "
-                         "half-yearly, frozen at Sep 2024",
-                "structure": "BSE related-party XBRL — relationship as filed",
-                "disclosed": "the company's own annual report,every node quoted",
-                "owners": "NSE shareholding XBRL / mutual-fund disclosures",
-            },
-        }
-
-    @app.get("/api/entity/{symbol}/trail")
-    def entity_trail(symbol: str, hops: int = 2, max_nodes: int = 300,
-                     rels: str = ""):
-        """The multi-hop walk, for drawing. Node cap is reported, not hidden."""
-        from shunkan.store.graph import GraphStore
-
-        g = GraphStore()
-        sym = symbol.replace(".NS", "")
-        nid = (sym if ":" in sym and g.node(sym)
-               else g.resolve(sym.upper(), kind="company")
-               or g.resolve(sym.upper()))
-        if not nid:
-            raise HTTPException(404, f"{sym} is not in the graph")
-        rel_t = tuple(r for r in rels.split(",") if r) or None
-        return g.trail(nid, hops=max(1, min(hops, 3)), rels=rel_t,
-                       max_nodes=max(20, min(max_nodes, 800)))
-
-    @app.get("/api/admin/llm")
-    def admin_llm_get():
-        """Settings, provider catalogue and spend. Never returns the key."""
-        from dataclasses import asdict as _asdict
-
-        from shunkan.data.llm import (EFFORTS, PROVIDERS, key_fingerprint,
-                                      ledger_stats, load_settings, stored_symbols)
-
-        s = load_settings()
-        return {
-            "settings": _asdict(s),
-            "key": key_fingerprint(s.provider),      # "…8e4c" or "" - never the key
-            "key_set": bool(key_fingerprint(s.provider)),
-            "providers": {k: {"models": v["models"], "env": v["env"],
-                              "base_url": v["base_url"]}
-                          for k, v in PROVIDERS.items()},
-            "efforts": EFFORTS,
-            "problems": s.validate(),
-            "usage": ledger_stats(),
-            "extracted": stored_symbols(),
-        }
-
-    @app.post("/api/admin/llm")
-    async def admin_llm_set(request: Request):
-        """Update settings and/or the API key. The key goes to credentials.json
-        at 0600 and never into llm.json, which is world-readable by design."""
-        from dataclasses import asdict as _asdict
-
-        from shunkan.data.llm import (key_fingerprint, load_settings,
-                                      save_settings, set_api_key)
-
-        body = await request.json()
-        key = (body.pop("api_key", "") or "").strip()
-        if key:
-            set_api_key(key, body.get("provider") or load_settings().provider)
-        try:
-            s = save_settings(**{k: v for k, v in body.items()})
-        except Exception as exc:
-            raise HTTPException(400, str(exc)) from exc
-        return {"ok": True, "settings": _asdict(s), "key": key_fingerprint(s.provider)}
-
-    @app.post("/api/admin/llm/test")
-    def admin_llm_test():
-        """Cheap round-trip, so a bad key fails in two seconds rather than
-        after a 500-page download."""
-        from shunkan.data.llm import test_connection
-
-        try:
-            return test_connection()
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)[:300]}
-
-    @app.get("/api/admin/llm/ledger")
-    def admin_llm_ledger(limit: int = 100):
-        from shunkan.data.llm import ledger, ledger_stats
-
-        return {"rows": ledger(limit), "stats": ledger_stats()}
-
-    @app.get("/api/company/{symbol}")
-    def company(symbol: str):
-        """Company intelligence, Bloomberg-DES style, honestly sourced.
-
-        Everything here names where it came from. The two things a
-        Bloomberg carries that no free source publishes structured - the
-        holder-level registry and the supplier/customer graph - come back
-        as REFUSALS with reasons, not as invented arrows. The business
-        summary is where the raw-material-to-end-user story lives for most
-        names, and it is quoted as the source text, not paraphrased into
-        false precision."""
-        import time as _time
-
-        sym = symbol.upper().replace(".NS", "")
-        ck = f"company:{sym}"
-        hit = _scan_cache.get(ck)
-        if hit and _time.monotonic() - hit[0] < 3600:
-            return hit[1]
-        disk = _disk_get(ck, 6 * 3600)
-        if disk is not None:
-            _scan_cache[ck] = (_time.monotonic(), disk)
-            return disk
-        if is_offline():
-            raise HTTPException(502, "company intelligence needs the network "
-                                     "(SHUNKAN_OFFLINE=1 is set)")
-        import yfinance as yf
-
-        out: dict = {"symbol": sym}
-        t = yf.Ticker(f"{sym}.NS")
-        try:
-            info = t.info or {}
-            if not info.get("longName"):
-                raise DataError(f"Yahoo has no profile for {sym}.NS")
-        except Exception as exc:
-            raise HTTPException(502, f"profile unavailable: {str(exc)[:120]}") from exc
-
-        out["profile"] = _clean({
-            "name": info.get("longName"),
-            "yahoo_sector": info.get("sector"),
-            "yahoo_industry": info.get("industry"),
-            "hq": ", ".join(x for x in (info.get("city"), info.get("state"),
-                                        info.get("country")) if x),
-            "employees": info.get("fullTimeEmployees"),
-            "website": info.get("website"),
-            "market_cap": info.get("marketCap"),
-            "trailing_pe": info.get("trailingPE"),
-            "price_to_book": info.get("priceToBook"),
-            "dividend_yield_pct": info.get("dividendYield"),
-            "beta": info.get("beta"),
-            "52w_low": info.get("fiftyTwoWeekLow"),
-            "52w_high": info.get("fiftyTwoWeekHigh"),
-            "source": "Yahoo Finance company profile",
-        })
-        out["business"] = {
-            "summary": info.get("longBusinessSummary")
-                       or "no business description published",
-            "source": "Yahoo Finance longBusinessSummary, quoted verbatim",
-        }
-        out["management"] = {
-            "officers": [{"name": o.get("name"), "title": o.get("title"),
-                          "age": o.get("age"),
-                          "pay": o.get("totalPay")}
-                         for o in (info.get("companyOfficers") or [])[:12]],
-            "source": "Yahoo Finance companyOfficers",
-        }
-        # The holder registry: SEBI's quarterly shareholding pattern, filed as
-        # XBRL. This view used to refuse a holder table for want of a source -
-        # the source turned out to be public all along, so the refusal is
-        # retired and the exchange filing is what renders. Yahoo's estimate
-        # stays only as the fallback when a filing cannot be read.
-        ins = info.get("heldPercentInsiders")
-        inst = info.get("heldPercentInstitutions")
-        try:
-            from shunkan.data.filings import latest_shareholding
-
-            sh = latest_shareholding(sym)
-            # NOT `t` - that is the yfinance Ticker this function still needs
-            # for the financials below. Shadowing it silently replaced every
-            # company's statements with an AttributeError.
-            tot = sh.totals
-            out["ownership"] = _clean({
-                # SEBI's tree: promoter + public = 100, and public CONTAINS
-                # the institutions. Serving them as three peers is what put
-                # this panel past 100% before.
-                "promoter_pct": tot.get("promoter"),
-                "public_pct": tot.get("public"),
-                "inst_domestic_pct": tot.get("inst_domestic"),
-                "inst_foreign_pct": tot.get("inst_foreign"),
-                "non_institutions_pct": tot.get("non_institutions"),
-                "non_promoter_non_public_pct": tot.get("non_promoter_non_public"),
-                "as_of": sh.as_of,
-                "total_shares": sh.total_shares,
-                "categories": sh.categories,
-                "holders": [{"name": h.name, "bucket": h.bucket,
-                             "category": h.category, "kind": h.kind,
-                             "shares": h.shares, "pct": h.pct,
-                             "pledged_pct": h.pledged_pct,
-                             "beneficial_owner": h.beneficial_owner,
-                             # split the same way the graph splits it, so a
-                             # family reads as people rather than one string
-                             "beneficial_owners": _split_sbo(h.beneficial_owner)}
-                            for h in sh.holders],
-                "source": f"NSE shareholding pattern XBRL, {sh.as_of}",
-                "source_url": sh.source_url,
-                "label_note": ("SEBI LODR Reg 31, filed quarterly. Promoter + "
-                               "public sum to 100; the institutional splits sit "
-                               "INSIDE public. Beneficial owners come from the "
-                               "filing's own SBO declarations (Companies Act s.90)."),
-            })
-        except Exception as exc:
-            out["ownership"] = _clean({
-                "promoter_pct": ins * 100 if ins is not None else None,
-                "public_pct": ((1 - ins) * 100 if ins is not None else None),
-                "inst_domestic_pct": None, "inst_foreign_pct": None,
-                "holders": [],
-                "source": "Yahoo Finance estimate (exchange filing unavailable)",
-                "label_note": f"NSE filing unreadable: {str(exc)[:110]}",
-            })
-        try:
-            fin = t.financials
-            rows = {}
-            for label, key in (("revenue", "Total Revenue"),
-                               ("operating_income", "Operating Income"),
-                               ("net_income", "Net Income"),
-                               ("ebitda", "EBITDA")):
-                if key in fin.index:
-                    rows[label] = {str(c.date()): _clean(float(v))
-                                   for c, v in fin.loc[key].items() if pd.notna(v)}
-            margins = {}
-            rev = rows.get("revenue", {})
-            for y, r in rev.items():
-                ni = rows.get("net_income", {}).get(y)
-                if r and ni is not None:
-                    margins[y] = round(ni / r * 100, 2)
-            out["financials"] = {
-                "annual": rows,
-                "net_margin_pct": margins,
-                "source": "Yahoo Finance annual statements",
-                "note": "net margin computed here from the two rows above",
-            }
-        except Exception as exc:
-            out["financials"] = {"error": f"statements unavailable: {str(exc)[:100]}"}
-
-        try:
-            from shunkan.data.constituents import universe as _uni
-
-            cons = _uni(("NIFTY500",))
-            mine = next((c for c in cons if c.symbol == sym), None)
-            if mine is None or not mine.industry:
-                raise DataError(f"{sym} not in NIFTY500 list - no NSE industry peers")
-            peer_syms = [c.symbol for c in cons
-                         if c.industry == mine.industry and c.symbol != sym][:24]
-            changes = _bulk_day_change([f"{x}.NS" for x in peer_syms]) if peer_syms else {}
-            out["peers"] = {
-                "nse_industry": mine.industry,
-                "rows": [{"symbol": x,
-                          "price": changes.get(x, (None, None))[0],
-                          "chg_pct": changes.get(x, (None, None))[1]}
-                         for x in peer_syms],
-                "source": "NSE NIFTY500 constituent taxonomy + bulk quotes",
-            }
-        except Exception as exc:
-            out["peers"] = {"error": str(exc)[:120]}
-
-        try:
-            from shunkan.data.msci import status_for
-
-            out["msci"] = status_for(sym)
-        except Exception:
-            out["msci"] = None
-
-        # The rest of the compelled record. Each block fails to a named
-        # reason on its own, so one dead endpoint cannot blank the page.
-        from shunkan.data import filings as _f
-
-        for key, fn in (("insider", lambda: _f.insider_trades(sym, 40)),
-                        ("board_meetings", lambda: _f.board_meetings(sym, 12)),
-                        ("corporate_actions", lambda: _f.corporate_actions(sym, 15)),
-                        ("credit_ratings", lambda: _f.credit_ratings(sym, 10)),
-                        ("pledge", lambda: _f.promoter_pledge(sym)),
-                        ("quarterly", lambda: _f.quarterly_results(sym, 8)),
-                        ("announcements", lambda: _f.announcements(sym, 25))):
+            out.append((rank, sym, c))
+        # A plugin row with a numeric `rank` breaks ties within its match
+        # tier (lower first); ticker order is the fallback.
+        matched = {sym for _, sym, _ in out}
+        tie: dict = {}
+        extra: list = []
+        seen = set(matched)
+        for fn in ext.symbol_sources:
             try:
-                out[key] = fn()
-            except Exception as exc:
-                out[key] = {"error": str(exc)[:140]}
-
-        out["supply_chain"] = {
-            "hint": "GET /api/company/{symbol}/supply — built from the filed "
-                    "annual report, every node quoting its sentence",
-        }
-        # The as-of every Yahoo figure on this page is stamped with. Without
-        # it the browser can only print its own clock, and this response is
-        # served from a 1-hour memory cache and a 6-hour disk cache - so a
-        # page painted at 16:00 could stamp "FETCHED 16:00" over numbers
-        # fetched at 10:00. Stamped BEFORE the caches are written, so a cache
-        # hit reports when the data was fetched and not when it was replayed.
-        out["fetched_at"] = datetime.now(timezone.utc).isoformat()
-        out = _clean(out)
-        _scan_cache[ck] = (_time.monotonic(), out)
-        _disk_put(ck, out, "company", 6 * 3600)
-        return out
+                for r in fn(q, limit):
+                    s, rk = r.get("symbol"), r.get("rank")
+                    if s in matched:
+                        if isinstance(rk, (int, float)):
+                            tie.setdefault(s, float(rk))
+                    elif s not in seen:
+                        extra.append({k: v for k, v in r.items() if k != "rank"})
+                        seen.add(s)
+            except Exception:
+                continue
+        out.sort(key=lambda x: (x[0], tie.get(x[1], 0.0), x[1]))
+        rows = [{"symbol": sym, "name": c.name, "industry": c.industry}
+                for _, sym, c in out] + extra
+        return {"query": q, "matches": rows[:max(1, min(limit, 25))]}
 
     def _maybe_holders_count(t) -> float | None:
         try:
@@ -3221,44 +2395,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
         except Exception:
             return None
 
-    HEAT_UNIVERSES = {
-        "core":     ("NIFTY50", "BANKNIFTY"),
-        "next50":   ("NIFTYNEXT50",),
-        "n100":     ("NIFTY100",),
-        "n200":     ("NIFTY200",),
-        "n500":     ("NIFTY500",),
-        "mid150":   ("MIDCAP150",),
-        "small250": ("SMALLCAP250",),
-    }
-
     _heat_builds: dict = {}
-
-    def _bulk_day_change(ns_symbols: list[str], progress=None) -> dict:
-        """Last close vs previous close for MANY symbols, chunked at 80 per
-        Yahoo call - one 500-ticker call hangs on throttling (measured 3min+),
-        chunks run ~3s each. Returns {SYM: (price, chg_pct)}."""
-        import yfinance as yf
-
-        out: dict = {}
-        for i in range(0, len(ns_symbols), 80):
-            chunk = ns_symbols[i:i + 80]
-            try:
-                data = yf.download(chunk, period="5d", interval="1d",
-                                   group_by="ticker", threads=True,
-                                   progress=False, auto_adjust=False)
-            except Exception:
-                continue
-            for sym in chunk:
-                try:
-                    closes = data[sym]["Close"].dropna()
-                    if len(closes) >= 2:
-                        last, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
-                        out[sym.replace(".NS", "").upper()] = (last, (last / prev - 1) * 100)
-                except (KeyError, IndexError, TypeError):
-                    continue
-            if progress:
-                progress(min(i + 80, len(ns_symbols)))
-        return out
 
     @app.get("/api/heatmap")
     def heatmap(universe: str = "core"):
@@ -4801,6 +3938,15 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = ()) -> F
             pass
         finally:
             hub.detach(ws)
+
+    for r in ext.routers:
+        app.include_router(r)
+    for name, directory in ext.statics:
+        app.mount(f"/plugins/{name}", StaticFiles(directory=directory), name=f"plugin-{name}")
+
+    @app.get("/api/plugins")
+    def plugin_views():
+        return [v.as_dict() for v in ext.views]
 
     # -- static frontend --------------------------------------------------------
 
