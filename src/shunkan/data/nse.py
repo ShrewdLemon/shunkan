@@ -1,10 +1,12 @@
 """NSE public-API client (option chains, index snapshots).
 
-NSE's JSON endpoints are free but fronted by aggressive anti-bot checks:
-a cookie warm-up against the homepage is required, and some networks are
-blocked outright. Every call degrades gracefully — callers get a clear
-DataError naming the reason. On the live path that is where it stops: the
-resolver reports the failure rather than substituting a modelled book.
+NSE's JSON endpoints are free but fronted by aggressive anti-bot checks: a
+burst gets the IP blocked for days. Every request goes through `nse_www`, the
+one polite client for the host, so chains share its cross-process gap, cookie
+warm-up and breaker with every other fetch. Every call degrades gracefully —
+callers get a clear DataError naming the reason. On the live path that is
+where it stops: the resolver reports the failure rather than substituting a
+modelled book.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from datetime import date, datetime
 
 import numpy as np
 
+from shunkan.data import nse_www
 from shunkan.data.memcache import ttl_cache
 from shunkan.data.provider import DataError
 from shunkan.derivatives.chain import OptionChain
@@ -24,71 +27,47 @@ from shunkan.markets import (
     today_ist,
 )
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nseindia.com/option-chain",
-}
 
-BASE = "https://www.nseindia.com"
+def _get_json(path: str, params: dict | None = None) -> dict:
+    try:
+        data = nse_www.get_json(path, params)
+    except DataError as exc:
+        raise DataError(f"NSE API blocked or unavailable: {exc}") from exc
+    if not isinstance(data, dict):
+        raise DataError(f"NSE {path}: JSON {type(data).__name__}, not an object")
+    return data
+
+
+@ttl_cache(ttl=1800.0)
+def _expiry_ladder(symbol: str) -> tuple[str, ...]:
+    """NSE's listed expiries; the v3 chain endpoint serves one expiry per call."""
+    info = _get_json("/api/option-chain-contract-info", {"symbol": symbol})
+    return tuple(info.get("expiryDates") or ())
 
 
 class NSEClient:
-    def __init__(self, timeout: float = 8.0) -> None:
-        import httpx
-
-        self._client = httpx.Client(
-            headers=_HEADERS, timeout=timeout, follow_redirects=True
-        )
-        self._warmed = False
-
-    def _warm(self) -> None:
-        if not self._warmed:
-            try:
-                self._client.get(BASE)
-                self._warmed = True
-            except Exception as exc:
-                raise DataError(f"NSE unreachable: {exc}") from exc
-
-    def _get_json(self, path: str, params: dict | None = None) -> dict:
-        self._warm()
-        try:
-            resp = self._client.get(f"{BASE}{path}", params=params)
-            if resp.status_code in (401, 403):
-                # Cookies expired or bot-blocked — re-warm once.
-                self._warmed = False
-                self._warm()
-                resp = self._client.get(f"{BASE}{path}", params=params)
-            resp.raise_for_status()
-            return resp.json()
-        except DataError:
-            raise
-        except Exception as exc:
-            raise DataError(
-                f"NSE API blocked or unavailable ({exc.__class__.__name__}). "
-                "This is common on some networks — falling back."
-            ) from exc
-
     def option_chain(self, symbol: str, expiry: date | None = None) -> OptionChain:
         sym = symbol.upper()
-        if sym in FNO_INDICES:
-            payload = self._get_json("/api/option-chain-indices", {"symbol": sym})
-        else:
-            payload = self._get_json("/api/option-chain-equities", {"symbol": sym})
-        return _parse_chain(sym, payload, expiry)
+        ladder = list(_expiry_ladder(sym))
+        live = _live(ladder)
+        if not live:
+            raise DataError(f"NSE listed no unexpired expiry for {sym}")
+        target = expiry.strftime("%d-%b-%Y") if expiry is not None else None
+        pick = target if target in live else live[0]
+        kind = "Indices" if sym in FNO_INDICES else "Equity"
+        payload = _get_json("/api/option-chain-v3", {"type": kind, "symbol": sym, "expiry": pick})
+        records = {**(payload.get("records") or {}), "expiryDates": ladder}
+        return _parse_chain(sym, {**payload, "records": records},
+                            datetime.strptime(pick, "%d-%b-%Y").date())
 
 
-@ttl_cache(ttl=60.0)
-def _shared_client() -> NSEClient:
-    return NSEClient()
+def _live(expiries) -> list[str]:
+    """NSE keeps the just-settled series listed after the 15:30 bell; trading it is impossible."""
+    return [e for e in expiries if not is_expired(datetime.strptime(e, "%d-%b-%Y").date())]
 
 
 def fetch_nse_chain(symbol: str, expiry: date | None = None) -> OptionChain:
-    return _shared_client().option_chain(symbol, expiry)
+    return NSEClient().option_chain(symbol, expiry)
 
 
 def _parse_chain(symbol: str, payload: dict, want_expiry: date | None) -> OptionChain:
@@ -110,10 +89,7 @@ def _parse_chain(symbol: str, payload: dict, want_expiry: date | None) -> Option
     if not rows or not expiries or spot <= 0:
         raise DataError(f"NSE returned an empty chain for {symbol}")
 
-    # NSE keeps the just-settled series in expiryDates after the 15:30 bell;
-    # trading it is impossible, so drop it before defaulting.
-    live = [e for e in expiries
-            if not is_expired(datetime.strptime(e, "%d-%b-%Y").date())]
+    live = _live(expiries)
     if not live:
         raise DataError(f"NSE listed no unexpired expiry for {symbol}")
 
@@ -129,7 +105,7 @@ def _parse_chain(symbol: str, payload: dict, want_expiry: date | None) -> Option
         "c_ltp", "c_oi", "c_chg", "c_vol", "c_iv", "p_ltp", "p_oi", "p_chg", "p_vol", "p_iv"
     )}
     for row in rows:
-        if row.get("expiryDate") != expiry_str:
+        if (row.get("expiryDate") or row.get("expiryDates")) != expiry_str:
             continue
         strikes.append(float(row["strikePrice"]))
         ce, pe = row.get("CE") or {}, row.get("PE") or {}
