@@ -101,8 +101,8 @@ def test_condor_settles_at_intrinsic_with_entry_charges_only():
     assert r.slippage == pytest.approx(2.0)
     fills = [costs.Fill("BUY", 10.5, 65), costs.Fill("SELL", 39.5, 65),
              costs.Fill("SELL", 34.5, 65), costs.Fill("BUY", 8.5, 65)]
-    assert r.charges == pytest.approx(costs.cost_of(fills).total / 65)
-    assert r.charges == pytest.approx(101.7528 / 65, rel=1e-4)
+    assert r.charges == pytest.approx(costs.cost_of(fills, on=D0).total / 65)
+    assert r.charges == pytest.approx(101.7885 / 65, rel=1e-4)
     assert r.net == pytest.approx(57.0 - 2.0 - r.charges)
 
 
@@ -111,7 +111,8 @@ def test_max_loss_settlement_charges_exercise_stt_on_the_long_wing():
     r = simulate(ch, CONDOR, D0, EXP, [], settle=24900.0, slippage=0.0, lot=65)
     assert r.gross == pytest.approx(57.0 - 400.0)
     entry_only = simulate(ch, CONDOR, D0, EXP, [], settle=24000.0, slippage=0.0, lot=65).charges
-    assert r.charges - entry_only == pytest.approx(costs.STT_EXERCISE_INTRINSIC * 100 * 65 / 65)
+    assert r.charges - entry_only == pytest.approx(costs.schedule_on(EXP).stt_exercise_intrinsic * 100 * 65 / 65)
+    assert costs.schedule_on(EXP) is costs.UNTIL_MARCH_2026
 
 
 def test_take_profit_closes_at_half_credit():
@@ -155,14 +156,26 @@ def test_a_sell_fill_is_floored_at_zero():
     ch = DailyChain(chain_frame([(D0, 23000, "PE", 0.3, 5)]), EXP)
     r = simulate(ch, [Leg("PE", 23000, -1)], D0, EXP, [], 24000.0, 0.5)
     assert r.gross == pytest.approx(0.3) and r.slippage == pytest.approx(0.3)
-    assert r.charges == pytest.approx(costs.cost_of([costs.Fill("SELL", 0.0, 65)]).total / 65)
+    assert r.charges == pytest.approx(costs.cost_of([costs.Fill("SELL", 0.0, 65)], on=D0).total / 65)
+
+
+def test_each_fill_pays_the_rates_of_its_own_day():
+    e, x, exp = pd.Timestamp("2026-03-31"), pd.Timestamp("2026-04-01"), pd.Timestamp("2026-04-07")
+    f = chain_frame([(e, 23600, "PE", 40, 5), (x, 23600, "PE", 30, 5)]).assign(expiry=exp)
+    r = simulate(DailyChain(f, exp), [Leg("PE", 23600, -1)], e, exp, [x], 24000.0, 0.0,
+                 exit_rule=take_profit(0.9))
+    assert r.exit_kind == "take"
+    opened = costs.cost_of([costs.Fill("SELL", 40.0, 65)], on=e)
+    closed = costs.cost_of([costs.Fill("BUY", 30.0, 65)], on=x)
+    assert opened.stt == pytest.approx(2.60)
+    assert r.charges == pytest.approx((opened.total + closed.total) / 65)
 
 
 def test_quantity_scales_fills_and_an_itm_short_pays_no_exercise_stt():
     ch = DailyChain(chain_frame([(D0, 23600, "PE", 40, 5)]), EXP)
     r = simulate(ch, [Leg("PE", 23600, -2)], D0, EXP, [], 23500.0, 0.0)
     assert r.credit == pytest.approx(80.0) and r.gross == pytest.approx(80.0 - 200.0)
-    assert r.charges == pytest.approx(costs.cost_of([costs.Fill("SELL", 40.0, 130)]).total / 65)
+    assert r.charges == pytest.approx(costs.cost_of([costs.Fill("SELL", 40.0, 130)], on=D0).total / 65)
 
 
 def test_exit_days_settle_and_expiry_are_checked():

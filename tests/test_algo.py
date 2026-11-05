@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import itertools
 import random
+from datetime import date
 
 import pytest
 
 from shunkan.algo import (
+    DEFAULT_RATES,
+    RATES_UNTIL_MARCH_2026,
     BacktestConfig,
     BaseStrategy,
     FillConfig,
@@ -30,6 +33,7 @@ from shunkan.algo import (
     exercise_stt,
     imbalance,
     is_tradeable,
+    rates_on,
     replay,
     session_meta,
     slippage,
@@ -86,11 +90,34 @@ def test_microprice_leans_toward_the_thin_side():
 # --------------------------------------------------------------------------
 
 def test_charges_match_a_real_contract_note():
-    """Measured against a real NIFTY option round trip: 1950 @ 69.20 -> 72.00."""
-    c = charge_round_trip(69.20, 72.00, 1950)
+    """Measured against a real NIFTY option round trip: 1950 @ 69.20 -> 72.00, Rs 305.79, before April 2026."""
+    c = charge_round_trip(69.20, 72.00, 1950, rates=RATES_UNTIL_MARCH_2026)
     assert c.brokerage == pytest.approx(40.0)          # Rs 20 x 2 orders
     assert c.stt == pytest.approx(140.40)              # 0.1% of sell premium
-    assert c.total == pytest.approx(322.03, abs=0.5)
+    assert c.total == pytest.approx(305.79, abs=2.0)
+
+
+def test_rates_follow_the_session_date():
+    assert rates_on(date(2026, 3, 31)) is RATES_UNTIL_MARCH_2026
+    assert rates_on(date(2026, 4, 1)) is DEFAULT_RATES
+
+
+def test_april_2026_stt_hike():
+    """NSE's STT table, from 1 April 2026: option sale 0.10% -> 0.15%, exercise 0.125% -> 0.15%, futures 0.02% -> 0.05%."""
+    old, new = RATES_UNTIL_MARCH_2026, DEFAULT_RATES
+    assert charge_leg(100.0, 65, False, rates=old).stt == pytest.approx(6.50)
+    assert charge_leg(100.0, 65, False, rates=new).stt == pytest.approx(9.75)
+    assert charge_leg(100.0, 65, False, Segment.FUTURE, old).stt == pytest.approx(1.30)
+    assert charge_leg(100.0, 65, False, Segment.FUTURE, new).stt == pytest.approx(3.25)
+    assert exercise_stt(100.0, 65, old) == pytest.approx(8.125)
+    assert exercise_stt(100.0, 65, new) == pytest.approx(9.75)
+
+
+def test_exchange_outflow_per_crore_is_unchanged_by_the_march_2026_ipft_move():
+    """NSE/FA/73061: options Rs 3,503 + Rs 50 IPFT became Rs 3,552.99 + Rs 0.01 per crore; futures Rs 173 + 10 became 182.99 + 0.01."""
+    for r in (RATES_UNTIL_MARCH_2026, DEFAULT_RATES):
+        assert (r.exch_option + r.ipft_option) * 1e7 == pytest.approx(3553)
+        assert (r.exch_future + r.ipft_future) * 1e7 == pytest.approx(183)
 
 
 def test_stt_is_sell_side_only():
@@ -99,12 +126,13 @@ def test_stt_is_sell_side_only():
 
 
 def test_crossing_the_spread_dwarfs_the_taxes():
-    """The central economic fact this harness exists to expose."""
+    """The central economic fact this harness exists to expose. The April 2026 STT rise narrowed it from 5.7x to 4.7x."""
     passive = breakeven_points(158.85, 1950, spread=0.0)
     crossing = breakeven_points(158.85, 1950, spread=1.50)
-    assert passive == pytest.approx(0.338, abs=0.01)
-    assert crossing == pytest.approx(1.838, abs=0.01)
-    assert crossing > passive * 5
+    assert passive == pytest.approx(0.401, abs=0.01)
+    assert crossing == pytest.approx(1.901, abs=0.01)
+    assert crossing > passive * 4.5
+    assert breakeven_points(158.85, 1950, spread=0.0, rates=RATES_UNTIL_MARCH_2026) == pytest.approx(0.321, abs=0.01)
 
 
 def test_index_option_expiry_is_cheaper_than_squaring_off():

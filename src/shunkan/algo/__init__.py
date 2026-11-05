@@ -11,6 +11,7 @@ aggregated into an OHLC candle.
 from shunkan.algo.book import Sweep, imbalance, is_tradeable, slippage, sweep_buy, sweep_sell
 from shunkan.algo.charges import (
     DEFAULT_RATES,
+    RATES_UNTIL_MARCH_2026,
     ChargeBreakdown,
     Rates,
     Segment,
@@ -18,6 +19,7 @@ from shunkan.algo.charges import (
     charge_leg,
     charge_round_trip,
     exercise_stt,
+    rates_on,
 )
 from shunkan.algo.engine import BacktestConfig, Context, Engine, Position, backtest
 from shunkan.algo.fills import Fill, FillConfig, FillEngine, Order, OrderStatus, Side
@@ -57,8 +59,8 @@ from shunkan.algo.strategy import (
 
 __all__ = [
     "Sweep", "imbalance", "is_tradeable", "slippage", "sweep_buy", "sweep_sell",
-    "DEFAULT_RATES", "ChargeBreakdown", "Rates", "Segment",
-    "breakeven_points", "charge_leg", "charge_round_trip", "exercise_stt",
+    "DEFAULT_RATES", "RATES_UNTIL_MARCH_2026", "ChargeBreakdown", "Rates", "Segment",
+    "breakeven_points", "charge_leg", "charge_round_trip", "exercise_stt", "rates_on",
     "BacktestConfig", "Context", "Engine", "Position", "backtest",
     "Fill", "FillConfig", "FillEngine", "Order", "OrderStatus", "Side",
     "Result", "RoundTrip",

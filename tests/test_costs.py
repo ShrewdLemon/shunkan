@@ -6,14 +6,19 @@ fabricating a price: both make an unprofitable strategy look fine.
 
 from __future__ import annotations
 
+from datetime import date
+
+import pandas as pd
 import pytest
 
 from shunkan.backtest.costs import (
-    BROKERAGE_PER_ORDER,
+    FROM_APRIL_2026,
+    UNTIL_MARCH_2026,
     Fill,
     breakeven_edge,
     cost_of,
     round_trip,
+    schedule_on,
 )
 
 LOT = 65
@@ -36,8 +41,7 @@ def test_brokerage_is_flat_per_order_not_a_percentage():
     leg and quietly makes every small structure look viable."""
     small = cost_of([Fill("SELL", 1.0, LOT)])
     large = cost_of([Fill("SELL", 500.0, LOT)])
-    assert small.brokerage == BROKERAGE_PER_ORDER
-    assert large.brokerage == BROKERAGE_PER_ORDER
+    assert small.brokerage == large.brokerage == 20.0
 
 
 def test_flat_brokerage_punishes_small_multi_leg_structures():
@@ -84,4 +88,27 @@ def test_breakeven_edge_is_quoted_as_a_fraction_of_credit():
 
 def test_gst_applies_to_brokerage_and_charges_not_to_stt():
     c = cost_of(straddle(1))
-    assert c.gst == pytest.approx(0.18 * (c.brokerage + c.exchange + c.sebi))
+    assert c.gst == pytest.approx(0.18 * (c.brokerage + c.exchange + c.ipft + c.sebi))
+
+
+def test_rates_follow_the_trade_date():
+    assert schedule_on(date(2026, 3, 31)) is UNTIL_MARCH_2026
+    assert schedule_on(date(2026, 4, 1)) is FROM_APRIL_2026
+    assert schedule_on(pd.Timestamp("2026-04-01 15:30")) is FROM_APRIL_2026
+    assert schedule_on(None) is FROM_APRIL_2026
+
+
+def test_april_2026_stt_hike():
+    """NSE's STT table, from 1 April 2026: option sale 0.10% -> 0.15% of premium, exercise 0.125% -> 0.15% of intrinsic."""
+    sell = [Fill("SELL", 100.0, LOT)]
+    assert cost_of(sell, on=date(2026, 3, 31)).stt == pytest.approx(6.50)
+    assert cost_of(sell, on=date(2026, 4, 1)).stt == pytest.approx(9.75)
+    held = [Fill("BUY", 5.0, LOT, intrinsic=100.0)]
+    assert cost_of(held, on=date(2026, 3, 31)).stt == pytest.approx(8.125)
+    assert cost_of(held, on=date(2026, 4, 1)).stt == pytest.approx(9.75)
+
+
+def test_exchange_outflow_is_3553_per_crore_of_premium_in_both_periods():
+    """NSE/FA/73061 moved Rs 49.99 of the IPFT levy into the transaction charge from 1 March 2026."""
+    for s in (UNTIL_MARCH_2026, FROM_APRIL_2026):
+        assert (s.exchange_txn_premium + s.ipft_premium) * 1e7 == pytest.approx(3553)

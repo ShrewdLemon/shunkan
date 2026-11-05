@@ -465,3 +465,26 @@ not shown to pay after costs.
 
 **Decision: daily NIFTY PCR is not a signal at 1- or 5-day horizons.** It
 stays off the desk.
+
+## 2026-11-06 — the cost tables were stale after 1 April 2026
+
+STT on F&O rose from 1 April 2026 (NSE's STT table): option sale 0.10% → 0.15%
+of premium, exercise 0.125% → 0.15% of intrinsic, futures 0.02% → 0.05%. Both
+cost tables still charged the old rates. They are now dated: `schedule_on(day)`
+in `backtest/costs.py` and `rates_on(day)` in `algo/charges.py`, and each fill
+pays the rates of its own day.
+
+Two more corrections came with it. NSE/FA/73061 moved ₹49.99 of the IPFT levy
+into the transaction charge from 1 March 2026, so the total stayed ₹3,553 per
+crore of premium (₹183 for futures). The backtest table had left IPFT out
+(₹50/crore of premium too low), the algo table charged ₹500/crore, and its
+futures exchange rate was ₹190/crore against ₹173. The algo model of the real
+1950 @ 69.20 → 72.00 contract note now gives ₹307.41 against the note's ₹305.79
+(was ₹322.03).
+
+- Condor study: 25 of its 247 out-of-sample weeks expire on or after
+  1 April 2026 and were charged the old STT. The extra is 0.05 index points per
+  100 points of premium sold, plus 0.025% of any ITM long's intrinsic at
+  expiry. Costs only rise, so all four FAILs stand. The logged numbers
+  reproduce at commit 065a3b1.
+- PCR study: no costs, unchanged.

@@ -172,8 +172,9 @@ def simulate(chain: DailyChain, legs: list[Leg], entry, expiry, exit_days, settl
              slippage: float, exit_rule=None, lot: int = 65) -> TradeResult:
     """Open at entry closes, close on the first exit-rule day with a full mark, else settle.
 
-    Fills are charged through `costs.cost_of` at `lot * |qty|` units; settlement charges
-    only exercise STT on ITM longs. Every per-unit figure is rupees / lot.
+    Fills are charged through `costs.cost_of` at `lot * |qty|` units and the rates of
+    their own day; settlement charges only exercise STT on ITM longs. Every per-unit
+    figure is rupees / lot.
     """
     entry, expiry = _day(entry), _day(expiry)
     days = [_day(d) for d in exit_days]
@@ -193,6 +194,7 @@ def simulate(chain: DailyChain, legs: list[Leg], entry, expiry, exit_days, settl
         side, px = _fill(leg.qty, c, slippage, True)
         fills.append(costs.Fill(side, premium=px, quantity=lot * abs(leg.qty)))
         cash -= leg.qty * px
+    rupees = costs.cost_of(fills, on=entry).total
 
     kind, day = "settle", expiry
     if exit_rule is not None:
@@ -205,22 +207,23 @@ def simulate(chain: DailyChain, legs: list[Leg], entry, expiry, exit_days, settl
                 kind, day = k, d
                 break
 
-    rupees = 0.0
     if kind == "settle":
         if not math.isfinite(settle):
             raise ValueError(f"no settlement price for {expiry.date()}")
         values = [intrinsic(leg, settle) for leg in legs]
         cash += sum(leg.qty * v for leg, v in zip(legs, values))
-        rupees += sum(costs.STT_EXERCISE_INTRINSIC * v * lot * leg.qty
+        stt = costs.schedule_on(expiry).stt_exercise_intrinsic
+        rupees += sum(stt * v * lot * leg.qty
                       for leg, v in zip(legs, values) if leg.qty > 0 and v > 0)
     else:
         values = [chain.quote(day, leg.strike, leg.right)[0] for leg in legs]
+        closing = []
         for leg, c in zip(legs, values):
             side, px = _fill(leg.qty, c, slippage, False)
-            fills.append(costs.Fill(side, premium=px, quantity=lot * abs(leg.qty)))
+            closing.append(costs.Fill(side, premium=px, quantity=lot * abs(leg.qty)))
             cash += leg.qty * px
+        rupees += costs.cost_of(closing, on=day).total
     gross = credit + sum(leg.qty * v for leg, v in zip(legs, values))
-    rupees += costs.cost_of(fills).total
     return TradeResult(entry, day, kind, credit, gross, gross - cash, rupees / lot)
 
 

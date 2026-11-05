@@ -8,15 +8,19 @@ round trip. The bid-ask spread on the same underlying was 1.50 points, so
 crossing costs roughly nine times what the taxman does; see `fills.py`.
 
 Rates are statutory and change by circular. They are dated and centralised in
-`Rates` rather than sprinkled through the engine so a change is one edit.
-Rates below are as of August 2026; STT on option *sales* was hiked to 0.10%
-of premium in October 2024, and equity-derivative exchange charges were last
-revised in 2024. Verify against your own contract notes before sizing up.
+`Rates` rather than sprinkled through the engine so a change is one edit;
+`rates_on(day)` returns the set in force that day. STT on F&O rose from
+1 April 2026 (NSE's STT table: option sale 0.10% -> 0.15% of premium, exercise
+0.125% -> 0.15% of intrinsic, futures 0.02% -> 0.05%). From 1 March 2026 NSE
+moved its IPFT levy into the transaction charge with the total unchanged
+(NSE/FA/73061). Rates before October 2024 are not modelled. Verify against
+your own contract notes before sizing up.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 
 
@@ -27,7 +31,7 @@ class Segment(str, Enum):
 
 @dataclass(frozen=True)
 class Rates:
-    """Statutory + broker rates. Defaults are Zerodha / NSE, August 2026."""
+    """Statutory + broker rates. Defaults are Zerodha / NSE from 1 April 2026."""
 
     # Broker. Zerodha charges a flat Rs 20 per executed order on F&O, or
     # 0.03% of turnover, whichever is lower. For options the flat fee always
@@ -38,20 +42,20 @@ class Rates:
     brokerage_pct_applies: bool = True
 
     # Securities Transaction Tax — sell side only.
-    stt_option_sell: float = 0.0010      # 0.10% of premium
-    stt_future_sell: float = 0.0002      # 0.02% of notional
+    stt_option_sell: float = 0.0015      # 0.15% of premium
+    stt_future_sell: float = 0.0005      # 0.05% of notional
     # Exercised/assigned ITM options are taxed on INTRINSIC value, not premium.
     # Note the direction of this trade-off is the opposite of the folklore:
     # see `exercise_stt` for the arithmetic.
-    stt_option_exercise: float = 0.00125  # 0.125% of intrinsic
+    stt_option_exercise: float = 0.0015  # 0.15% of intrinsic
 
     # Exchange transaction charges (NSE).
-    exch_option: float = 0.0003503       # 0.03503% of premium turnover
-    exch_future: float = 0.000019        # 0.0019% of notional
+    exch_option: float = 0.000355299     # Rs 3,552.99 per crore of premium
+    exch_future: float = 0.000018299     # Rs 182.99 per crore of notional
 
     # Investor Protection Fund Trust levy (NSE).
-    ipft_option: float = 0.00005         # 0.005% of premium
-    ipft_future: float = 0.000001        # 0.0001% of notional
+    ipft_option: float = 0.000000001     # Rs 0.01 per crore
+    ipft_future: float = 0.000000001     # Rs 0.01 per crore
 
     sebi: float = 0.000001               # Rs 10 per crore, both sides
     stamp_option_buy: float = 0.00003    # 0.003% of premium, buy side
@@ -59,7 +63,18 @@ class Rates:
     gst: float = 0.18                    # on brokerage + exchange + SEBI + IPFT
 
 
+RATES_UNTIL_MARCH_2026 = Rates(
+    stt_option_sell=0.0010, stt_future_sell=0.0002, stt_option_exercise=0.00125,
+    exch_option=0.0003503, exch_future=0.0000173,
+    ipft_option=0.000005, ipft_future=0.000001,
+)
 DEFAULT_RATES = Rates()
+NEW_RATES_FROM = date(2026, 4, 1)
+
+
+def rates_on(day: date) -> Rates:
+    """Rates in force on `day`."""
+    return DEFAULT_RATES if day >= NEW_RATES_FROM else RATES_UNTIL_MARCH_2026
 
 
 @dataclass(frozen=True)
@@ -160,8 +175,8 @@ def exercise_stt(intrinsic: float, quantity: int, rates: Rates = DEFAULT_RATES) 
     The common advice is "always square off, never let it expire ITM". For
     CASH-SETTLED INDEX options on a flat-fee broker that is arithmetically
     wrong, and this function exists partly to show why. Selling costs
-    0.10% STT + 0.03503% exchange + 0.005% IPFT + GST ~= 0.147% of turnover
-    plus the flat fee; exercise costs 0.125% of intrinsic and no fee. Expiring
+    0.15% STT + 0.03553% exchange + GST ~= 0.192% of turnover plus the flat
+    fee; exercise costs 0.15% of intrinsic and no fee. Expiring
     is cheaper at every intrinsic value we tested (see tests). The gap is
     small either way -- a few hundred rupees on 30 lots.
 
