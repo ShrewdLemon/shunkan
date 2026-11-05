@@ -33,6 +33,14 @@ class DataError(RuntimeError):
     """Raised when market data cannot be fetched."""
 
 
+class Unpublished(DataError):
+    """Not out yet: a 404, or the endpoint still serves an older session."""
+
+
+class FetchFailed(DataError):
+    """Anything else, including a 200 whose body is not the expected file."""
+
+
 @dataclass
 class Quote:
     symbol: str

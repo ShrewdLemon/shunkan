@@ -389,3 +389,79 @@ this VIX is thin — we got paid because the WALL held (the framework's
 Book flat. Lifetime realized ₹6,833.15 on ₹1L (+6.83%), across: pair
 +582, shock basket +495, wall spread +5,512. Three ideas, three greens,
 n=3 — noted as a small sample, not a system.
+
+## 2026-11-05 00:15 — pre-registered condor and PCR tests: both FAIL
+
+One registered run each at `aebc81c` (clean tree), as fixed in
+`docs/superpowers/specs/2026-09-29-fo-bhav-vrp-design.md` and the addendum
+in `docs/superpowers/specs/2026-11-04-lane-c-design.md` Part 3. The owner's
+choices, made before the run: charges at one lot of 65; the DSR trial spread
+read from the search. Outputs: `research/vrp_condor_run.json` and
+`research/pcr_daily_run.json` under the scratch home `~/.shunkan-lanec`.
+
+**Weekly VRP-gated NIFTY iron condor: FAIL on all four criteria.** 247
+out-of-sample weeks (expiring 2022-01-06 to 2026-09-22), net index points per
+unit.
+
+| criterion | result | bar | |
+|---|---|---|---|
+| (1) mean at s=0.5, NW t (lags 4) | −0.82 (₹−53), t −0.25 | mean > 0, t ≥ 2.0 | FAIL |
+| (2) DSR, 15 trials, trial Sharpe sd 0.892 | 0.000 | ≥ 0.95 | FAIL |
+| (3) same path at s=1.0 | −1.43 (₹−93) | > 0 | FAIL |
+| (4) split by expiry at 2024-11-20 | −2.52 before, +1.81 from | both > 0 | FAIL |
+
+- Walk-forward picks: 2022 none/E0, then 0/E2 for 2023–2026.
+- Selected path by year, mean per week: 2022 −11.37 (−591 in all; the
+  Ukraine-invasion week alone −427), 2023 +0.98, 2024 +3.13, 2025 −1.13,
+  2026 +6.20 (38 weeks). Annualised Sharpe −0.09.
+- Hindsight, not results: 0/E1 had OOS t +2.99 and 2/E0 t +2.60 (it traded
+  12 of 247 weeks). They are 2 of 12 looks at the answer key, which is what
+  the DSR discounts.
+- Trading every week lost: none/E0 −7.04 a week over all 397 weeks. The short
+  ATM straddle held to settlement made −5.44 a week (t −0.48).
+- σ_ATM/VIX mean 0.895 (sd 0.132, n 395), against the 0.927 reference.
+- The Tuesday-expiry era is positive in all 12 configs, but it has only 56
+  weeks.
+- Worst condor week −553.8 (none/E0, 9→17 Apr 2025 tariff-pause rally through
+  the 23,200/24,000 call wing). It was checked against the NIFTY close.
+- Data: NSE has no bhavcopy for 2021-03-30. The study counts that day from the
+  spot calendar (R18), which affects one in-sample week. One entry had no VIX;
+  1 of 1,460 exit marks was untraded. Charges use today's lot of 65 across the
+  whole sample (R10).
+
+What would have changed it:
+- The 2022 pick was a near tie. Every config had a negative in-sample Sharpe,
+  and the rule took the least negative: none/E0 at −0.242 against 4/E2 at
+  −0.243. Among losers, highest Sharpe favours the highest-variance config.
+  The alternative path is not computed; choosing it now would be a re-tune.
+- The 10-lot charge basis is unlikely to flip (1). Brokerage at one lot is at
+  most 2.9 a week, and t 2.0 needed a mean near +6.6 on the same picks. The
+  house DSR spread of 1.0 is stricter still.
+
+**Decision: no condor programme.** Under the registered rule, the VRP gate is
+not shown to pay after costs.
+
+**Daily PCR: no test survives.** There were 8 tests over 1,842 sessions
+(2019-04-02 to 2026-09-18), Holm-corrected over the 8. Survival needed
+|t| ≥ 2.5 and Holm p < 0.05 on both the raw and the partial IC.
+
+| test | IC | NW t | partial | NW t | Holm p |
+|---|---|---|---|---|---|
+| near_z60_r1 | −0.013 | −0.58 | −0.022 | −0.94 | 1.000 |
+| near_z60_r5 | +0.017 | +0.52 | +0.026 | +0.80 | 1.000 |
+| near_d1_r1 | −0.005 | −0.23 | −0.010 | −0.43 | 1.000 |
+| near_d1_r5 | −0.000 | −0.02 | −0.017 | −0.98 | 1.000 |
+| all_z60_r1 | −0.014 | −0.62 | −0.025 | −1.08 | 1.000 |
+| all_z60_r5 | +0.006 | +0.19 | +0.013 | +0.38 | 1.000 |
+| all_d1_r1 | −0.011 | −0.47 | −0.020 | −0.85 | 1.000 |
+| all_d1_r5 | +0.004 | +0.25 | −0.012 | −0.61 | 1.000 |
+
+- The sample starts at the first full 60-session z-window (R15).
+- Jan–Feb 2019 "near" is the monthly expiry, since there were no weeklies
+  before 14 Feb 2019. It enters only the z-windows of the first ~40 sample
+  sessions (R13).
+- PCR runs on the joint option–spot index (item 16), so 2021-03-30 is absent
+  and one return row spans it.
+
+**Decision: daily NIFTY PCR is not a signal at 1- or 5-day horizons.** It
+stays off the desk.

@@ -14,9 +14,13 @@ import pytest
 
 from shunkan.backtest.validate import (
     Validation,
+    cvar,
     deflated_sharpe,
+    holm,
+    newey_west_t,
     permutation_test,
     sharpe,
+    t_pvalue,
 )
 
 N = 2000
@@ -210,3 +214,25 @@ def test_unknown_search_object_raises_rather_than_defaulting_to_one():
 
     with pytest.raises(TypeError):
         trials_of(object())
+
+
+def test_newey_west_equals_plain_t_with_zero_lags():
+    x = np.array([1.0, 2.0, -1.0, 3.0, 0.5, 2.5])
+    plain = x.mean() / (x.std(ddof=0) / np.sqrt(len(x)))
+    assert newey_west_t(x, 0) == pytest.approx(plain)
+
+
+def test_holm_known_case():
+    assert holm([0.01, 0.04, 0.03, 0.005]) == pytest.approx([0.03, 0.06, 0.06, 0.02])
+
+
+def test_t_pvalue_and_cvar():
+    assert t_pvalue(1.959964) == pytest.approx(0.05, abs=1e-4)
+    assert cvar(np.arange(1, 101, dtype=float), 0.05) == pytest.approx(3.0)
+
+
+def test_holm_clips_and_cvar_counts_the_tail_without_float_noise():
+    assert list(holm([0.4, 0.6])) == [0.8, 0.8]
+    assert list(holm([0.6, 0.7])) == [1.0, 1.0]
+    assert len(holm([])) == 0
+    assert cvar(np.arange(1, 101, dtype=float), 0.07) == pytest.approx(4.0)

@@ -32,6 +32,7 @@ dependencies = [
     "pyarrow>=15.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
+    "xlrd>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -54,6 +55,8 @@ where = ["src"]
 "shunkan.server" = ["static/*", "static/vendor/*"]
 # The TUI's stylesheet. Without it a non-editable install's `shunkan` dies on start.
 "shunkan.ui" = ["*.tcss"]
+# The packaged RBI/FOMC/CPI schedule the calendar reads.
+"shunkan.data" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

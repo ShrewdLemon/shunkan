@@ -59,3 +59,15 @@ def test_a_failed_request_cannot_leave_a_spinner_on_screen():
     boot = src[src.index("function bootChrome"):]
     boot = boot[:boot.index("\n}")]
     assert "wireFailureNet()" in boot, "the net is defined but never armed"
+
+
+def test_a_toast_shows_its_message_as_text():
+    """Alert text comes from rules, servers and filings, so it is data.
+
+    The toast once set it as innerHTML, so an alert carrying markup would
+    have run in the terminal page.
+    """
+    src = (ROOT / "src/shunkan/server/static/app.js").read_text()
+    body = src[src.index("function toast("):src.index("/* ---------- panel")]
+    assert "t.textContent = msg" in body
+    assert "innerHTML" not in body and ", msg)" not in body

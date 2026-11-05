@@ -103,7 +103,8 @@ const cls = (v) => (v == null || isNaN(v) ? "" : v >= 0 ? "up" : "down");
 const dp = (v) => (Math.abs(v) < 100 ? 2 : Math.abs(v) < 1000 ? 1 : 0);
 
 function toast(msg, kind = "") {
-  const t = elv("div", `toast ${kind}`, msg);
+  const t = elv("div", `toast ${kind}`);
+  t.textContent = msg;
   $("#toasts").appendChild(t);
   setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .4s"; }, 5200);
   setTimeout(() => t.remove(), 5700);
@@ -5202,29 +5203,119 @@ async function renderBrief(view, params = {}) {
 
 const secErr = (v) => `<div class="empty" style="padding:8px 12px">${esc(v.error || "unavailable")}</div>`;
 
+function factsCard(f) {
+  const line = (html, pad = "6px 12px") => `<div class="empty" style="padding:${pad}">${html}</div>`;
+  const warn = (t) => line(`<span class="warn">⚠ ${esc(t)}</span>`, "2px 12px");
+  const err = (label, v) => line(`${label} · ${esc(v.source || "facts")}: ${esc(v.error || "unavailable")}`);
+  if (f.error) return err("FACTS", f);
+  const s = f.session || {}, pr = f.price || {}, po = f.positioning || {};
+  const fl = f.flows || {}, ex = f.expiry || {}, ca = f.calendar || {};
+  const out = [];
+
+  if (s.error) out.push(err("SESSION", s));
+  else {
+    const exps = ex.error ? "" : Object.entries(ex.symbols || {}).map(([k, v]) => v.error
+      ? `${esc(k)} —` : `${esc(k)} ${esc(v.next)} (${esc(v.sessions_left)} sess)`).join(" · ");
+    out.push(line(`as of ${esc(s.as_of)} · for session ${esc(s.for_session)} · ${esc((s.phase || "").replace("_", " "))}${
+      exps ? ` · next expiry ${exps}` : ""}${
+      (s.holidays_skipped || []).length ? ` · holiday skipped ${esc(s.holidays_skipped.join(", "))}` : ""}`));
+    (s.warnings || []).forEach((w) => out.push(warn(w)));
+  }
+  if (ex.error) out.push(err("EXPIRY", ex));
+  else if (ex.warning) out.push(warn(ex.warning));
+
+  if (pr.error) out.push(err("PRICE", pr));
+  else {
+    const v = pr.vix || {};
+    out.push(line(`settled close ${fmt.n(pr.close)} <span class="${cls(pr.change_pct)}">${fmt.pct(pr.change_pct / 100)}</span>
+      · gap ${fmt.pct(pr.gap_pct / 100)} · range ${fmt.n(pr.range_pct, 2)}%
+      · realised vol ${fmt.n(pr.rv5, 1)}% (5d) / ${fmt.n(pr.rv21, 1)}% (21d)
+      · ${v.error ? `VIX —` : `VIX ${fmt.n(v.close, 2)} (${fmt.n(v.pctile, 1)}th since ${esc((v.since || "").slice(0, 4))})`}
+      · ${esc(pr.as_of)} <span class="faint">${esc(pr.source)}</span>`));
+    if (pr.note) out.push(warn(pr.note));
+    if (pr.unsettled_bar_dropped) out.push(line(`<span class="faint">${esc(pr.unsettled_bar_dropped.date)} bar dropped: ${esc(pr.unsettled_bar_dropped.reason)}</span>`, "2px 12px"));
+    if (pr.fill_error) out.push(line(`<span class="faint">provider fill failed: ${esc(pr.fill_error)}</span>`, "2px 12px"));
+  }
+
+  if (po.error) out.push(err("POSITIONING", po));
+  else {
+    out.push(metricsStrip([
+      ["PCR FRONT", fmt.n(po.pcr_front, 2), ""],
+      ["PCR NEXT", fmt.n(po.pcr_next, 2), ""],
+      ["CALL WALL", fmt.i(po.call_wall), "down"],
+      ["PUT WALL", fmt.i(po.put_wall), "up"],
+      ["MAX PAIN", fmt.i(po.max_pain), ""],
+      ["STRADDLE", fmt.n(po.straddle, 2), ""],
+      ["IMPLIED MOVE", po.implied_move_pct == null ? "—" : "±" + fmt.n(po.implied_move_pct, 2) + "%", ""],
+      ["BASIS", fmt.n(po.basis, 2), cls(po.basis)],
+    ]));
+    const adds = (rows, c) => (rows || []).map((a) => `${fmt.i(a.strike)} <span class="${c}">+${
+      a.lots == null ? fmt.compact(a.oi_change) : fmt.compact(a.lots) + " lots"}</span>`).join(" · ") || "—";
+    out.push(line(`${esc(po.source)} · front ${esc(po.front_expiry)} · next ${esc(po.next_expiry || "—")}
+      · ATM ${fmt.i(po.atm_strike)} · spot ${fmt.n(po.spot)} <span class="faint">(${esc(po.spot_source || "—")})</span>`));
+    out.push(line(`OI adds · calls ${adds(po.call_oi_adds, "down")} · puts ${adds(po.put_oi_adds, "up")}`, "2px 12px"));
+    [po.call_wall_note, po.put_wall_note].filter(Boolean)
+      .forEach((n) => out.push(line(`<span class="faint">${esc(n)}</span>`, "2px 12px")));
+  }
+
+  if (fl.error) out.push(err("FLOWS", fl));
+  else {
+    const part = fl.participant || {}, fut = fl.fii_index_futures || {}, cash = fl.cash || {};
+    const fii = (part.by_participant || {}).FII || {};
+    const asOf = (v) => v.stale
+      ? `<span class="warn" title="${esc(v.note || "")}">${esc(v.as_of)} · stale</span>` : esc(v.as_of);
+    const row = (label, v, buy, sell, net, d) => v.error
+      ? `<tr><td class="txt sym">${label}</td><td class="txt faint" colspan="4">${esc(v.source || "")}: ${esc(v.error)}</td></tr>`
+      : `<tr><td class="txt sym">${label}</td><td>${buy == null ? "—" : fmt.n(buy, d)}</td>
+          <td>${sell == null ? "—" : fmt.n(sell, d)}</td><td class="${cls(net)}">${fmt.n(net, d)}</td>
+          <td class="txt">${asOf(v)}</td></tr>`;
+    const side = (who) => (cash.error ? cash : { ...cash, ...(cash[who] || {}) });
+    out.push(`<table class="tbl"><thead><tr><th class="txt">FLOW</th><th>BUY</th><th>SELL</th><th>NET</th>
+      <th class="txt">AS OF</th></tr></thead><tbody>
+      ${row("FII IDX FUT NET Δ1D · contracts", part, null, null, fii.idx_fut_net_chg, 0)}
+      ${row("FII IDX FUT · ₹ cr", fut, fut.buy_cr, fut.sell_cr, fut.net_cr, 2)}
+      ${row("FII CASH · ₹ cr", side("fii"), side("fii").buy_cr, side("fii").sell_cr, side("fii").net_cr, 2)}
+      ${row("DII CASH · ₹ cr", side("dii"), side("dii").buy_cr, side("dii").sell_cr, side("dii").net_cr, 2)}
+    </tbody></table>`);
+    [part, fut, cash].filter((v) => v.stale && v.note)
+      .forEach((v) => out.push(line(`<span class="faint">${esc(v.note)}</span>`, "2px 12px")));
+    if (!cash.error && cash.basis) out.push(line(`<span class="faint">cash: ${esc(cash.basis)}</span>`, "2px 12px"));
+  }
+
+  if (ca.error) out.push(err("CALENDAR", ca));
+  else {
+    const rows = ca.rows || [];
+    out.push(rows.length ? `<table class="tbl"><thead><tr><th class="txt">NEXT 48 H · IST</th>
+      <th class="txt">EVENT</th><th class="txt">KIND</th></tr></thead><tbody>
+      ${rows.map((r) => `<tr title="${esc(r.source)}"><td class="txt">${esc((r.at_ist || "").slice(0, 16).replace("T", " "))}</td>
+        <td class="txt">${esc(r.what)}</td><td class="txt faint">${esc((r.kind || "").replace("_", " "))}</td></tr>`).join("")}
+    </tbody></table>` : line("next 48 h: no expiry, holiday, board meeting or macro event"));
+    Object.entries(ca.errors || {}).forEach(([k, v]) => out.push(line(`<span class="faint">${esc(k.replace("_", " "))}: ${esc(v)}</span>`, "2px 12px")));
+    (ca.stale || []).forEach((k) => out.push(line(`<span class="faint">${esc(k)} schedule not sourced past ${esc((ca.coverage || {})[k] || "—")}</span>`, "2px 12px")));
+  }
+  return out.join("");
+}
+
 async function loadDaily() {
   const host = $("#brf-body");
   if (!host) return;
   try {
     const on = $("#brf-on") && $("#brf-on").value ? `?on=${$("#brf-on").value}` : "";
-    const [d, mig, cnd] = await Promise.all([
+    const [d, mig, cnd, facts] = await Promise.all([
       getJSON(`/api/analysis/daily/${encodeURIComponent(state.symbol)}${on}`),
       on ? Promise.resolve(null)
          : getJSON(`/api/analysis/intraday/${encodeURIComponent(state.symbol)}`).catch(() => null),
       getJSON(`/api/candles/${encodeURIComponent(state.symbol)}`).catch(() => null),
+      on ? Promise.resolve(null)
+         : getJSON(`/api/facts/${encodeURIComponent(state.symbol)}`)
+             .catch((e) => ({ error: e.message, source: "/api/facts" })),
     ]);
     const ch = d.chart || {}, vol = d.vol || {}, pos = d.positioning || {};
     const parts = d.participants || {}, ev = d.events || {}, news = d.news || {};
 
-    const sessionLive = d.as_of
-      && Date.parse(d.as_of + "T15:30:00+05:30") > Date.now()
-      && (d.served_from || "live") === "live";
     const chartBody = ch.error ? secErr(ch) : `
       ${metricsStrip([
-        // While the session runs this number is the LAST print of an
-        // evolving candle; calling it CLOSE would claim a bell that has
-        // not rung.
-        [sessionLive ? "LAST" : "CLOSE", fmt.n(ch.close), ""],
+        ["CLOSE", fmt.n(ch.close), ""],
         ["DAY", fmt.pct(ch.chg_pct / 100), cls(ch.chg_pct)],
         ["GAP", fmt.pct(ch.gap_pct / 100), cls(ch.gap_pct)],
         ["INTRADAY", fmt.pct(ch.intraday_pct / 100), cls(ch.intraday_pct)],
@@ -5238,7 +5329,9 @@ async function loadDaily() {
         realised vol ${fmt.n(ch.rv5, 1)}% (5d) / ${fmt.n(ch.rv21, 1)}% (21d)${
         ch.vwap !== undefined ? ` · VWAP ${ch.vwap == null
           ? `— <span class="faint" title="${esc(ch.vwap_note || "")}">(${esc(ch.vwap_note || "unavailable")})</span>`
-          : `${fmt.n(ch.vwap)} <span class="faint">(${esc(ch.vwap_note || "")})</span>`}` : ""}</div>`;
+          : `${fmt.n(ch.vwap)} <span class="faint">(${esc(ch.vwap_note || "")})</span>`}` : ""}${
+        ch.unsettled_bar_dropped ? ` · <span class="faint">${esc(ch.unsettled_bar_dropped.date)} bar dropped: ${
+          esc(ch.unsettled_bar_dropped.reason)}</span>` : ""}</div>`;
 
     const volBody = vol.error ? secErr(vol) : `
       ${metricsStrip([
@@ -5249,21 +5342,28 @@ async function loadDaily() {
       ])}
       <div class="empty" style="padding:6px 12px">VIX percentile is against every session since 2008 in the local archive (as of ${esc(vol.vix_date || "—")})</div>`;
 
+    const pcrOi = pos.pcr_oi ?? pos.pcr_front, oiSup = pos.support ?? pos.put_wall;
+    const oiRes = pos.resistance ?? pos.call_wall, posWarn = pos.staleness_warning || pos.warning;
+    const mpDist = pos.dist_to_max_pain_pct
+      ?? (pos.max_pain != null && pos.spot ? (pos.max_pain / pos.spot - 1) * 100 : null);
     const posBody = pos.error
       ? `<div class="empty" style="padding:8px 12px">${esc(pos.error)}${
-          (pos.source_trail || []).map((t) => `<br><span class="faint">· ${esc(t)}</span>`).join("")}</div>`
+          (pos.source_trail || []).map((t) => `<br><span class="faint">· ${esc(t)}</span>`).join("")}${
+          pos.bhav_error ? `<br><span class="faint">· bhavcopy fallback: ${esc(pos.bhav_error)}</span>` : ""}</div>`
       : `${metricsStrip([
-          ["PCR (OI)", fmt.n(pos.pcr_oi, 2), pos.pcr_oi > 1.1 ? "up" : pos.pcr_oi < 0.9 ? "down" : ""],
+          ["PCR (OI)", fmt.n(pcrOi, 2), pcrOi > 1.1 ? "up" : pcrOi < 0.9 ? "down" : ""],
           ["MAX PAIN", fmt.i(pos.max_pain), ""],
-          ["VS SPOT", pos.dist_to_max_pain_pct == null ? "—" : fmt.pct(pos.dist_to_max_pain_pct / 100), cls(pos.dist_to_max_pain_pct)],
-          ["OI SUPPORT", fmt.i(pos.support), "up"],
-          ["OI RESIST", fmt.i(pos.resistance), "down"],
+          ["VS SPOT", mpDist == null ? "—" : fmt.pct(mpDist / 100), cls(mpDist)],
+          ["OI SUPPORT", fmt.i(oiSup), "up"],
+          ["OI RESIST", fmt.i(oiRes), "down"],
         ])}
-        <div class="empty" style="padding:6px 12px">${esc(pos.source || "")} · expiry ${esc(pos.expiry || "—")}${
+        <div class="empty" style="padding:6px 12px">${esc(pos.source || "")} · expiry ${esc(pos.expiry || pos.front_expiry || "—")}${
           pos.is_model ? ' · <span class="warn">MODELLED — positioning here is not market data</span>' : ""}${
+          pos.fallback_reason ? ` · <span class="faint">${esc(pos.fallback_reason)}</span>` : ""}${
+          pos.bhav_error ? ` · <span class="faint">bhavcopy fallback: ${esc(pos.bhav_error)}</span>` : ""}${
           pos.vol_note ? ` · <span class="faint">${esc(pos.vol_note)}</span>` : ""}</div>${
-        pos.staleness_warning
-          ? `<div class="empty" style="padding:2px 12px"><span class="warn">⚠ ${esc(pos.staleness_warning)}</span></div>` : ""}`;
+        [pos.session_warning, posWarn].filter(Boolean).map((w) =>
+          `<div class="empty" style="padding:2px 12px"><span class="warn">⚠ ${esc(w)}</span></div>`).join("")}`;
 
     const partBody = parts.error ? secErr(parts) : `
       <table class="tbl"><thead><tr><th class="txt">WHO</th>
@@ -5314,13 +5414,18 @@ async function loadDaily() {
     host.innerHTML = `
       <div class="empty" style="padding:4px 2px">${(() => {
         if (!d.as_of) return ageStamp(null);
-        const close = d.as_of + "T15:30:00+05:30";
-        return Date.parse(close) > Date.now()
-          ? `<span class="age" title="today's session has not closed; sections read live and archive data">AS OF ${d.as_of} · SESSION LIVE</span>`
-          : ageStamp(close);
+        const sn = d.session;
+        if (sn && sn.prev_session && d.as_of >= sn.prev_session) {
+          const label = sn.phase === "post_close"
+            ? (d.as_of >= sn.today ? "SESSION CLOSED" : "TODAY'S CLOSE NOT SYNCED YET")
+            : { open: "LIVE SESSION", pre_open: "PRE-OPEN", closed: "MARKET CLOSED TODAY" }[sn.phase] || esc(sn.phase);
+          return `<span class="age" title="the chart reads settled bars only; today's bar counts once captured after the 15:30 close">LAST SETTLED CLOSE ${esc(d.as_of)} · ${label}</span>`;
+        }
+        return ageStamp(d.as_of + "T15:30:00+05:30");
       })()}
         <span class="faint">· ${esc(d.served_from || "live")} · root → derivatives · every section fails to a named reason, never a filled box</span></div>
       <div style="display:grid;gap:6px">
+        ${facts ? sec("FACTS — END OF DAY, FROM NSE FILES", factsCard(facts)) : ""}
         ${sec("CHART — THE UNDERLYING", chartBody)}
         ${cnd ? sec("CANDLE PATTERNS — SHAPES AND THEIR MEASURED RECORD", (() => {
           if (!cnd.recent || !cnd.recent.length) {

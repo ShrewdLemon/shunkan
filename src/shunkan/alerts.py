@@ -170,7 +170,8 @@ def desktop_notify(title: str, message: str) -> None:
     if sys.platform != "darwin":
         return
     try:
-        script = f'display notification {json.dumps(message)} with title {json.dumps(title)} sound name "Glass"'
+        msg, ttl = json.dumps(message, ensure_ascii=False), json.dumps(title, ensure_ascii=False)
+        script = f'display notification {msg} with title {ttl} sound name "Glass"'
         subprocess.run(
             ["osascript", "-e", script],
             capture_output=True, timeout=5, check=False,

@@ -74,3 +74,16 @@ def test_check_all_rsi_metric(tmp_path):
     fired = book.check_all(SyntheticProvider())
     assert len(fired) == 1
     assert 0 <= fired[0][1] <= 100
+
+
+def test_desktop_notify_keeps_non_ascii(monkeypatch):
+    import shunkan.alerts as alerts
+
+    calls = []
+    monkeypatch.setattr(alerts.sys, "platform", "darwin")
+    monkeypatch.setattr(alerts.subprocess, "run", lambda args, **kw: calls.append(args))
+    alerts.desktop_notify("Shunkan note", "NIFTY · 2026-11-04 ₹")
+    script = calls[0][2]
+    assert '"NIFTY · 2026-11-04 ₹"' in script
+    assert "\\u" not in script
+    assert 'with title "Shunkan note"' in script

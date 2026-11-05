@@ -126,9 +126,21 @@ def fetch_constituents(index_name: str) -> list[Constituent]:
 
 def universe(indices: tuple[str, ...] = ("NIFTY50", "BANKNIFTY")) -> list[Constituent]:
     """The union, with membership merged for symbols in both."""
+    return _merge(fetch_constituents(idx) for idx in indices)
+
+
+def cached_universe(indices: tuple[str, ...] = ("NIFTY50", "BANKNIFTY")) -> list[Constituent] | None:
+    """universe() from memory only, however old; None if any index was never fetched."""
+    hits = [_mem.get(idx) for idx in indices]
+    if any(h is None for h in hits):
+        return None
+    return _merge(h[1] for h in hits)
+
+
+def _merge(lists) -> list[Constituent]:
     by_sym: dict[str, Constituent] = {}
-    for idx in indices:
-        for c in fetch_constituents(idx):
+    for members in lists:
+        for c in members:
             prev = by_sym.get(c.symbol)
             merged = tuple(sorted(set((prev.indices if prev else ()) + c.indices)))
             industry = c.industry or (prev.industry if prev else "")

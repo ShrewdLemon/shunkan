@@ -381,3 +381,45 @@ def validate(result, search=None, bar_returns=None,
                                   trial_sharpe_std=t.sharpe_std, periods=periods),
         trials=t,
     )
+
+
+# ---------------------------------------------------------------------------
+# Shared statistics for the pre-registered studies
+# ---------------------------------------------------------------------------
+
+
+def newey_west_t(x, lags: int) -> float:
+    """Mean over its Bartlett-kernel HAC standard error; overlap inflates a plain t."""
+    x = np.asarray(x, float)
+    n = len(x)
+    e = x - x.mean()
+    v = (e @ e) / n
+    for L in range(1, lags + 1):
+        v += 2 * (1 - L / (lags + 1)) * ((e[L:] @ e[:-L]) / n)
+    return float(x.mean() / np.sqrt(v / n))
+
+
+def t_pvalue(t: float) -> float:
+    """Two-sided p-value of a t-statistic, normal approximation."""
+    return float(2.0 * (1.0 - norm_cdf(abs(t))))
+
+
+def holm(pvalues) -> np.ndarray:
+    """Holm-Bonferroni adjusted p-values, in input order."""
+    p = np.asarray(pvalues, dtype=np.float64)
+    m = len(p)
+    order = np.argsort(p, kind="stable")
+    out = np.empty(m)
+    out[order] = np.minimum(1.0, np.maximum.accumulate((m - np.arange(m)) * p[order]))
+    return out
+
+
+def cvar(x, q: float = 0.05) -> float:
+    """Mean of the worst ceil(q * n) values; NaN if any value is not finite."""
+    if not 0 < q <= 1:
+        raise ValueError("q must be in (0, 1]")
+    x = np.asarray(x, dtype=np.float64)
+    if len(x) == 0 or not np.isfinite(x).all():
+        return float("nan")
+    k = math.ceil(round(q * len(x), 9))   # 0.07 * 100 is 7.000000000000001
+    return float(np.sort(x)[:k].mean())

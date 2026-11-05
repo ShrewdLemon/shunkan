@@ -16,7 +16,7 @@ import json
 import math
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -110,10 +110,76 @@ participant_status: dict = {"failed": 0}
 news_status: dict = {"failed": 0}
 journal_status: dict = {"written": 0}
 keepalive_status: dict = {"active": False}
+HISTORY_SYNC_S = 6 * 3600.0
+FACTS_REFRESH_S = 20 * 60.0
+facts_status: dict = {"runs": 0, "failed": 0, "skipped": 0}
 
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def history_sync_sleep(now: datetime) -> float:
+    now = now.astimezone(IST)
+    target = now.replace(hour=15, minute=50, second=0, microsecond=0)
+    while target <= now or target.weekday() >= 5:
+        target += timedelta(days=1)
+    return min(HISTORY_SYNC_S, (target - now).total_seconds())
+
+
+def facts_refresh_skip(now: datetime, offline: bool) -> str | None:
+    if offline:
+        return "offline"
+    if now.weekday() >= 5:
+        return "weekend"
+    if not 17 <= now.hour < 22:
+        return "outside 17:00-22:00 IST"
+    return None
+
+
+def _backfill_counts(r: dict) -> dict:
+    return {k if k.startswith("days_") else f"days_{k}": v for k, v in r.items()}
+
+
+def _chain_fallback_reason(c, exc) -> str | None:
+    if exc is not None:
+        return "no live chain: " + ("; ".join(getattr(exc, "source_trail", [])) or str(exc)[:200])
+    if c.is_model:
+        return f"live chain is modelled ({c.source})"
+    if "Kite" not in (c.source or ""):
+        return f"live chain is from {c.source}, not Kite"
+    return None
+
+
+def _cached_hols(root, now) -> list:
+    from shunkan.data import events_calendar as cal
+
+    try:
+        return cal.holidays(root=root, now=now, fetch=False)
+    except Exception:
+        return []
+
+
+def _bhav_positioning(sym: str, reason: str, root, now: datetime, hols, chart: dict,
+                      as_of: str | None) -> tuple[dict | None, str | None]:
+    from shunkan.analytics import facts
+    from shunkan.data import events_calendar as cal
+    from shunkan.data import fo_bhav
+
+    try:
+        days = fo_bhav.sessions(end=now.date(), root=root)
+        if not days:
+            return None, "no F&O bhavcopy on disk"
+        day = days[-1]
+        spot = chart.get("close") if as_of == day.isoformat() else None
+        pos = facts.eod_positioning(sym, day, cal.next_session(day, hols), root=root, spot=spot)
+    except Exception as exc:
+        msg = str(exc) if isinstance(exc, DataError) else f"{type(exc).__name__}: {exc}"
+        return None, msg[:200]
+    pos["fallback_reason"] = reason
+    if day < now.date() and facts.phase_of(now, hols) == "post_close":
+        pos["session_warning"] = facts.POST_CLOSE_WARNING.format(now.date())
+    return pos, None
 
 
 def _plugin_status(fn) -> dict:
@@ -459,7 +525,9 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
                         await asyncio.to_thread(_sync_all)
                     except Exception:
                         pass
-                await asyncio.sleep(6 * 3600.0)
+                from shunkan.markets import now_ist
+
+                await asyncio.sleep(history_sync_sleep(now_ist()))
 
         async def harvest_loop():
             """Pull the full traded life of every listed option contract.
@@ -666,7 +734,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
                             days = 1500
                             participant_status["deep_backfill"] = "running"
                         r = await asyncio.to_thread(backfill, days)
-                        participant_status.update(r)
+                        participant_status.update(_backfill_counts(r))
                         participant_status["last_ok"] = _now_iso()
                         if days == 1500:
                             participant_status["deep_backfill"] = "done"
@@ -675,6 +743,29 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
                             participant_status.get("failed", 0) + 1)
                         participant_status["last_error"] = str(exc)[:160]
                 await asyncio.sleep(6 * 3600.0)
+
+        async def facts_refresh_loop():
+            """The facts card's fetcher and the only scheduled caller of www.nseindia.com."""
+            from shunkan.analytics import facts
+            from shunkan.markets import now_ist
+
+            await asyncio.sleep(150.0)
+            while True:
+                skip = facts_refresh_skip(now_ist(), is_offline())
+                if skip:
+                    facts_status["skipped"] = facts_status.get("skipped", 0) + 1
+                    facts_status["last_skip_reason"] = skip
+                else:
+                    try:
+                        r = await asyncio.to_thread(facts.refresh)
+                        facts_status["runs"] = facts_status.get("runs", 0) + 1
+                        facts_status.update(session=r["session"], complete=r["complete"],
+                                            sources=r["sources"], last_ok=_now_iso())
+                    except Exception as exc:
+                        facts_status["failed"] = facts_status.get("failed", 0) + 1
+                        facts_status["last_error"] = str(exc)[:160]
+                        facts_status["last_error_at"] = _now_iso()
+                await asyncio.sleep(FACTS_REFRESH_S)
 
         async def instruments_archive_loop():
             """Keep each day's contract master.
@@ -701,7 +792,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
         tasks = [asyncio.create_task(t()) for t in
                  (alert_loop, bar_flush_loop, chain_capture_loop, history_sync_loop,
                   instruments_archive_loop, harvest_loop, participant_loop,
-                  news_archive_loop, feed_keepalive_loop, analysis_journal_loop)]
+                  news_archive_loop, feed_keepalive_loop, analysis_journal_loop,
+                  facts_refresh_loop)]
         tasks += [asyncio.create_task(_supervised(factory, plugin_loops[name]))
                   for name, factory in ext.loops]
         yield
@@ -887,6 +979,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
             "ticks": hub.stats(),
             "feed_keepalive": dict(keepalive_status),
             "analysis_journal": dict(journal_status),
+            "facts": dict(facts_status),
             "plugins": {"loaded": list(ext.loaded), "failed": dict(ext.failed),
                         "loops": {k: dict(v) for k, v in plugin_loops.items()}},
             **{k: _plugin_status(fn) for k, fn in ext.statuses.items()},
@@ -2004,13 +2097,20 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
             vwap_today,
         )
         from shunkan.analytics.events import classify_today, event_study
+        from shunkan.analytics.facts import phase_of, settled_bars
+        from shunkan.data import events_calendar as cal
         from shunkan.data.participant import latest_with_change
-        from shunkan.markets import INDEX_ALIASES
+        from shunkan.markets import INDEX_ALIASES, now_ist
         from shunkan.store.store import ChainStore, STORE_DIR
 
+        now = now_ist()
         out: dict = {"symbol": sym,
                      "served_from": "live" if on_date is None
                      else "reconstructed from archives"}
+        hols = _cached_hols(STORE_DIR, now)
+        if on_date is None:
+            out["session"] = {"today": now.date().isoformat(), "phase": phase_of(now, hols),
+                              "prev_session": cal.prev_session(now.date(), hols).isoformat()}
 
         # ---- root: the underlying, from the local archive -------------------
         def archive_frame():
@@ -2028,7 +2128,10 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
 
         try:
             hist = archive_frame()
-            if on_date is not None:
+            dropped = None
+            if on_date is None:
+                hist, dropped = settled_bars(hist, now)
+            else:
                 hist = hist[hist["date"] <= pd.Timestamp(on_date)]
                 if hist.empty or hist.iloc[-1]["date"].date() != on_date:
                     raise DataError(f"no {sym} session on {on_date} in the archive "
@@ -2060,6 +2163,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
                 "rv5": float(r.tail(5).std() * np.sqrt(252) * 100),
                 "rv21": float(r.tail(21).std() * np.sqrt(252) * 100),
             }
+            if dropped:
+                out["chart"]["unsettled_bar_dropped"] = dropped
             if on_date is None:
                 # day-structure read from the locally captured tape
                 vwap, vwap_note = vwap_today(sym)
@@ -2095,34 +2200,50 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
 
         # ---- derivatives positioning ---------------------------------------
         if on_date is None:
-            try:
-                from shunkan.data.chains import get_chain
-                from shunkan.derivatives.chain import analyze_chain
-                from shunkan.markets import today_ist
+            from shunkan.data.chains import get_chain
+            from shunkan.derivatives.chain import analyze_chain
+            from shunkan.markets import today_ist
 
+            c = chain_exc = None
+            try:
                 c = get_chain(sym)
-                a = analyze_chain(c)
-                out["positioning"] = {
-                    "expiry": str(c.expiry), "source": c.source, "is_model": c.is_model,
-                    "spot": c.spot, "pcr_oi": a.pcr_oi, "max_pain": a.max_pain,
-                    "dist_to_max_pain_pct": (a.max_pain / c.spot - 1) * 100 if c.spot else None,
-                    "support": a.support, "resistance": a.resistance,
-                    "atm_iv_pct": a.atm_iv * 100 if a.atm_iv else None,
-                    "straddle": a.straddle_price,
-                    "implied_move_pct": a.expected_move_pct * 100,
-                }
-                if str(c.expiry) == today_ist().isoformat():
-                    # Measured 2026-08-18: Monday's max pain 24,350 re-anchored
-                    # to 24,200 within the first hours and price never visited
-                    # the old level. Say it where the numbers are shown.
-                    out["positioning"]["expiry_today"] = True
-                    out["positioning"]["staleness_warning"] = (
-                        "expiry day: overnight OI maps expire at the open - "
-                        "walls re-form intraday; read the migration, not "
-                        "yesterday's levels")
             except (DataError, ValueError) as exc:
-                out["positioning"] = {"error": str(exc)[:200],
-                                      "source_trail": list(getattr(exc, "source_trail", []))}
+                chain_exc = exc
+            reason = _chain_fallback_reason(c, chain_exc)
+            eod, bhav_err = (_bhav_positioning(sym, reason, STORE_DIR, now, hols,
+                                               out.get("chart", {}), out.get("as_of"))
+                             if reason else (None, None))
+            if eod:
+                out["positioning"] = eod
+            elif chain_exc is not None:
+                out["positioning"] = {"error": str(chain_exc)[:200],
+                                      "source_trail": list(getattr(chain_exc, "source_trail", []))}
+            else:
+                try:
+                    a = analyze_chain(c)
+                    out["positioning"] = {
+                        "expiry": str(c.expiry), "source": c.source, "is_model": c.is_model,
+                        "spot": c.spot, "pcr_oi": a.pcr_oi, "max_pain": a.max_pain,
+                        "dist_to_max_pain_pct": (a.max_pain / c.spot - 1) * 100 if c.spot else None,
+                        "support": a.support, "resistance": a.resistance,
+                        "atm_iv_pct": a.atm_iv * 100 if a.atm_iv else None,
+                        "straddle": a.straddle_price,
+                        "implied_move_pct": a.expected_move_pct * 100,
+                    }
+                    if str(c.expiry) == today_ist().isoformat():
+                        # Measured 2026-08-18: Monday's max pain 24,350 re-anchored
+                        # to 24,200 within the first hours and price never visited
+                        # the old level. Say it where the numbers are shown.
+                        out["positioning"]["expiry_today"] = True
+                        out["positioning"]["staleness_warning"] = (
+                            "expiry day: overnight OI maps expire at the open - "
+                            "walls re-form intraday; read the migration, not "
+                            "yesterday's levels")
+                except (DataError, ValueError) as exc:
+                    out["positioning"] = {"error": str(exc)[:200],
+                                          "source_trail": list(getattr(exc, "source_trail", []))}
+            if bhav_err:
+                out["positioning"]["bhav_error"] = bhav_err
         else:
             try:
                 snap = ChainStore().last_snapshot_of_day(sym, on_date)
@@ -2220,6 +2341,12 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
                                     + j.get("_journal", {}).get("recorded_at", "?"))
                 return _clean(j)
         return _clean(_compose_daily(sym, on_date))
+
+    @app.get("/api/facts/{symbol}")
+    def facts_card(symbol: str):
+        from shunkan.analytics import facts
+
+        return _clean(facts.compose(symbol.upper()))
 
     @app.get("/api/participants")
     def participants_history(days: int = 250):

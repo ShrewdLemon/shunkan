@@ -1,0 +1,308 @@
+{
+ "compiled_on": "2026-11-04",
+ "coverage": {
+  "rbi_mpc": "2027-02-05",
+  "fomc": "2027-12-08 (ET) / 2027-12-09 00:30 IST",
+  "us_cpi": "2027-12-10",
+  "india_cpi": "2027-03-12"
+ },
+ "sources": {
+  "rbi_mpc": "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=62422",
+  "fomc": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+  "us_cpi": "https://www.bls.gov/schedule/news_release/cpi.htm",
+  "india_cpi": "https://www.mospi.gov.in/uploads/documents/releaseCalender/1791356248513-ARC_2026_27_Sept_2026.pdf"
+ },
+ "gaps": {
+  "rbi_mpc": "FY2027-28 schedule not yet published on rbi.org.in (2026-27 schedule was released 23-Mar-2026); nothing after Feb-2027. Announcement time not stated on rbi.org.in.",
+  "india_cpi": "MoSPI Advance Release Calendar 2026-27 (Sept-2026 revision, latest on mospi.gov.in) ends March 2027; ARC 2027-28 not published. Rule quoted in ARC: '*In case of holidays, reports release on next working day' and 'Note: Dates indicated may change in case of exigencies'.",
+  "fomc": "No Nov-2026 meeting (Oct 27-28 done). Fed note: 'Each meeting date is tentative until confirmed at the meeting immediately preceding it.' Next after Dec-2027: Jan 25-26, 2028 (out of range)."
+ },
+ "events": [
+  {
+   "date": "2026-11-10",
+   "time_ist": "19:00",
+   "event": "US CPI",
+   "detail": "for: October 2026; 08:30 EST",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "October 2026\tNov. 10, 2026\t08:30 AM",
+   "date_et": "2026-11-10",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-11-12",
+   "time_ist": "16:00",
+   "event": "India CPI",
+   "detail": "for: Oct 2026 (CPI base 2024=100); 16:00 IST from press-release embargo line (https://www.mospi.gov.in/uploads/latestReleases/latest_release_1791800601071_643518af-5320-4e52-b78c-75c92b83885b_Press_Release_for_the_month_of_September,_2026.pdf): 'embargoed ... till 4:00 PM of 12th October, 2026'; next working day if 12th is a holiday; Sep-2026 release confirms: 'CPI for October 2026 will be released on 12th November, 2026 (Thursday) or the next working day in case of 12th being a holiday'",
+   "source": "https://www.mospi.gov.in/uploads/documents/releaseCalender/1791356248513-ARC_2026_27_Sept_2026.pdf",
+   "evidence": "12th Nov All India Consumer Price Index (CPI)"
+  },
+  {
+   "date": "2026-12-04",
+   "time_ist": "10:00",
+   "event": "RBI MPC decision",
+   "detail": "meeting Dec 2-4, 2026; announcement on last meeting day; time 10:00 IST is customary but NOT stated on any rbi.org.in page checked; reconfirmed in Oct-7 resolution (https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=63742): 'next meeting of the MPC is scheduled for December 2 to 4, 2026'",
+   "source": "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=62422",
+   "evidence": "December 2, 3 and 4, 2026"
+  },
+  {
+   "date": "2026-12-10",
+   "time_ist": "00:30",
+   "date_et": "2026-12-09",
+   "time_et": "14:00 EST",
+   "event": "FOMC decision",
+   "detail": "meeting Dec 8-9, 2026, SEP; statement 2026-12-09 14:00 EST = 2026-12-10 00:30 IST; dates tentative until confirmed at preceding meeting; 2:00 p.m. time from statement release header (https://www.federalreserve.gov/newsevents/pressreleases/monetary20261028a.htm: 'For release at 2:00 p.m. EDT'), not on calendar page",
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "evidence": "2026 FOMC Meetings ... December 8-9*"
+  },
+  {
+   "date": "2026-12-10",
+   "time_ist": "19:00",
+   "event": "US CPI",
+   "detail": "for: November 2026; 08:30 EST",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "November 2026\tDec. 10, 2026\t08:30 AM",
+   "date_et": "2026-12-10",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-12-14",
+   "time_ist": "16:00",
+   "event": "India CPI",
+   "detail": "for: Nov 2026 (CPI base 2024=100); 16:00 IST from press-release embargo line (https://www.mospi.gov.in/uploads/latestReleases/latest_release_1791800601071_643518af-5320-4e52-b78c-75c92b83885b_Press_Release_for_the_month_of_September,_2026.pdf): 'embargoed ... till 4:00 PM of 12th October, 2026'; next working day if 12th is a holiday; ARC date 12-Dec-2026 is a Saturday; moved to next working day Mon 14-Dec per ARC footnote '*In case of holidays, reports release on next working day' (precedent: 12-Sep-2026 Sat, released 14-Sep); confirm nearer date",
+   "source": "https://www.mospi.gov.in/uploads/documents/releaseCalender/1791356248513-ARC_2026_27_Sept_2026.pdf",
+   "evidence": "12th Dec All India Consumer Price Index (CPI)"
+  },
+  {
+   "date": "2027-01-12",
+   "time_ist": "16:00",
+   "event": "India CPI",
+   "detail": "for: Dec 2026 (CPI base 2024=100); 16:00 IST from press-release embargo line (https://www.mospi.gov.in/uploads/latestReleases/latest_release_1791800601071_643518af-5320-4e52-b78c-75c92b83885b_Press_Release_for_the_month_of_September,_2026.pdf): 'embargoed ... till 4:00 PM of 12th October, 2026'; next working day if 12th is a holiday",
+   "source": "https://www.mospi.gov.in/uploads/documents/releaseCalender/1791356248513-ARC_2026_27_Sept_2026.pdf",
+   "evidence": "12th Jan All India Consumer Price Index (CPI)"
+  },
+  {
+   "date": "2027-01-13",
+   "time_ist": "19:00",
+   "event": "US CPI",
+   "detail": "for: December 2026; 08:30 EST",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "December 2026\tJan. 13, 2027\t08:30 AM",
+   "date_et": "2027-01-13",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2027-01-28",
+   "time_ist": "00:30",
+   "date_et": "2027-01-27",
+   "time_et": "14:00 EST",
+   "event": "FOMC decision",
+   "detail": "meeting Jan 26-27, 2027; statement 2027-01-27 14:00 EST = 2027-01-28 00:30 IST; dates tentative until confirmed at preceding meeting; 2:00 p.m. time from statement release header (https://www.federalreserve.gov/newsevents/pressreleases/monetary20261028a.htm: 'For release at 2:00 p.m. EDT'), not on calendar page",
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "evidence": "2027 FOMC Meetings ... January 26-27"
+  },
+  {
+   "date": "2027-02-05",
+   "time_ist": "10:00",
+   "event": "RBI MPC decision",
+   "detail": "meeting Feb 3-5, 2027 (last of FY2026-27); announcement on last meeting day; time 10:00 IST is customary but NOT stated on any rbi.org.in page checked",
+   "source": "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=62422",
+   "evidence": "February 3, 4 and 5, 2027"
+  },
+  {
+   "date": "2027-02-11",
+   "time_ist": "19:00",
+   "event": "US CPI",
+   "detail": "for: January 2027; 08:30 EST",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "January 2027\tFeb. 11, 2027\t08:30 AM",
+   "date_et": "2027-02-11",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2027-02-12",
+   "time_ist": "16:00",
+   "event": "India CPI",
+   "detail": "for: Jan 2027 (CPI base 2024=100); 16:00 IST from press-release embargo line (https://www.mospi.gov.in/uploads/latestReleases/latest_release_1791800601071_643518af-5320-4e52-b78c-75c92b83885b_Press_Release_for_the_month_of_September,_2026.pdf): 'embargoed ... till 4:00 PM of 12th October, 2026'; next working day if 12th is a holiday",
+   "source": "https://www.mospi.gov.in/uploads/documents/releaseCalender/1791356248513-ARC_2026_27_Sept_2026.pdf",
+   "evidence": "12th Feb All India Consumer Price Index (CPI)"
+  },
+  {
+   "date": "2027-03-10",
+   "time_ist": "19:00",
+   "event": "US CPI",
+   "detail": "for: February 2027; 08:30 EST",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "February 2027\tMar. 10, 2027\t08:30 AM",
+   "date_et": "2027-03-10",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2027-03-12",
+   "time_ist": "16:00",
+   "event": "India CPI",
+   "detail": "for: Feb 2027 (CPI base 2024=100); 16:00 IST from press-release embargo line (https://www.mospi.gov.in/uploads/latestReleases/latest_release_1791800601071_643518af-5320-4e52-b78c-75c92b83885b_Press_Release_for_the_month_of_September,_2026.pdf): 'embargoed ... till 4:00 PM of 12th October, 2026'; next working day if 12th is a holiday",
+   "source": "https://www.mospi.gov.in/uploads/documents/releaseCalender/1791356248513-ARC_2026_27_Sept_2026.pdf",
+   "evidence": "12th March All India Consumer Price Index (CPI)"
+  },
+  {
+   "date": "2027-03-17",
+   "time_ist": "23:30",
+   "date_et": "2027-03-17",
+   "time_et": "14:00 EDT",
+   "event": "FOMC decision",
+   "detail": "meeting Mar 16-17, 2027, SEP; statement 2027-03-17 14:00 EDT = 2027-03-17 23:30 IST; dates tentative until confirmed at preceding meeting; 2:00 p.m. time from statement release header (https://www.federalreserve.gov/newsevents/pressreleases/monetary20261028a.htm: 'For release at 2:00 p.m. EDT'), not on calendar page",
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "evidence": "2027 FOMC Meetings ... March 16-17*"
+  },
+  {
+   "date": "2027-04-13",
+   "time_ist": "18:00",
+   "event": "US CPI",
+   "detail": "for: March 2027; 08:30 EDT",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "March 2027\tApr. 13, 2027\t08:30 AM",
+   "date_et": "2027-04-13",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2027-04-28",
+   "time_ist": "23:30",
+   "date_et": "2027-04-28",
+   "time_et": "14:00 EDT",
+   "event": "FOMC decision",
+   "detail": "meeting Apr 27-28, 2027; statement 2027-04-28 14:00 EDT = 2027-04-28 23:30 IST; dates tentative until confirmed at preceding meeting; 2:00 p.m. time from statement release header (https://www.federalreserve.gov/newsevents/pressreleases/monetary20261028a.htm: 'For release at 2:00 p.m. EDT'), not on calendar page",
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "evidence": "2027 FOMC Meetings ... April 27-28"
+  },
+  {
+   "date": "2027-05-12",
+   "time_ist": "18:00",
+   "event": "US CPI",
+   "detail": "for: April 2027; 08:30 EDT",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "April 2027\tMay 12, 2027\t08:30 AM",
+   "date_et": "2027-05-12",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2027-06-09",
+   "time_ist": "23:30",
+   "date_et": "2027-06-09",
+   "time_et": "14:00 EDT",
+   "event": "FOMC decision",
+   "detail": "meeting Jun 8-9, 2027, SEP; statement 2027-06-09 14:00 EDT = 2027-06-09 23:30 IST; dates tentative until confirmed at preceding meeting; 2:00 p.m. time from statement release header (https://www.federalreserve.gov/newsevents/pressreleases/monetary20261028a.htm: 'For release at 2:00 p.m. EDT'), not on calendar page",
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "evidence": "2027 FOMC Meetings ... June 8-9*"
+  },
+  {
+   "date": "2027-06-10",
+   "time_ist": "18:00",
+   "event": "US CPI",
+   "detail": "for: May 2027; 08:30 EDT",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "May 2027\tJun. 10, 2027\t08:30 AM",
+   "date_et": "2027-06-10",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2027-07-14",
+   "time_ist": "18:00",
+   "event": "US CPI",
+   "detail": "for: June 2027; 08:30 EDT",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "June 2027\tJul. 14, 2027\t08:30 AM",
+   "date_et": "2027-07-14",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2027-07-28",
+   "time_ist": "23:30",
+   "date_et": "2027-07-28",
+   "time_et": "14:00 EDT",
+   "event": "FOMC decision",
+   "detail": "meeting Jul 27-28, 2027; statement 2027-07-28 14:00 EDT = 2027-07-28 23:30 IST; dates tentative until confirmed at preceding meeting; 2:00 p.m. time from statement release header (https://www.federalreserve.gov/newsevents/pressreleases/monetary20261028a.htm: 'For release at 2:00 p.m. EDT'), not on calendar page",
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "evidence": "2027 FOMC Meetings ... July 27-28"
+  },
+  {
+   "date": "2027-08-11",
+   "time_ist": "18:00",
+   "event": "US CPI",
+   "detail": "for: July 2027; 08:30 EDT",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "July 2027\tAug. 11, 2027\t08:30 AM",
+   "date_et": "2027-08-11",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2027-09-14",
+   "time_ist": "18:00",
+   "event": "US CPI",
+   "detail": "for: August 2027; 08:30 EDT",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "August 2027\tSep. 14, 2027\t08:30 AM",
+   "date_et": "2027-09-14",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2027-09-15",
+   "time_ist": "23:30",
+   "date_et": "2027-09-15",
+   "time_et": "14:00 EDT",
+   "event": "FOMC decision",
+   "detail": "meeting Sep 14-15, 2027, SEP; statement 2027-09-15 14:00 EDT = 2027-09-15 23:30 IST; dates tentative until confirmed at preceding meeting; 2:00 p.m. time from statement release header (https://www.federalreserve.gov/newsevents/pressreleases/monetary20261028a.htm: 'For release at 2:00 p.m. EDT'), not on calendar page",
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "evidence": "2027 FOMC Meetings ... September 14-15*"
+  },
+  {
+   "date": "2027-10-14",
+   "time_ist": "18:00",
+   "event": "US CPI",
+   "detail": "for: September 2027; 08:30 EDT",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "September 2027\tOct. 14, 2027\t08:30 AM",
+   "date_et": "2027-10-14",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2027-10-27",
+   "time_ist": "23:30",
+   "date_et": "2027-10-27",
+   "time_et": "14:00 EDT",
+   "event": "FOMC decision",
+   "detail": "meeting Oct 26-27, 2027; statement 2027-10-27 14:00 EDT = 2027-10-27 23:30 IST; dates tentative until confirmed at preceding meeting; 2:00 p.m. time from statement release header (https://www.federalreserve.gov/newsevents/pressreleases/monetary20261028a.htm: 'For release at 2:00 p.m. EDT'), not on calendar page",
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "evidence": "2027 FOMC Meetings ... October 26-27"
+  },
+  {
+   "date": "2027-11-10",
+   "time_ist": "19:00",
+   "event": "US CPI",
+   "detail": "for: October 2027; 08:30 EST",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "October 2027\tNov. 10, 2027\t08:30 AM",
+   "date_et": "2027-11-10",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2027-12-09",
+   "time_ist": "00:30",
+   "date_et": "2027-12-08",
+   "time_et": "14:00 EST",
+   "event": "FOMC decision",
+   "detail": "meeting Dec 7-8, 2027, SEP; statement 2027-12-08 14:00 EST = 2027-12-09 00:30 IST; dates tentative until confirmed at preceding meeting; 2:00 p.m. time from statement release header (https://www.federalreserve.gov/newsevents/pressreleases/monetary20261028a.htm: 'For release at 2:00 p.m. EDT'), not on calendar page",
+   "source": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+   "evidence": "2027 FOMC Meetings ... December 7-8*"
+  },
+  {
+   "date": "2027-12-10",
+   "time_ist": "19:00",
+   "event": "US CPI",
+   "detail": "for: November 2027; 08:30 EST",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm",
+   "evidence": "November 2027\tDec. 10, 2027\t08:30 AM",
+   "date_et": "2027-12-10",
+   "time_et": "08:30"
+  }
+ ]
+}
