@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from shunkan.analytics import facts
-from shunkan.data import constituents, flows, fo_bhav, participant
+from shunkan.data import constituents, flows, fo_bhav, index_bars, participant
 from shunkan.data import events_calendar as cal
 from shunkan.data.provider import DataError
 from shunkan.markets import IST
@@ -472,6 +472,69 @@ def test_compose_fills_missing_bars_from_the_provider_in_memory(tmp_path, monkey
     assert sorted(p.name for p in arch.parent.iterdir()) == ["_INDIAVIX.parquet", "_NSEI.parquet"]
 
 
+class VixProvider(FakeProvider):
+    def history(self, symbol, period="1y", interval="1d"):
+        if symbol != "INDIAVIX":
+            return super().history(symbol, period, interval)
+        self.calls.append((symbol, period, interval))
+        idx = pd.DatetimeIndex(["2026-11-02", "2026-11-03"]).tz_localize(IST)
+        return pd.DataFrame({"open": [12.5, 13.0], "high": [13.0, 16.5], "low": [12.0, 12.8],
+                             "close": [12.4, 16.0], "volume": [0, 0]}, index=idx)
+
+
+def test_compose_fills_a_stale_vix_from_the_provider_in_memory(tmp_path, monkeypatch, net):
+    store(tmp_path, monkeypatch)
+    vix = write_history(tmp_path, pd.read_parquet(tmp_path / "history" / "_INDIAVIX.parquet").iloc[:-1],
+                        "_INDIAVIX")
+    before = vix.read_bytes()
+    monkeypatch.setenv("SHUNKAN_OFFLINE", "0")
+    prov = VixProvider()
+    out = facts.compose("NIFTY", now=EVENING, root=tmp_path, provider=prov, www=NoWWW())
+    v = out["price"]["vix"]
+    assert ("INDIAVIX", "1mo", "1d") in prov.calls
+    assert v["as_of"] == "2026-11-03" and v["close"] == 16.0
+    assert "provider bars 2026-11-03..2026-11-03 (in memory, not written)" in v["source"]
+    assert v["pctile"] == 40.0
+    assert vix.read_bytes() == before
+
+
+class NoProvider:
+    def history(self, *a, **k):
+        raise AssertionError("provider called")
+
+
+def test_compose_fills_from_nse_index_files_before_the_provider(tmp_path, monkeypatch, net):
+    store(tmp_path, monkeypatch)
+    write_history(tmp_path, history().iloc[:-1])
+    write_ind(tmp_path, NOV3)
+    monkeypatch.setenv("SHUNKAN_OFFLINE", "0")
+    pr = facts.compose("NIFTY", now=EVENING, root=tmp_path, provider=NoProvider(), www=NoWWW())["price"]
+    assert pr["as_of"] == "2026-11-03" and pr["close"] == 24030.0 and pr["prev_close"] == 23900
+    assert pr["source"] == "history archive _NSEI.parquet + NSE ind_close_all 2026-11-03..2026-11-03"
+    assert "stale" not in pr and "fill_error" not in pr
+
+
+class GapProvider(FakeProvider):
+    def history(self, symbol, period="1y", interval="1d"):
+        self.calls.append((symbol, period, interval))
+        idx = pd.DatetimeIndex(["2026-11-02", "2026-11-03"]).tz_localize(IST)
+        return pd.DataFrame({"open": [23880, 1.0], "high": [23960, 1.0], "low": [23850, 1.0],
+                             "close": [23900, 99999.0], "volume": [1, 1]}, index=idx)
+
+
+def test_the_provider_fills_only_the_days_nse_files_miss(tmp_path, monkeypatch, net):
+    store(tmp_path, monkeypatch)
+    write_history(tmp_path, history().iloc[:-2])
+    write_ind(tmp_path, NOV3)
+    monkeypatch.setenv("SHUNKAN_OFFLINE", "0")
+    prov = GapProvider()
+    pr = facts.compose("NIFTY", now=EVENING, root=tmp_path, provider=prov, www=NoWWW())["price"]
+    assert prov.calls == [("NIFTY", "1mo", "1d")]
+    assert pr["close"] == 24030.0 and pr["prev_close"] == 23900 and pr["prev_date"] == "2026-11-02"
+    assert pr["source"] == ("history archive _NSEI.parquet + NSE ind_close_all 2026-11-03..2026-11-03"
+                            " + provider bars 2026-11-02..2026-11-02 (in memory, not written)")
+
+
 def test_compose_offline_never_asks_the_provider(tmp_path, monkeypatch, net):
     store(tmp_path, monkeypatch)
     write_history(tmp_path, history().iloc[:-1])
@@ -614,6 +677,22 @@ def archive_client(routes, seen=None):
 
 
 BHAV3 = "BhavCopy_NSE_FO_0_0_0_20261103_F_0000.csv.zip"
+IND3 = "ind_close_all_03112026.csv"
+
+
+def ind_close_all(day, nifty=(23950, 24080, 23920, 24030), bank=(51000, 51500, 50800, 51400), vix=14.0):
+    head = ("Index Name,Index Date,Open Index Value,High Index Value,Low Index Value,Closing Index Value,"
+            "Points Change,Change(%),Volume,Turnover (Rs. Cr.),P/E,P/B,Div Yield\n")
+    row = lambda name, o, h, lo, c: f"{name},{day:%d-%m-%Y},{o},{h},{lo},{c},0,0,-,-,-,-,-\n"  # noqa: E731
+    return (head + row("Nifty 50", *nifty) + row("Nifty Bank", *bank)
+            + row("India VIX", vix, vix + 1, vix - 1, vix)).encode()
+
+
+def write_ind(root, day, **kw):
+    p = index_bars.path_for(day, root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(ind_close_all(day, **kw))
+    return p
 
 
 def test_refresh_splits_unpublished_from_failed(tmp_path, monkeypatch):
@@ -625,7 +704,8 @@ def test_refresh_splits_unpublished_from_failed(tmp_path, monkeypatch):
     src = out["sources"]
     assert src["bhavcopy"].startswith("unpublished:") and "404" in src["bhavcopy"]
     assert src["participant"].startswith("failed:")
-    assert {k: v for k, v in src.items() if k not in ("bhavcopy", "participant")} == {
+    assert src["index_close"].startswith("unpublished:")
+    assert {k: v for k, v in src.items() if k not in ("bhavcopy", "participant", "index_close")} == {
         "holidays": "ok", "fii_derivatives": "ok", "fii_dii_cash": "ok",
         "board_meetings": "ok", "universe": "ok"}
     assert not participant.raw_path(NOV3, tmp_path).exists()
@@ -638,12 +718,14 @@ def test_refresh_then_compose_reads_what_it_fetched(tmp_path, monkeypatch, net):
                              "fao_participant_oi_03112026.csv": (200, PART.encode()),
                              "fao_participant_oi_02112026.csv":
                                  (200, PART.replace("FII,33148,", "FII,32148,").encode()),
-                             "fii_stats_03-Nov-2026.xls": (200, XLS)}, seen)
+                             "fii_stats_03-Nov-2026.xls": (200, XLS),
+                             IND3: (200, ind_close_all(NOV3))}, seen)
     www = FakeWWW()
     out = facts.refresh(now=EVENING, root=tmp_path, client=client, www=www)
     assert out == {"session": "2026-11-03", "complete": True, "sources": dict.fromkeys(
-        ["holidays", "bhavcopy", "participant", "fii_derivatives", "fii_dii_cash",
+        ["holidays", "bhavcopy", "index_close", "participant", "fii_derivatives", "fii_dii_cash",
          "board_meetings", "universe"], "ok")}
+    assert index_bars.path_for(NOV3, tmp_path).read_bytes() == ind_close_all(NOV3)
     assert "fao_participant_oi_02112026.csv" in seen and "fii_stats_02-Nov-2026.xls" in seen
     assert www.calls == [cal.HOLIDAYS_PATH, flows.FIIDII_PATH, cal.BOARD_PATH]
     write_history(tmp_path, history())

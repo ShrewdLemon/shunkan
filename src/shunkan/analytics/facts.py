@@ -18,7 +18,7 @@ import pandas as pd
 
 from shunkan.analytics.daily import _max_pain
 from shunkan.data import events_calendar as cal
-from shunkan.data import flows, fo_bhav, participant
+from shunkan.data import flows, fo_bhav, index_bars, participant
 from shunkan.data.provider import DataError, Unpublished, is_offline
 from shunkan.markets import INDEX_ALIASES, IST
 
@@ -158,7 +158,54 @@ def _provider_bars(provider, symbol, after: date | None, upto: date, now) -> pd.
     return bars[sel]
 
 
-def _vix(root, now, upto: date) -> dict:
+def _official(symbol, days, root) -> pd.DataFrame:
+    """NSE's ind_close_all bars already on disk for these days; a missing day is skipped."""
+    rows = []
+    if symbol in index_bars.NAMES:
+        for d in days:
+            try:
+                b = index_bars.bar(d, symbol, _store(root))
+            except DataError:
+                continue
+            rows.append({"date": pd.Timestamp(b["date"]), **{k: b[k] for k in ("open", "high", "low", "close")}})
+    return pd.DataFrame(rows, columns=["date", "open", "high", "low", "close"])
+
+
+def _span(df) -> str:
+    return f"{df['date'].iloc[0].date()}..{df['date'].iloc[-1].date()}"
+
+
+def _fill(hist, symbol, upto: date | None, now, provider, root) -> tuple[pd.DataFrame, str, dict]:
+    """Bars after the archive's last bar up to `upto`, in memory and never written: NSE's official
+    ind_close_all files on disk first, then the provider for any weekday they do not cover."""
+    last = hist["date"].iloc[-1].date() if len(hist) else None
+    if upto is None or (last is not None and last >= upto):
+        return hist, "", {}
+    days = [d.date() for d in pd.bdate_range(last + timedelta(days=1) if last else upto, upto)]
+    nse = _official(symbol, days, root)
+    more, extra, fills = "", {}, [nse]
+    if len(nse):
+        more += f" + NSE ind_close_all {_span(nse)}"
+    if len(nse) < len(days) and not is_offline():
+        try:
+            if provider is None:
+                from shunkan.data.provider import get_provider
+
+                provider = get_provider()
+            prov = _provider_bars(provider, symbol, last, upto, now)
+            prov = prov[~prov["date"].isin(nse["date"])]
+            if len(prov):
+                fills.append(prov)
+                more += f" + provider bars {_span(prov)} (in memory, not written)"
+        except Exception as exc:
+            extra["fill_error"] = _msg(exc)
+    fills = [f for f in fills if len(f)]
+    if not fills:
+        return hist, more, extra
+    return pd.concat([hist, *fills], ignore_index=True).sort_values("date"), more, extra
+
+
+def _vix(root, now, upto: date, provider=None) -> dict:
     src = "history archive _INDIAVIX.parquet"
     try:
         f = _store(root) / "history" / "_INDIAVIX.parquet"
@@ -168,12 +215,14 @@ def _vix(root, now, upto: date) -> dict:
         v["date"] = pd.to_datetime(v["date"])
         v, _ = settled_bars(v.sort_values("date"), now)
         v = v[v["date"] <= pd.Timestamp(upto)].dropna(subset=["close"])
+        v, more, extra = _fill(v, "INDIAVIX", upto, now, provider, root)
+        src += more
         if v.empty:
             raise DataError(f"no VIX bar on or before {upto}")
         last = float(v["close"].iloc[-1])
         return {"close": last, "as_of": v["date"].iloc[-1].date().isoformat(),
                 "pctile": float((v["close"] < last).mean() * 100),
-                "since": v["date"].iloc[0].date().isoformat(), "source": src}
+                "since": v["date"].iloc[0].date().isoformat(), "source": src, **extra}
     except Exception as exc:
         return {"error": _msg(exc), "source": src}
 
@@ -181,22 +230,8 @@ def _vix(root, now, upto: date) -> dict:
 def _price(symbol, as_of, now, root, provider) -> dict:
     hist, name = _archive(symbol, root)
     hist, dropped = settled_bars(hist, now)
-    source = f"history archive {name}"
-    extra: dict = {}
-    last = hist["date"].iloc[-1].date() if len(hist) else None
-    if as_of is not None and (last is None or last < as_of) and not is_offline():
-        try:
-            if provider is None:
-                from shunkan.data.provider import get_provider
-
-                provider = get_provider()
-            fill = _provider_bars(provider, symbol, last, as_of, now)
-            if len(fill):
-                hist = pd.concat([hist, fill], ignore_index=True).sort_values("date")
-                source += (f" + provider bars {fill['date'].iloc[0].date()}.."
-                           f"{fill['date'].iloc[-1].date()} (in memory, not written)")
-        except Exception as exc:
-            extra["fill_error"] = _msg(exc)
+    hist, more, extra = _fill(hist, symbol, as_of, now, provider, root)
+    source = f"history archive {name}" + more
     if as_of is not None:
         hist = hist[hist["date"] <= pd.Timestamp(as_of)]
     if len(hist) < 2:
@@ -216,7 +251,7 @@ def _price(symbol, as_of, now, root, provider) -> dict:
            "open": float(row["open"]), "gap_pct": (float(row["open"]) / pc - 1) * 100,
            "high": float(row["high"]), "low": float(row["low"]),
            "range_pct": (float(row["high"]) - float(row["low"])) / pc * 100,
-           "rv5": rv(5), "rv21": rv(21), "vix": _vix(root, now, d), **extra}
+           "rv5": rv(5), "rv21": rv(21), "vix": _vix(root, now, d, provider), **extra}
     if dropped:
         out["unsettled_bar_dropped"] = dropped
     if as_of is not None and d < as_of:
@@ -621,6 +656,7 @@ def refresh(now: datetime | None = None, root=None, client=None, www=None) -> di
                else cal.prev_session(today, hols))
     prev = cal.prev_session(session, hols)
     sources["bhavcopy"] = _attempt(lambda: fo_bhav.fetch(session, root, client))
+    sources["index_close"] = _attempt(lambda: index_bars.fetch(session, root, client))
     sources["participant"] = _attempt(lambda: participant.day_table(session, root, client))
     _attempt(lambda: participant.day_table(prev, root, client))
     sources["fii_derivatives"] = _attempt(lambda: flows.fii_derivatives(session, root, client))
