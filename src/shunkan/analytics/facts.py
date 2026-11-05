@@ -641,6 +641,9 @@ def _cash_for(session: date, root, www) -> None:
         raise Unpublished(f"latest is {got['date']}")
 
 
+BACKFILL = 5  # earlier sessions whose missing bhavcopy each refresh fetches, so a few days off leave no gap
+
+
 def refresh(now: datetime | None = None, root=None, client=None, www=None) -> dict:
     now = _now(now)
     sources: dict[str, str] = {}
@@ -656,6 +659,11 @@ def refresh(now: datetime | None = None, root=None, client=None, www=None) -> di
                else cal.prev_session(today, hols))
     prev = cal.prev_session(session, hols)
     sources["bhavcopy"] = _attempt(lambda: fo_bhav.fetch(session, root, client))
+    back = session
+    for _ in range(BACKFILL):
+        back = cal.prev_session(back, hols)
+        if fo_bhav.path_for(back, root) is None:
+            _attempt(lambda d=back: fo_bhav.fetch(d, root, client))
     sources["index_close"] = _attempt(lambda: index_bars.fetch(session, root, client))
     sources["participant"] = _attempt(lambda: participant.day_table(session, root, client))
     _attempt(lambda: participant.day_table(prev, root, client))

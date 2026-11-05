@@ -770,3 +770,19 @@ def test_refresh_never_raises(tmp_path, monkeypatch):
     assert out["complete"] is False and out["session"] == "2026-11-03"
     assert out["sources"]["holidays"] == "failed: blocked"
     assert out["sources"]["universe"] == "failed: RuntimeError: constituents down"
+
+
+def test_refresh_backfills_the_last_sessions_bhavcopies_it_is_missing(tmp_path, monkeypatch):
+    members(monkeypatch)
+    write_bhav(tmp_path, date(2026, 10, 29), contracts())
+    seen = []
+    client = archive_client({BHAV3: (200, bhav_bytes(NOV3, contracts())),
+                             "BhavCopy_NSE_FO_0_0_0_20261102_F_0000.csv.zip": (200, bhav_bytes(NOV2, contracts())),
+                             "BhavCopy_NSE_FO_0_0_0_20261030_F_0000.csv.zip": (200, bhav_bytes(date(2026, 10, 30), contracts()))}, seen)
+    out = facts.refresh(now=EVENING, root=tmp_path, client=client, www=FakeWWW())
+    assert [d.isoformat() for d in fo_bhav.sessions(root=tmp_path)] == [
+        "2026-10-29", "2026-10-30", "2026-11-02", "2026-11-03"]
+    bhav = [n for n in seen if n.startswith("BhavCopy")]
+    assert "BhavCopy_NSE_FO_0_0_0_20261029_F_0000.csv.zip" not in bhav
+    assert "BhavCopy_NSE_FO_0_0_0_20261027_F_0000.csv.zip" in bhav
+    assert out["sources"]["bhavcopy"] == "ok" and "backfill" not in out["sources"]

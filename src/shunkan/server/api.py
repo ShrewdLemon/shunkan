@@ -2690,6 +2690,14 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
 
         return _clean(straddle_path(symbol.upper()))
 
+    @app.get("/api/oi_eod/{symbol}")
+    def oi_eod_endpoint(symbol: str, expiry: str | None = None):
+        """End-of-day OI by strike, a series' OI through its life, and the ATM
+        straddle by session - all from the bhavcopies on disk."""
+        from shunkan.analytics import oi_eod
+
+        return _clean(oi_eod.view(symbol, expiry))
+
     @app.get("/api/candles/scan")
     def candles_scan():
         """Today's patterns across the NIFTY50+BANKNIFTY universe plus the

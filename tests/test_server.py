@@ -625,3 +625,17 @@ def test_pulse_cached_refuses_offline(client):
     """A synthetic board must never be persisted or served as a snapshot."""
     r = client.get("/api/pulse?cached=1")
     assert r.status_code == 404
+
+
+def test_oi_eod_passes_the_expiry_and_cleans_nan(client, monkeypatch):
+    seen = {}
+
+    def fake(symbol, expiry=None, root=None, sessions=60):
+        seen.update(symbol=symbol, expiry=expiry)
+        return {"symbol": symbol.upper(), "by_strike": {"pcr": float("nan"), "rows": []}}
+
+    monkeypatch.setattr("shunkan.analytics.oi_eod.view", fake)
+    r = client.get("/api/oi_eod/nifty", params={"expiry": "2026-11-17"})
+    assert r.status_code == 200
+    assert seen == {"symbol": "nifty", "expiry": "2026-11-17"}
+    assert r.json() == {"symbol": "NIFTY", "by_strike": {"pcr": None, "rows": []}}

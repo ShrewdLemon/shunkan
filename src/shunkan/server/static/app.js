@@ -435,7 +435,7 @@ const SYM_RE = /^[\^A-Z0-9][A-Z0-9._&^-]{0,23}$/;
 // quietly set the global symbol as a side effect of a malformed link.
 const SYMBOL_VIEWS = new Set([
   "chart", "chain", "payoff", "iv", "volume", "news", "backtest",
-  "viz", "mlstudio", "brief", "oicharts",
+  "viz", "mlstudio", "brief", "oicharts", "oieod",
 ]);
 
 let _routing = false;   // true while show() is being driven BY the hash
@@ -3225,6 +3225,7 @@ const ANL_GROUPS = [
     ["iv", "VOL", "Volatility", "smile, cone, local IV rank (real days only), intraday ATM path"],
     ["volume", "FLW", "Volume & flow", "profile, surge, OBV — refuses zero-volume tapes by name"],
     ["oicharts", "OIC", "OI & straddle intraday", "per-strike walls through the day; ATM premium path; any contract's path"],
+    ["oieod", "OIE", "OI & straddle, end of day", "OI by strike with the session's change; six strikes through the series; ATM straddle by session — NSE bhavcopies"],
     ["fiidii", "FII", "FII / DII positioning", "NSE's own file through time; fact, not signal — the 4y screen found no edge"],
     ["signals", "SIG", "Technical signals", "candle patterns WITH their measured record — most mean nothing, shown"],
   ]],
@@ -3365,6 +3366,464 @@ async function renderOICharts(view, params = {}) {
   $("#oic-strike").onkeydown = (e) => { if (e.key === "Enter") drawContract(); };
   draw();
   addTimer("oicharts:refresh", draw, 120000);
+}
+
+/* ---------- OI & straddle, end of day (OIE) ----------
+   The same three questions as OIC, asked of NSE's bhavcopies instead of
+   today's snapshots: OI by strike with the session's change, one series' OI
+   through its life at six strikes, and the ATM straddle session by session.
+   Drawn as SVG so every mark has its own hover and the TABLE twin carries
+   every number. Call/put marks use --call/--put, a pair stepped off
+   --down/--up so it stays apart under deuteranopia; position or a CE/PE
+   label always carries the side too. */
+
+const OE_NS = "http://www.w3.org/2000/svg";
+const MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+const oeDay = (iso) => { const [, m, d] = String(iso).split("-"); return `${d} ${MON3[+m - 1]}`; };
+// Strikes, premiums and ticks keep the decimals they have: ITC lists 267.5, IDEA's straddle is ₹0.91.
+const oeK = (v) => (v == null || Number.isNaN(+v) ? "—" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 2 }));
+const oePx = (v, traded) => (v == null ? "—" : fmt.n(v) + (traded ? "" : "*"));
+const oeOrd = (n) => { const t = n % 100, u = n % 10; return n + (t >= 11 && t <= 13 ? "th" : u === 1 ? "st" : u === 2 ? "nd" : u === 3 ? "rd" : "th"); };
+const oeSigned = (v) => (v > 0 ? "+" : v < 0 ? "−" : "") + fmt.compact(Math.abs(v));
+const oeColors = () => {
+  const s = getComputedStyle(document.documentElement), v = (n) => s.getPropertyValue(n).trim();
+  return { call: v("--call"), put: v("--put"), amber: v("--amber"), grid: v("--stroke-soft"),
+           axis: v("--stroke"), text: v("--text"), dim: v("--text-dim"), faint: v("--text-faint"),
+           blue: v("--blue"), bg: v("--bg-panel") };
+};
+const oeNode = (tag, attrs = {}, parent) => {
+  const n = document.createElementNS(OE_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (parent) parent.appendChild(n);
+  return n;
+};
+const oeText = (parent, x, y, s, attrs = {}) => {
+  const t = oeNode("text", { x, y, ...attrs }, parent);
+  t.textContent = s;
+  return t;
+};
+const oeEl = (tag, cls, s) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (s != null) n.textContent = s;
+  return n;
+};
+const oeNice = (v) => {
+  if (!(v > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v))), m = v / p;
+  return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * p;
+};
+const oeRange = (lo, hi, step) => {
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(v);
+  return out;
+};
+
+function oeTip() {
+  const tip = oeEl("div", "oe-tip");
+  tip.setAttribute("role", "status");
+  document.body.appendChild(tip);
+  onTeardown(() => tip.remove());
+  return {
+    show(ev, head, rows) {
+      tip.replaceChildren(oeEl("div", "h", head));
+      for (const r of rows) {
+        const row = oeEl("div", "r");
+        if (r.color) { const k = oeEl("span", "oe-ln"); k.style.background = r.color; row.appendChild(k); }
+        row.append(oeEl("span", "n", r.label), oeEl("b", null, r.value));
+        tip.appendChild(row);
+      }
+      tip.style.display = "block";
+      const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+      let x = ev.clientX + pad, y = ev.clientY + pad;
+      if (x + w > innerWidth - 8) x = ev.clientX - w - pad;
+      if (y + h > innerHeight - 8) y = ev.clientY - h - pad;
+      tip.style.left = Math.max(8, x) + "px";
+      tip.style.top = Math.max(8, y) + "px";
+    },
+    hide() { tip.style.display = "none"; },
+  };
+}
+const oeAnchor = (node) => { const r = node.getBoundingClientRect(); return { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }; };
+
+function oeLegend(box, items) {
+  box.replaceChildren();
+  for (const it of items) {
+    if (it.note) { box.appendChild(oeEl("span", "lg faint", it.note)); continue; }
+    const g = oeEl("span", "lg"), s = oeEl("span", it.line ? "oe-ln" : "oe-sw");
+    s.style.background = it.color;
+    if (it.opacity) s.style.opacity = it.opacity;
+    g.append(s, document.createTextNode(it.label));
+    box.appendChild(g);
+  }
+}
+
+function oeTable(host, head, rows, mark) {
+  const t = oeEl("table", "tbl"), th = oeEl("thead"), tr = oeEl("tr");
+  head.forEach((c) => tr.appendChild(oeEl("th", null, c)));
+  th.appendChild(tr);
+  t.appendChild(th);
+  const tb = oeEl("tbody");
+  rows.forEach((r, i) => {
+    const row = oeEl("tr", i === mark ? "atm-row" : null);
+    r.forEach((c) => row.appendChild(oeEl("td", null, c)));
+    tb.appendChild(row);
+  });
+  t.appendChild(tb);
+  host.replaceChildren(t);
+}
+
+function oePanel(id, title, meta) {
+  return `<section class="panel oe-panel" id="${id}">
+    <div class="panel-head"><span class="panel-title">${title}</span><span class="panel-meta" id="${id}-meta">${meta}</span>
+      <span class="oe-seg" role="group" aria-label="View"><button type="button" data-v="chart" aria-pressed="true">CHART</button><button type="button" data-v="table" aria-pressed="false">TABLE</button></span>
+    </div>
+    <div id="${id}-top"></div>
+    <div class="oe-body" data-view="chart">${loading("reading bhavcopies")}</div>
+    <div class="oe-body oe-tblwrap" data-view="table" hidden></div>
+  </section>`;
+}
+
+function oeToggles(id, renderTable, redraw, tip) {
+  const p = $(`#${id}`);
+  p.querySelectorAll(".oe-seg button").forEach((b) => b.addEventListener("click", () => {
+    const v = b.dataset.v;
+    p.querySelectorAll(".oe-seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    p.querySelectorAll("[data-view]").forEach((x) => { x.hidden = x.dataset.view !== v; });
+    if (v === "table") renderTable(p.querySelector('[data-view="table"]'));
+    else redraw();
+    tip.hide();
+  }));
+}
+const oeVisible = (id) => { const c = $(`#${id} [data-view="chart"]`); return c && !c.hidden; };
+
+function oeLine(svg, opts) {
+  const C = opts.colors;
+  svg.replaceChildren();
+  const ps = getComputedStyle(svg.parentElement);
+  const W = svg.parentElement.clientWidth - parseFloat(ps.paddingLeft) - parseFloat(ps.paddingRight), H = opts.height;
+  const L = opts.left || 46, R = opts.right || 10, T = 8, B = opts.xAxis ? 20 : 6;
+  if (W < L + R + 40) return { at() {}, clear() {}, index: () => 0 };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H);
+  const n = opts.n, x = (i) => L + (n === 1 ? 0 : (i / (n - 1)) * (W - L - R));
+  const [lo, hi] = opts.domain, y = (v) => T + (1 - (v - lo) / (hi - lo || 1)) * (H - T - B);
+  for (const t of opts.ticks) {
+    oeNode("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), stroke: C.grid, "stroke-width": 1 }, svg);
+    oeText(svg, L - 6, y(t) + 3, opts.fmt(t), { "text-anchor": "end", fill: C.faint, "font-size": 9 });
+  }
+  for (const m of opts.marks || []) oeNode("line", { x1: x(m), x2: x(m), y1: T, y2: H - B, stroke: C.axis, "stroke-width": 1 }, svg);
+  if (opts.xAxis) for (const i of opts.xTicks) oeText(svg, x(i), H - 6, opts.xAxis(i), { "text-anchor": "middle", fill: C.faint, "font-size": 9 });
+  for (const s of opts.series) {
+    let d = "", pen = false;
+    s.values.forEach((v, i) => {
+      if (v == null) { pen = false; return; }
+      d += (pen ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1);
+      pen = true;
+    });
+    oeNode("path", { d, fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+  }
+  if (opts.endLabels) oeEnds(svg, opts.series, x(n - 1), y, C);
+  const cross = oeNode("line", { y1: T, y2: H - B, stroke: C.dim, "stroke-width": 1, opacity: 0 }, svg);
+  const dots = opts.series.map((s) => oeNode("circle", { r: 4, fill: s.color, stroke: C.bg, "stroke-width": 2, opacity: 0 }, svg));
+  const api = {
+    at(i) {
+      cross.setAttribute("x1", x(i));
+      cross.setAttribute("x2", x(i));
+      cross.setAttribute("opacity", 1);
+      opts.series.forEach((s, k) => {
+        const v = s.values[i];
+        if (v == null) { dots[k].setAttribute("opacity", 0); return; }
+        dots[k].setAttribute("cx", x(i));
+        dots[k].setAttribute("cy", y(v));
+        dots[k].setAttribute("opacity", 1);
+      });
+    },
+    clear() { cross.setAttribute("opacity", 0); dots.forEach((d) => d.setAttribute("opacity", 0)); },
+    index(clientX) {
+      const r = svg.getBoundingClientRect(), px = ((clientX - r.left) / r.width) * W;
+      return Math.max(0, Math.min(n - 1, Math.round(((px - L) / (W - L - R || 1)) * (n - 1))));
+    },
+  };
+  const hit = oeNode("rect", { x: L, y: 0, width: Math.max(0, W - L - R + 6), height: H, fill: "transparent" }, svg);
+  hit.addEventListener("pointermove", (ev) => opts.onHover(api.index(ev.clientX), ev));
+  hit.addEventListener("pointerleave", () => opts.onLeave());
+  return api;
+}
+
+// End labels that would overlap are pushed apart and tied back to their line.
+function oeEnds(svg, series, x, y, C) {
+  const items = series.map((s) => ({ s, v: s.values[s.values.length - 1] })).filter((o) => o.v != null)
+    .map((o) => ({ ...o, y0: y(o.v), y1: y(o.v) })).sort((a, b) => a.y0 - b.y0);
+  for (let i = 1; i < items.length; i++) if (items[i].y1 - items[i - 1].y1 < 11) items[i].y1 = items[i - 1].y1 + 11;
+  for (const o of items) {
+    if (Math.abs(o.y1 - o.y0) > 1) oeNode("line", { x1: x + 2, y1: o.y0, x2: x + 7, y2: o.y1, stroke: C.faint, "stroke-width": 1 }, svg);
+    oeText(svg, x + 9, o.y1 + 3, `${o.s.short} ${fmt.compact(o.v)}`, { fill: C.text, "font-size": 9.5 });
+  }
+}
+
+function oeBarPath(x, y, w, h, dir) {
+  const r = Math.min(2, w);
+  if (dir > 0) return `M${x},${y}h${w - r}a${r},${r} 0 0 1 ${r},${r}v${h - 2 * r}a${r},${r} 0 0 1 ${-r},${r}h${-(w - r)}z`;
+  return `M${x + w},${y}h${-(w - r)}a${r},${r} 0 0 0 ${-r},${r}v${h - 2 * r}a${r},${r} 0 0 0 ${r},${r}h${w - r}z`;
+}
+
+function oeStrikes(a, svg, C, tip) {
+  svg.replaceChildren();
+  const W = svg.parentElement.clientWidth - 20, rowH = 18, bar = 12, mid = 96, top = 18;
+  if (W < mid + 60) return;
+  const rows = [...a.rows].sort((p, q) => q.strike - p.strike);
+  const H = top + rows.length * rowH + 36;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H);
+  const half = (W - mid) / 2, cx = W / 2, room = half > 150 ? 46 : 0;
+  const max = Math.max(1, ...rows.flatMap((r) => [r.call_oi, r.put_oi, r.call_oi - r.call_oi_change, r.put_oi - r.put_oi_change]));
+  const sx = (v) => (Math.max(0, v) / max) * (half - room - 4);
+  const head = { fill: C.blue, "font-size": 9.5, "letter-spacing": "0.1em" };
+  oeText(svg, cx - mid / 2 - 6, 11, "PUT OI", { "text-anchor": "end", ...head });
+  oeText(svg, cx, 11, "STRIKE", { "text-anchor": "middle", ...head });
+  oeText(svg, cx + mid / 2 + 6, 11, "CALL OI", head);
+  const base = top + rows.length * rowH;
+  for (const f of [0.25, 0.5, 0.75, 1]) {
+    const dx = sx(max * f);
+    for (const xx of [cx - mid / 2 - dx, cx + mid / 2 + dx]) oeNode("line", { x1: xx, x2: xx, y1: top, y2: base, stroke: C.grid, "stroke-width": 1 }, svg);
+    if (f === 0.5 || f === 1) for (const xx of [cx - mid / 2 - dx, cx + mid / 2 + dx]) {
+      oeText(svg, xx, base + 14, fmt.compact(max * f), { "text-anchor": "middle", fill: C.faint, "font-size": 9 });
+    }
+  }
+  const topC = rows.reduce((p, r) => (r.call_oi > p.call_oi ? r : p)), topP = rows.reduce((p, r) => (r.put_oi > p.put_oi ? r : p));
+  rows.forEach((r, i) => {
+    const y = top + i * rowH, yb = y + (rowH - bar) / 2, atm = r.strike === a.atm_strike;
+    if (atm) oeNode("rect", { x: cx - mid / 2, y, width: mid, height: rowH, fill: "rgba(255,166,43,0.14)" }, svg);
+    const side = (oi, d, color, dir) => {
+      const add = Math.max(d, 0), x0 = dir < 0 ? cx - mid / 2 : cx + mid / 2;
+      const wC = sx(oi - add), wA = sx(add), gap = wC > 0 && wA > 0 ? 2 : 0;
+      if (d < 0) {
+        const wY = sx(oi - d);
+        oeNode("rect", { x: dir < 0 ? x0 - wY : x0, y: yb, width: wY, height: bar, fill: color, opacity: 0.16 }, svg);
+      }
+      if (wC > 0) oeNode("rect", { x: dir < 0 ? x0 - wC : x0, y: yb, width: wC, height: bar, fill: color, opacity: 0.45 }, svg);
+      if (wA > 0) oeNode("path", { d: oeBarPath(dir < 0 ? x0 - wC - gap - wA : x0 + wC + gap, yb, wA, bar, dir), fill: color }, svg);
+      return x0 + dir * (sx(Math.max(oi, oi - d)) + 5);
+    };
+    const pEnd = side(r.put_oi, r.put_oi_change, C.put, -1), cEnd = side(r.call_oi, r.call_oi_change, C.call, 1);
+    oeText(svg, cx, y + rowH / 2 + 3.5, oeK(r.strike), { "text-anchor": "middle", fill: atm ? C.amber : C.text, "font-size": 11, "font-weight": 700 });
+    const tags = [r.strike === a.max_pain && "MP", r.strike === a.call_wall && "CW", r.strike === a.put_wall && "PW"].filter(Boolean);
+    if (tags.length) oeText(svg, cx + mid / 2 - 4, y + rowH / 2 + 3, tags.join(" "), { "text-anchor": "end", fill: C.blue, "font-size": 8.5 });
+    if (room && r === topP) oeText(svg, pEnd, y + rowH / 2 + 3.5, fmt.compact(r.put_oi), { "text-anchor": "end", fill: C.text, "font-size": 10 });
+    if (room && r === topC) oeText(svg, cEnd, y + rowH / 2 + 3.5, fmt.compact(r.call_oi), { fill: C.text, "font-size": 10 });
+    const hit = oeNode("rect", { x: 0, y, width: W, height: rowH, fill: "transparent", class: "oe-hit", tabindex: 0,
+      "aria-label": `${r.strike}: put ${Math.round(r.put_oi)}, change ${Math.round(r.put_oi_change)}; call ${Math.round(r.call_oi)}, change ${Math.round(r.call_oi_change)}` }, svg);
+    const show_ = (ev) => {
+      hit.setAttribute("fill", "rgba(255,255,255,0.04)");
+      tip.show(ev, `STRIKE ${oeK(r.strike)} · ${oeDay(a.expiry)}`, [
+        { color: C.put, label: "PE OI", value: `${fmt.compact(r.put_oi)}  ${oeSigned(r.put_oi_change)}` },
+        { color: C.call, label: "CE OI", value: `${fmt.compact(r.call_oi)}  ${oeSigned(r.call_oi_change)}` },
+        { label: "PCR AT STRIKE", value: r.call_oi ? (r.put_oi / r.call_oi).toFixed(2) : "—" },
+        { label: "PE / CE", value: `${oePx(r.put_price, r.put_traded)} / ${oePx(r.call_price, r.call_traded)}` }]);
+    };
+    const off = () => { hit.setAttribute("fill", "transparent"); tip.hide(); };
+    hit.addEventListener("pointermove", show_);
+    hit.addEventListener("focus", () => show_(oeAnchor(hit)));
+    hit.addEventListener("pointerleave", off);
+    hit.addEventListener("blur", off);
+  });
+  const ks = rows.map((r) => r.strike), i = ks.findIndex((k) => k < a.spot);
+  if (i > 0) {
+    const yS = top + (i - 1) * rowH + rowH / 2 + ((ks[i - 1] - a.spot) / (ks[i - 1] - ks[i])) * rowH;
+    oeNode("line", { x1: 0, x2: W, y1: yS, y2: yS, stroke: C.amber, "stroke-width": 1, "pointer-events": "none" }, svg);
+    oeText(svg, 2, yS - 3, `SPOT ${fmt.n(a.spot, 1)}`, { fill: C.amber, "font-size": 9, "pointer-events": "none" });
+  }
+  if (a.put_wall != null && a.put_wall < ks[ks.length - 1]) oeText(svg, 2, base + 30, `PUT WALL ${oeK(a.put_wall)} ↓ below range`, { fill: C.dim, "font-size": 9 });
+  if (a.call_wall != null && a.call_wall > ks[0]) oeText(svg, W - 2, 11, `CALL WALL ${oeK(a.call_wall)} ↑`, { "text-anchor": "end", fill: C.dim, "font-size": 9 });
+}
+
+async function renderOIEOD(view, params = {}) {
+  if (params.symbol) state.symbol = params.symbol.toUpperCase();
+  const sym = state.symbol;
+  view.innerHTML = `
+    <div class="oe-filters">
+      <span class="k">SYMBOL</span><input class="in" id="oe-sym" value="${esc(sym)}" size="10">
+      <span class="k">EXPIRY</span><select class="in" id="oe-exp"><option value="">front</option></select>
+      <button class="btn" id="oe-go">LOAD</button>
+      <span class="faint" id="oe-asof"></span>
+    </div>
+    ${oePanel("oe-a", "OI by strike", "bright = added this session · dim = carried in · ghost = cut")}
+    ${oePanel("oe-b", "OI over time · six strikes", "")}
+    ${oePanel("oe-c", "ATM straddle · nearest expiry", "")}`;
+  const go = () => {
+    const s = $("#oe-sym").value.trim().toUpperCase();
+    show("oieod", { symbol: s, expiry: s === sym ? $("#oe-exp").value : "" });
+  };
+  $("#oe-go").onclick = go;
+  $("#oe-sym").onkeydown = (e) => { if (e.key === "Enter") go(); };
+  const tip = oeTip();
+  let d;
+  try {
+    d = await getJSON(`/api/oi_eod/${encodeURIComponent(sym)}${params.expiry ? `?expiry=${encodeURIComponent(params.expiry)}` : ""}`,
+      { timeoutMs: 90000 });
+  } catch (e) {
+    if (!view.isConnected) return;
+    view.querySelectorAll(".oe-body[data-view=chart]").forEach((b) => { b.innerHTML = `<div class="empty">${esc(e.message)}</div>`; });
+    return;
+  }
+  if (!view.isConnected) return;
+  if (d.error) {
+    view.querySelectorAll(".oe-body[data-view=chart]").forEach((b) => { b.innerHTML = `<div class="empty">${esc(d.error)}</div>`; });
+    return;
+  }
+  const sel = $("#oe-exp");
+  sel.innerHTML = (d.expiries || []).map((e) => `<option value="${esc(e)}"${e === d.expiry ? " selected" : ""}>${esc(oeDay(e))} ${esc(e.slice(0, 4))}</option>`).join("");
+  sel.onchange = go;
+  $("#oe-asof").textContent = `${d.source} · as of ${oeDay(d.as_of)} ${d.as_of.slice(0, 4)}`;
+  const C = oeColors();
+  const fail = (id, err) => { $(`#${id} [data-view=chart]`).innerHTML = `<div class="empty">${esc(err)}</div>`; };
+
+  const a = d.by_strike;
+  const drawA = () => {
+    const host = $("#oe-a [data-view=chart]");
+    if (!host || a.error || !oeVisible("oe-a")) return;
+    if (!host.querySelector("svg")) host.replaceChildren(oeNode("svg", { role: "img", "aria-label": "Open interest by strike, puts left and calls right" }));
+    oeStrikes(a, host.querySelector("svg"), C, tip);
+  };
+  if (a.error) fail("oe-a", a.error);
+  else {
+    $("#oe-a-meta").textContent = `${oeDay(a.expiry)} expiry · ${a.unit} · bright = added this session · dim = carried in · ghost = cut`;
+    const top = $("#oe-a-top");
+    const stats = oeEl("div", "oe-stats");
+    for (const [k, v, ch] of [["SPOT", fmt.n(a.spot, 1)], ["PCR OI", a.pcr == null ? "—" : a.pcr.toFixed(2)],
+      ["MAX PAIN", oeK(a.max_pain)], ["CALL WALL", oeK(a.call_wall)], ["PUT WALL", oeK(a.put_wall)],
+      ["CE OI", fmt.compact(a.totals.call_oi), a.totals.call_oi_change], ["PE OI", fmt.compact(a.totals.put_oi), a.totals.put_oi_change]]) {
+      const s = oeEl("span", "oe-stat");
+      s.append(oeEl("span", "k", k), oeEl("span", "v", v));
+      if (ch != null) s.appendChild(oeEl("span", "d " + (ch >= 0 ? "up" : "down"), oeSigned(ch)));
+      stats.appendChild(s);
+    }
+    const lg = oeEl("div", "oe-legend");
+    oeLegend(lg, [{ color: C.put, label: "PUT OI" }, { color: C.call, label: "CALL OI" },
+      { color: C.dim, label: "bright: added this session" }, { color: C.dim, opacity: 0.45, label: "dim: carried in" },
+      { color: C.dim, opacity: 0.16, label: "ghost: cut this session" }, { note: "* settle price, no trade" }]);
+    top.replaceChildren(stats, lg);
+    drawA();
+    oeToggles("oe-a", (host) => {
+      const rows = [...a.rows].sort((p, q) => q.strike - p.strike);
+      oeTable(host, ["STRIKE", "PE OI", "PE ΔOI", "PE PRICE", "CE PRICE", "CE ΔOI", "CE OI"], rows.map((r) => [
+        oeK(r.strike), fmt.compact(r.put_oi), oeSigned(r.put_oi_change), oePx(r.put_price, r.put_traded),
+        oePx(r.call_price, r.call_traded), oeSigned(r.call_oi_change), fmt.compact(r.call_oi)]),
+      rows.findIndex((r) => r.strike === a.atm_strike));
+    }, drawA, tip);
+  }
+
+  const b = d.history;
+  let bCharts = [];
+  const drawB = () => {
+    const host = $("#oe-b [data-view=chart]");
+    if (!host || b.error || !oeVisible("oe-b")) return;
+    const n = b.days.length, xt = [...new Set([0, Math.floor((n - 1) / 2), n - 1])];
+    const vals = Object.values(b.oi).flatMap((o) => [...o.call, ...o.put]).filter((v) => v != null);
+    const bmax = oeNice(Math.max(1, ...vals));
+    const sMin = Math.min(...b.spot), sMax = Math.max(...b.spot);
+    const grain = oeNice((sMax - sMin) / 2 || sMax * 0.01);
+    const sDom = [Math.floor(sMin / grain) * grain, Math.ceil(sMax / grain) * grain || sMax + grain];
+    const last = b.spot[n - 1];
+    const near = b.strikes.reduce((p, k) => (Math.abs(k - last) < Math.abs(p - last) ? k : p));
+    host.innerHTML = `<div class="oe-sub">${esc(sym)} CLOSE <span class="t">${esc(fmt.n(b.spot[0], 1))} → ${esc(fmt.n(last, 1))}</span></div>
+      <svg id="oe-b-spot" role="img" aria-label="Underlying close over the series"></svg><div class="oe-grid"></div>`;
+    const grid = host.querySelector(".oe-grid");
+    const hover = (i, ev, k) => {
+      bCharts.forEach((c) => c.at(i));
+      const rows = [{ label: sym, value: fmt.n(b.spot[i], 1) }];
+      if (k != null) rows.push({ color: C.put, label: `${oeK(k)} PE`, value: fmt.compact(b.oi[k].put[i]) },
+        { color: C.call, label: `${oeK(k)} CE`, value: fmt.compact(b.oi[k].call[i]) });
+      tip.show(ev, `${oeDay(b.days[i])} ${b.days[i].slice(0, 4)}`, rows);
+    };
+    const leave = () => { bCharts.forEach((c) => c.clear()); tip.hide(); };
+    bCharts = [oeLine(host.querySelector("#oe-b-spot"), { colors: C, n, height: 64, domain: sDom, ticks: oeRange(sDom[0], sDom[1], grain),
+      fmt: (v) => oeK(v), series: [{ color: C.amber, values: b.spot }], onHover: (i, ev) => hover(i, ev, null), onLeave: leave, right: 54, left: 52 })];
+    for (const k of b.strikes) {
+      const f = oeEl("div", "oe-facet"), t = oeEl("h3", null, oeK(k)), dist = k - last;
+      t.appendChild(oeEl("span", "t", `${dist >= 0 ? "+" : "−"}${oeK(Math.abs(dist))} from spot`));
+      if (k === near) t.appendChild(oeEl("span", "atm", "ATM"));
+      f.appendChild(t);
+      const svg = oeNode("svg", { role: "img", "aria-label": `Open interest at ${k}` }, f);
+      grid.appendChild(f);
+      bCharts.push(oeLine(svg, { colors: C, n, height: 116, domain: [0, bmax], ticks: oeRange(0, bmax, bmax / 2), fmt: (v) => fmt.compact(v),
+        right: 54, left: 40, xAxis: (i) => oeDay(b.days[i]), xTicks: xt, endLabels: true,
+        series: [{ color: C.put, values: b.oi[String(k)].put, short: "PE" }, { color: C.call, values: b.oi[String(k)].call, short: "CE" }],
+        onHover: (i, ev) => hover(i, ev, String(k)), onLeave: leave }));
+    }
+  };
+  if (b.error) fail("oe-b", b.error);
+  else {
+    $("#oe-b-meta").textContent = `${oeDay(b.expiry)} series · ${b.days.length} sessions ${oeDay(b.days[0])} – ${oeDay(b.days[b.days.length - 1])} · ${b.listed ? `listed ${oeDay(b.listed)}` : `listed before ${oeDay(b.listed_before)}`}`;
+    const lg = oeEl("div", "oe-legend");
+    oeLegend(lg, [{ color: C.put, line: true, label: "PE OI (put)" }, { color: C.call, line: true, label: "CE OI (call)" },
+      { note: `${b.unit} · one scale across all six panels` }]);
+    $("#oe-b-top").replaceChildren(lg);
+    drawB();
+    oeToggles("oe-b", (host) => oeTable(host, ["SESSION", sym, ...b.strikes.flatMap((k) => [`${oeK(k)} PE`, `${oeK(k)} CE`])],
+      b.days.map((day, i) => [oeDay(day), fmt.n(b.spot[i], 1), ...b.strikes.flatMap((k) => [fmt.compact(b.oi[String(k)].put[i]), fmt.compact(b.oi[String(k)].call[i])])])),
+    drawB, tip);
+  }
+
+  const cs = (d.straddle && d.straddle.rows) || [];
+  const drawC = () => {
+    const host = $("#oe-c [data-view=chart]");
+    if (!host || !cs.length || !oeVisible("oe-c")) return;
+    const n = cs.length, rolls = [];
+    for (let i = 1; i < n; i++) if (cs[i].expiry !== cs[i - 1].expiry) rolls.push(i);
+    const xt = [...new Set([0, Math.round((n - 1) / 3), Math.round((2 * (n - 1)) / 3), n - 1])];
+    const spot = cs.map((c) => c.spot), str = cs.map((c) => c.straddle);
+    const grain = oeNice((Math.max(...spot) - Math.min(...spot)) / 3 || Math.max(...spot) * 0.01);
+    const sDom = [Math.floor(Math.min(...spot) / grain) * grain, Math.ceil(Math.max(...spot) / grain) * grain];
+    const tMax = oeNice(Math.max(...str));
+    host.innerHTML = `<div class="oe-sub">${esc(sym)} CLOSE</div><svg id="oe-c-spot" role="img" aria-label="Underlying close"></svg>
+      <div class="oe-sub">ATM STRADDLE · CE + PE AT THE STRIKE NEAREST THE CLOSE <span class="t">thin rules = expiry roll</span></div>
+      <svg id="oe-c-str" role="img" aria-label="ATM straddle premium"></svg>`;
+    const charts = [];
+    const hover = (i, ev) => {
+      charts.forEach((c) => c.at(i));
+      const c = cs[i];
+      tip.show(ev, `${oeDay(c.date)} ${c.date.slice(0, 4)}`, [{ label: sym, value: fmt.n(c.spot, 1) },
+        { color: C.amber, label: `STRADDLE ${oeK(c.strike)}`, value: "₹" + fmt.n(c.straddle) + (c.traded ? "" : "*") },
+        { label: "IMPLIED MOVE", value: "±" + c.implied_move_pct.toFixed(2) + "%" },
+        { label: "EXPIRY", value: `${oeDay(c.expiry)} · ${c.sessions_to_expiry} to go` }]);
+    };
+    const leave = () => { charts.forEach((c) => c.clear()); tip.hide(); };
+    charts.push(oeLine(host.querySelector("#oe-c-spot"), { colors: C, n, height: 92, domain: sDom, ticks: oeRange(sDom[0], sDom[1], grain),
+      fmt: (v) => oeK(v), left: 52, series: [{ color: C.amber, values: spot }], marks: rolls, onHover: hover, onLeave: leave }));
+    charts.push(oeLine(host.querySelector("#oe-c-str"), { colors: C, n, height: 150, domain: [0, tMax], ticks: oeRange(0, tMax, tMax / 4),
+      fmt: (v) => oeK(v), left: 52, series: [{ color: C.amber, values: str }], marks: rolls, xAxis: (i) => oeDay(cs[i].date), xTicks: xt,
+      onHover: hover, onLeave: leave }));
+  };
+  if (d.straddle.error) fail("oe-c", d.straddle.error);
+  else if (!cs.length) fail("oe-c", "no session with a straddle on disk");
+  else {
+    const last = cs[cs.length - 1], vals = cs.map((c) => c.straddle);
+    const lo = Math.min(...vals), hi = Math.max(...vals), pct = (vals.filter((v) => v < last.straddle).length / vals.length) * 100;
+    $("#oe-c-meta").textContent = `${cs.length} sessions ${oeDay(cs[0].date)} – ${oeDay(last.date)} · end of day`;
+    const tiles = oeEl("div", "oe-tiles");
+    for (const [k, v, s] of [
+      ["ATM STRADDLE", "₹" + fmt.n(last.straddle), `${oeK(last.strike)} CE + PE · ${oeDay(last.date)} close`],
+      ["IMPLIED MOVE", "±" + last.implied_move_pct.toFixed(2) + "%", `±${fmt.n(last.straddle)} pts to the ${oeDay(last.expiry)} expiry`],
+      ["TO EXPIRY", `${last.sessions_to_expiry} session${last.sessions_to_expiry === 1 ? "" : "s"}`, `${oeDay(last.expiry)} ${last.expiry.slice(0, 4)}`],
+      [`${cs.length}-SESSION RANGE`, `₹${oeK(lo)} – ₹${oeK(hi)}`, `this session sits at the ${oeOrd(Math.round(pct))} percentile`]]) {
+      const t = oeEl("div", "oe-tile");
+      t.append(oeEl("div", "k", k), oeEl("div", "v", v), oeEl("div", "s", s));
+      tiles.appendChild(t);
+    }
+    $("#oe-c-top").replaceChildren(tiles);
+    drawC();
+    oeToggles("oe-c", (host) => oeTable(host, ["SESSION", sym, "ATM", "STRADDLE", "IMPLIED", "EXPIRY", "TO GO"],
+      [...cs].reverse().map((c) => [oeDay(c.date), fmt.n(c.spot, 1), oeK(c.strike), "₹" + fmt.n(c.straddle) + (c.traded ? "" : "*"),
+        "±" + c.implied_move_pct.toFixed(2) + "%", oeDay(c.expiry), String(c.sessions_to_expiry)])), drawC, tip);
+  }
+
+  let rz;
+  onView(window, "resize", () => { clearTimeout(rz); rz = setTimeout(() => { drawA(); drawB(); drawC(); }, 120); });
+  onTeardown(() => clearTimeout(rz));
 }
 
 /* ---------- FII / DII (FII) ----------
@@ -5725,7 +6184,7 @@ const RENDER = {
   pulse: renderPulse, chart: renderChart, chain: renderChain, payoff: renderPayoff,
   iv: renderIV, volume: renderVolume, news: renderNews, backtest: renderBacktest,
   tape: renderTape, screener: renderScreener, signals: renderSignals,
-  fiidii: renderFiiDii, oicharts: renderOICharts, heatmap: renderHeatmap,
+  fiidii: renderFiiDii, oicharts: renderOICharts, oieod: renderOIEOD, heatmap: renderHeatmap,
   calendar: renderCalendar, analyse: renderAnalyse,
   portfolio: renderPortfolio, alerts: renderAlerts,
   datastore: renderDatastore, workspace: renderWorkspace, viz: renderViz,
@@ -6003,7 +6462,7 @@ window.closePalette = closePalette;
 const CODE_ALIAS = { OPT: "oc", PRT: "portfolio", PLS: "pulse", ANL: "analyse",
                      CHT: "c", TPE: "tape", ALR: "alerts", DTA: "datastore",
                      ANA: "brief", BRF: "brief", QNT: "qnt", SCR: "screener",
-                     SIG: "signals", FII: "fiidii", OIC: "oicharts",
+                     SIG: "signals", FII: "fiidii", OIC: "oicharts", OIE: "oieod",
                      MAP: "heatmap", CAL: "calendar", WSP: "workspace",
                      VOL: "iv", FLW: "volume", NWS: "news", BTL: "backtest",
                      MLS: "mlstudio", PAY: "payoff", MAC: "macro" };
