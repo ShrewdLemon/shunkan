@@ -343,6 +343,11 @@ store/bars/               1-minute bars built from the live tick stream
 store/contracts/          full traded lives of option contracts, plus
                           settlement sessions harvested on expiry evenings
 store/participant/        NSE participant-wise OI, backfillable years deep
+store/fo_bhav/raw/        NSE F&O bhavcopies, one zip per session, the source
+store/fo_bhav/typed/      the same rows as typed parquet, one file per month;
+                          `shunkan fo-store` builds it, the evening refresh
+                          keeps it current, any day it can't vouch for is
+                          read from the zip instead
 store/news/               the headline archive, one parquet per writer
 store/instruments/        daily contract master per venue
 cache/                    instruments dump, short lived

@@ -35,6 +35,17 @@ Things with real test coverage that have been verified against a live broker.
   filled at the signal bar's own close while trades and docs said next bar).
   The ML studio purges train labels that reach into the test window and
   embargoes 1% more.
+- **F&O history store.** `shunkan fo-store` turns the 1,940 bhavcopy zips
+  (2019 to now) into 95 monthly parquet files, 685 MB, in 80 s on 6 cores.
+  NIFTY options for the whole span load in 0.40-0.47 s instead of 267 s, at
+  2.5 GB peak instead of 2.8 GB; one session in 6 ms instead of 171 ms.
+  Verified 11 Nov 2026: every month, four filter sets, 172M rows identical to
+  the raw parser, dtypes and order included. A day whose zip changed, failed
+  to parse or is newer than the store is read from the zip, and so is a month
+  whose parquet is not the file the manifest recorded. A parser change or a
+  pandas/pyarrow upgrade retires the store until `shunkan fo-store` runs again
+  (loads are slow, never wrong, meanwhile). The evening refresh adds new days,
+  at most 2 months' worth; it never builds the store.
 - **Self-contained broker setup.** Both first-run credentials and the daily
   re-auth happen from the broker chip in the top bar. The CLI still works but
   is no longer required for anything.

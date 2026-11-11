@@ -1,9 +1,10 @@
-"""NSE F&O daily bhavcopies on disk: readers never write; fetch() is the only writer.
+"""NSE F&O daily bhavcopies on disk: readers never write; fetch() is the only raw writer.
 
 One zip per session under <store>/fo_bhav/raw/{YYYY}/: the legacy form to
 2024-07-05, UDiFF from 2024-07-08, and an empty {YYYYMMDD}.missing where NSE
 published nothing. Both forms parse to one frame (COLUMNS). contracts counts
 contracts, oi counts units; contracts == 0 means the row did not trade.
+load() and load_range() read the typed copy (fo_store) where it is current.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from shunkan.data import nse_archive
@@ -179,25 +181,48 @@ def _names(arg, what) -> list[str] | None:
     return [a.upper() for a in arg]
 
 
-def load(day, symbols=None, kinds=None, root=None) -> pd.DataFrame:
-    symbols, kinds = _names(symbols, "symbols"), _names(kinds, "kinds")
-    d = _as_date(day)
-    p = path_for(d, root)
-    if p is None:
-        raise DataError(f"no F&O bhavcopy on disk for {d} ({status(d, root)})")
+def _day(d: date, p: Path) -> pd.DataFrame:
     df = parse(p)
     if not (df["date"] == pd.Timestamp(d)).all():
         raise DataError(f"{p.name} carries {sorted(set(df['date'].dt.date))}, not {d}")
+    return df.sort_values(_SORT, na_position="first").reset_index(drop=True)
+
+
+def _load_raw(d: date, symbols, kinds, root) -> pd.DataFrame:
+    p = path_for(d, root)
+    if p is None:
+        raise DataError(f"no F&O bhavcopy on disk for {d} ({status(d, root)})")
+    df = _day(d, p)
     if symbols is not None:
         df = df[df["symbol"].isin(symbols)]
     if kinds is not None:
         df = df[df["kind"].isin(kinds)]
-    return df.sort_values(_SORT, na_position="first").reset_index(drop=True)
+    return df.reset_index(drop=True)
+
+
+def load(day, symbols=None, kinds=None, root=None) -> pd.DataFrame:
+    from shunkan.data import fo_store
+
+    symbols, kinds = _names(symbols, "symbols"), _names(kinds, "kinds")
+    d = _as_date(day)
+    got, rest = fo_store.read([d], symbols, kinds, root)
+    return _load_raw(d, symbols, kinds, root) if rest else got
 
 
 def load_range(start, end, symbols=None, kinds=None, root=None) -> pd.DataFrame:
-    _names(symbols, "symbols"), _names(kinds, "kinds")
-    frames = [load(d, symbols, kinds, root) for d in sessions(start, end, root)]
-    if not frames:
+    """Typed store first; days it does not hold come from the raw zips."""
+    from shunkan.data import fo_store
+
+    symbols, kinds = _names(symbols, "symbols"), _names(kinds, "kinds")
+    days = sessions(start, end, root)
+    if not days:
         return pd.DataFrame(columns=COLUMNS).astype(_DTYPES)
-    return pd.concat(frames, ignore_index=True)
+    got, rest = fo_store.read(days, symbols, kinds, root)
+    frames = [_load_raw(d, symbols, kinds, root) for d in rest]
+    if got is None:
+        return pd.concat(frames, ignore_index=True)
+    if not frames:
+        return got
+    out = pd.concat([got, *frames], ignore_index=True)
+    order = np.argsort(out["date"].to_numpy().view("i8"), kind="stable")
+    return out.take(order).reset_index(drop=True)
