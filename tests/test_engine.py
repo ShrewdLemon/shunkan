@@ -28,13 +28,46 @@ def _frame(closes):
     )
 
 
-def test_buy_hold_equity_matches_price_ratio():
+def test_buy_hold_fills_at_the_next_close():
+    # Signal at bar 0's close, filled at bar 1's close (110).
     prices = _frame([100, 110, 99, 132, 120])
     signal = pd.Series(1.0, index=prices.index)
     result = run_backtest(prices, signal, ZERO_COST)
     assert result.final_equity == pytest.approx(
-        ZERO_COST.initial_cash * 120 / 100, rel=1e-12
+        ZERO_COST.initial_cash * 120 / 110, rel=1e-12
     )
+
+
+def test_equity_matches_the_trade_list():
+    prices = _frame([100, 100, 110, 120, 90, 90, 95])
+    signal = pd.Series([0, 1, 1, 0, 0, 0, 0], index=prices.index, dtype=float)
+    result = run_backtest(prices, signal, ZERO_COST)
+    (trade,) = result.trades
+    assert result.final_equity / ZERO_COST.initial_cash - 1 == pytest.approx(trade.return_pct)
+
+
+def test_fill_lag_zero_fills_at_the_signal_close():
+    prices = _frame([100, 110, 99, 132, 120])
+    signal = pd.Series(1.0, index=prices.index)
+    cfg = BacktestConfig(commission=0.0, slippage=0.0, fill_lag=0)
+    result = run_backtest(prices, signal, cfg)
+    assert result.final_equity == pytest.approx(cfg.initial_cash * 120 / 100, rel=1e-12)
+
+
+def test_pre_lagged_signal_at_zero_equals_default():
+    prices = _frame([100, 104, 99, 132, 120, 125, 118, 130])
+    signal = pd.Series([0, 1, 1, -1, -1, 0, 1, 1], index=prices.index, dtype=float)
+    cfg0 = BacktestConfig(fill_lag=0)
+    a = run_backtest(prices, signal, BacktestConfig())
+    b = run_backtest(prices, signal.shift(1).fillna(0.0), cfg0)
+    assert np.allclose(a.equity.to_numpy(), b.equity.to_numpy())
+    assert [t.entry_price for t in a.trades] == [t.entry_price for t in b.trades]
+
+
+def test_negative_fill_lag_is_refused():
+    prices = _frame([100, 110, 120])
+    with pytest.raises(ValueError):
+        run_backtest(prices, pd.Series(1.0, index=prices.index), BacktestConfig(fill_lag=-1))
 
 
 def test_no_look_ahead_bias():
@@ -132,3 +165,28 @@ def test_engine_speed_10y_daily_under_50ms(prices):
     sig = strat.signal(big)
     result = run_backtest(big, sig)
     assert result.elapsed_ms < 50.0
+
+
+def test_summary_is_in_rupees():
+    from shunkan.backtest.result import inr
+
+    assert inr(1_000_000) == "₹10,00,000.00"
+    assert inr(-1234.5) == "-₹1,234.50"
+    assert inr(12) == "₹12.00"
+    prices = _frame([100, 110, 120])
+    rows = dict(run_backtest(prices, pd.Series(1.0, index=prices.index)).summary_rows())
+    assert rows["Initial equity"] == "₹10,00,000.00"
+    assert "$" not in "".join(rows.values())
+
+
+def test_entry_on_the_last_close_is_not_a_trade():
+    prices = _frame([100, 110, 120])
+    result = run_backtest(prices, pd.Series([0, 1, 1], index=prices.index, dtype=float))
+    assert result.trades == []
+    assert result.final_equity == pytest.approx(result.initial_cash)
+
+
+def test_inr_survives_non_finite():
+    from shunkan.backtest.result import inr
+
+    assert inr(float("nan")) == "₹nan" and inr(float("inf")) == "₹inf"

@@ -9,7 +9,8 @@ No sklearn, no model zoo theater: two models that fit the terminal's rules
                with per-feature gain importances. ~50 lines of numpy.
 
 Splits are strictly chronological (train on the past, test on the future),
-metrics always ship next to the majority-class baseline, and training
+train rows whose forward labels reach into the test window are purged and a
+1% embargo follows them, metrics always ship next to the majority-class baseline, and training
 refuses to run on fewer than MIN_ROWS observations rather than reporting
 noise as skill.
 """
@@ -98,6 +99,8 @@ class MLResult:
     equity_bh: np.ndarray = field(repr=False, default=None)
     test_index: list = field(repr=False, default_factory=list)
     elapsed_ms: float = 0.0
+    purged: int = 0               # train rows dropped: their labels end inside the test window
+    embargo: int = 0              # further rows dropped before the test window
 
 
 def _matrix(ohlc: pd.DataFrame, names: list[str], horizon: int):
@@ -171,15 +174,25 @@ def train_model(
         raise ValueError(f"Pick >= 2 known features from: {', '.join(FEATURES)}")
     if model not in ("ridge", "stumps"):
         raise ValueError("model must be 'ridge' or 'stumps'")
+    if horizon < 1:
+        raise ValueError("horizon must be at least 1 session")
 
     X, fwd, idx = _matrix(ohlc, names, horizon)
     if len(X) < MIN_ROWS:
         raise ValueError(f"Need {MIN_ROWS}+ usable rows after features/horizon, "
                          f"got {len(X)} — not enough to say anything honest")
 
+    # Purge: a train label at row t is the return to t+horizon, so the last
+    # `horizon` train rows see test-window prices. Embargo: 1% more, for
+    # serial correlation that outlives the label (Lopez de Prado, AFML ch. 7).
     cut = int(len(X) * (1.0 - test_split))
-    Xtr, Xte = X[:cut], X[cut:]
-    ytr, yte = fwd[:cut], fwd[cut:]
+    purged, embargo = horizon, max(1, -(-len(X) // 100))
+    tr_end = cut - purged - embargo
+    if tr_end < MIN_ROWS // 2:
+        raise ValueError(f"only {tr_end} train rows after purging {purged} and embargoing "
+                         f"{embargo}; use a longer period or a shorter horizon")
+    Xtr, Xte = X[:tr_end], X[cut:]
+    ytr, yte = fwd[:tr_end], fwd[cut:]
     str_, mu, sd = _standardize(Xtr)
     ste = _standardize(Xte, mu, sd)[0]
     sign_tr, sign_te = np.sign(ytr), np.sign(yte)
@@ -209,7 +222,7 @@ def train_model(
 
     return MLResult(
         model=model, features=names, horizon=horizon,
-        n_train=cut, n_test=len(X) - cut,
+        n_train=tr_end, n_test=len(X) - cut, purged=purged, embargo=embargo,
         acc_train=acc(dir_tr, ytr), acc_test=acc(dir_te, yte),
         baseline_test=float(max((sign_te > 0).mean(), (sign_te <= 0).mean())),
         up_ret_test=float(yte[up_mask].mean()) if up_mask.any() else 0.0,

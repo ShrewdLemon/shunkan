@@ -1462,7 +1462,7 @@ async function runShnScript() {
       }
     }
     const bt = d.backtest;
-    out.innerHTML = `
+    out.innerHTML = `${synthBanner(d)}
       <div class="shn-metrics">
         <span>${d.plots.length} plot${d.plots.length === 1 ? "" : "s"} · ${d.bars} bars · ${d.elapsed_ms.toFixed(1)}ms</span>
         ${bt ? `
@@ -1470,6 +1470,7 @@ async function runShnScript() {
           <span>SHARPE ${bt.metrics.sharpe.toFixed(2)}</span>
           <span class="down">MAXDD ${fmt.pct(bt.metrics.max_drawdown)}</span>
           <span>TRADES ${fmt.i(bt.metrics.num_trades)}</span>
+          <span class="faint">RUN ${fmt.i((d.trials || {}).n || 1)} ON ${esc(d.symbol)}</span>
           ${iM(bt.prov, "SCRIPT BACKTEST")}` : `<span class="faint">no strategy verbs — overlays only</span>`}
       </div>`;
   } catch (e) {
@@ -2623,6 +2624,7 @@ async function showPresetTab() {
         <option value="backtest">BACKTEST</option>
         <option value="walkforward">WALK-FWD</option>
         <option value="montecarlo">MONTE CARLO</option>
+        <option value="validate">VALIDATE</option>
       </select>
       <button class="btn" id="bt-go">RUN</button>
     </div>
@@ -2639,7 +2641,8 @@ async function runBacktest() {
   const body = $("#bt-result");
   const mode = $("#bt-mode").value;
   body.innerHTML = loading(mode === "montecarlo" ? "bootstrapping 2,000 histories" :
-    mode === "walkforward" ? "optimizing in-sample / testing out-of-sample" : "vectorized backtest");
+    mode === "walkforward" ? "optimizing in-sample / testing out-of-sample" :
+    mode === "validate" ? "1,000 permutations and a deflated Sharpe" : "vectorized backtest");
   const params = {};
   $("#bt-params").value.split(/\s+/).filter(Boolean).forEach((kv) => {
     const [k, v] = kv.split("=");
@@ -2654,10 +2657,23 @@ async function runBacktest() {
     $("#bt-panel .panel-meta") && ($("#bt-panel .panel-head .panel-meta") || {});
     if (r.mode === "backtest") drawBacktest(body, r);
     else if (r.mode === "walkforward") drawWalkforward(body, r);
+    else if (r.mode === "validate") drawValidate(body, r);
     else drawMonteCarlo(body, r);
   } catch (e) {
     body.innerHTML = `<div class="empty">${e.message}</div>`;
   }
+}
+
+// Offline mode backtests random-walk prices; every result says so first.
+function synthBanner(r) {
+  return r && r.synthetic
+    ? `<div style="padding:9px 12px 0"><div class="verdict bad">${esc(r.data_note)}</div></div>` : "";
+}
+
+function trialsInsight(r, sym) {
+  const n = (r.trials || {}).n || 1;
+  return { what: `${n} configuration${n === 1 ? "" : "s"} run on ${esc(sym)} so far`,
+           why: "each one is another look at the same history; VALIDATE deflates the Sharpe by all of them" };
 }
 
 function metricsStrip(pairs) {
@@ -2667,7 +2683,7 @@ function metricsStrip(pairs) {
 
 function drawBacktest(body, r) {
   const alpha = r.metrics.total_return - r.bench_return;
-  body.innerHTML = `
+  body.innerHTML = `${synthBanner(r)}
     ${metricsStrip([
       ["TOTAL RET", fmt.pct(r.metrics.total_return), cls(r.metrics.total_return)],
       ["VS B&H", fmt.pct(alpha), cls(alpha)],
@@ -2684,6 +2700,7 @@ function drawBacktest(body, r) {
         why: `strategy ${fmt.pct(r.metrics.total_return)} vs benchmark ${fmt.pct(r.bench_return)} — before validating, run WALK-FWD and MONTE CARLO` },
       { what: `Drawdown ${fmt.pct(r.metrics.max_drawdown)} with Sharpe ${r.metrics.sharpe.toFixed(2)}`,
         why: r.metrics.sharpe > 1 ? "decent risk-adjusted ratio, but single-history — validate" : "weak risk-adjusted return; edge may be noise" },
+      trialsInsight(r, $("#bt-sym").value.toUpperCase()),
     ])}`;
   const chart = mkChart($("#bt-chart"));
   chart.addSeries(LWC.LineSeries, { color: "#f0a826", lineWidth: 2 }).setData(r.equity);
@@ -2693,7 +2710,7 @@ function drawBacktest(body, r) {
 
 function drawWalkforward(body, r) {
   const vCls = r.verdict.includes("robust") ? "good" : r.verdict.includes("fragile") ? "warn" : "bad";
-  body.innerHTML = `
+  body.innerHTML = `${synthBanner(r)}
     ${metricsStrip([
       ["OOS RETURN", fmt.pct(r.oos_return), cls(r.oos_return)],
       ["OOS SHARPE", r.oos_sharpe.toFixed(2)],
@@ -2727,7 +2744,7 @@ function drawWalkforward(body, r) {
 function drawMonteCarlo(body, r) {
   const vCls = r.verdict.includes("favorable") && !r.verdict.includes("un") ? "good" :
     r.verdict.includes("coin") ? "warn" : "bad";
-  body.innerHTML = `
+  body.innerHTML = `${synthBanner(r)}
     ${metricsStrip([
       ["P(LOSS)", (r.prob_loss * 100).toFixed(0) + "%", r.prob_loss > 0.4 ? "down" : "up"],
       ["TERM P5", fmt.pct(r.terminal.p5 - 1), "down"],
@@ -2754,6 +2771,24 @@ function drawMonteCarlo(body, r) {
   chart.timeScale().fitContent();
 }
 
+function drawValidate(body, r) {
+  const d = r.deflated_sharpe, p = r.permutation, n = r.trials.n;
+  body.innerHTML = `${synthBanner(r)}
+    ${metricsStrip([
+      ["SHARPE", d.observed.toFixed(2)],
+      ["BEST OF " + n + " ON NOISE", d.expected_max_from_trials.toFixed(2)],
+      ["DEFLATED SHARPE", d.dsr === null ? "n/a" : d.dsr.toFixed(2), d.survives ? "up" : "down"],
+      ["PERMUTATION p", p.p_value.toFixed(3), p.significant ? "up" : "down"],
+      ["TRIALS", n],
+    ])}
+    <div style="padding:9px 12px"><div class="verdict ${r.passes ? "good" : "bad"}">${esc(r.verdict).toUpperCase()}</div></div>
+    ${insightBlock([
+      { what: `Deflated by ${n} trial${n === 1 ? "" : "s"}`,
+        why: `${esc(r.trials.source)}: presets, builder rules, scripts and walk-forward grids all count, re-running one does not` },
+      { what: esc(d.verdict), why: esc(p.verdict) },
+    ])}`;
+}
+
 /* ---------- STRATEGY BUILDER (no-code) ---------- */
 
 let BUILDER_CAT = null;  // /api/builder/indicators catalog, fetched once
@@ -2775,7 +2810,7 @@ function _opOptions(selected) {
 }
 
 function _modeOptions(selected) {
-  const labels = { none: "off", percent: "%", pips: "pips", atr: "× ATR" };
+  const labels = { none: "off", percent: "%", pips: "points", atr: "× ATR" };
   return BUILDER_CAT.sl_tp_modes.map((m) =>
     `<option value="${m}" ${m === selected ? "selected" : ""}>${labels[m]}</option>`).join("");
 }
@@ -2941,7 +2976,7 @@ function drawBuilderResult(body, r) {
   const ex = r.exit_breakdown || {};
   const exChips = Object.entries(ex).map(([k, v]) =>
     `<span class="chip">${k} ${v}</span>`).join("") || "<span class='faint'>no trades</span>";
-  body.innerHTML = `
+  body.innerHTML = `${synthBanner(r)}
     ${metricsStrip([
       ["TOTAL RET", fmt.pct(m.total_return), cls(m.total_return)],
       ["VS B&H", fmt.pct(alpha), cls(alpha)],
@@ -2955,7 +2990,7 @@ function drawBuilderResult(body, r) {
     <div class="chart-host short" id="bld-chart" style="margin-top:2px"></div>
     <div class="bld-meta">${r.bars} ${r.interval} bars · exits → ${exChips}
       ${iM(r.prov.execution, "execution model")}${iM(r.prov.metrics, "metrics")}
-      <div class="faint" style="margin-top:3px">${r.data_note}</div></div>
+      ${r.synthetic ? "" : `<div class="faint" style="margin-top:3px">${esc(r.data_note)}</div>`}</div>
     ${tradesTable(r.trades)}
     ${insightBlock([
       { what: alpha >= 0 ? `Beat buy & hold by ${fmt.pct(alpha)}` : `Lost to buy & hold by ${fmt.pct(-alpha)}`,
@@ -2963,6 +2998,7 @@ function drawBuilderResult(body, r) {
       { what: `${m.num_trades} trades, ${Object.keys(ex).includes("stop") ? (ex.stop || 0) : 0} stopped out`,
         why: m.num_trades < 20 ? "few trades — results are sample-thin, treat the metrics as indicative not significant"
           : "stops/targets are filled intrabar from bar high/low; same-bar SL+TP assumes the stop hit first" },
+      trialsInsight(r, r.symbol),
     ])}`;
   const chart = mkChart($("#bld-chart"));
   chart.addSeries(LWC.LineSeries, { color: "#f0a826", lineWidth: 2 }).setData(r.equity);
@@ -5605,7 +5641,7 @@ async function runSwarm() {
     vizMeta(stamp(`${d.n_evals} UNIQUE BACKTESTS · ${d.bars} BARS EACH · ${(d.elapsed_ms / 1000).toFixed(1)}s TOTAL`));
     const [px, py] = d.param_names;
     const m = d.best_metrics;
-    vizSide(`
+    vizSide(`${synthBanner(d)}
       <table class="viz-kv">
         <tr><td>BEST ${px.toUpperCase()}</td><td>${d.best_params[px]}</td></tr>
         <tr><td>BEST ${py.toUpperCase()}</td><td>${d.best_params[py]}</td></tr>
@@ -5997,7 +6033,7 @@ async function trainML() {
     $("#mls-out .panel-meta").innerHTML =
       stamp(`${d.n_train} TRAIN / ${d.n_test} TEST ROWS · ${d.elapsed_ms.toFixed(0)}ms`);
     const edgeCls = d.edge > 0.02 ? "up" : d.edge < -0.02 ? "down" : "faint";
-    body.innerHTML = `
+    body.innerHTML = `${synthBanner(d)}
       <table class="viz-kv">
         <tr><td>TEST ACCURACY</td><td>${(d.acc_test * 100).toFixed(1)}% ${iM(d.prov.accuracy, "ML ACCURACY")}</td></tr>
         <tr><td>MAJORITY BASELINE</td><td>${(d.baseline_test * 100).toFixed(1)}%</td></tr>

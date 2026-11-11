@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         "--param", "-p", action="append", default=[],
         help="Strategy parameter as name=value (repeatable)",
     )
-    p_bt.add_argument("--cash", type=float, default=10_000.0)
+    p_bt.add_argument("--cash", type=float, default=1_000_000.0)
     p_bt.add_argument("--commission", type=float, default=0.0005)
     p_bt.add_argument("--no-short", action="store_true", help="Long/flat only")
 
@@ -366,8 +366,11 @@ def cmd_backtest(args) -> int:
         symbol=args.symbol, strategy_name="buy_hold",
     )
 
+    from shunkan.data.provider import is_offline
+
+    synth = " · SYNTHETIC PRICES (offline), not market history" if is_offline() else ""
     table = Table(
-        title=f"Backtest · {args.symbol.upper()} · {strategy.name} · {args.period}",
+        title=f"Backtest · {args.symbol.upper()} · {strategy.name} · {args.period}{synth}",
         header_style="bold yellow", show_header=False,
     )
     table.add_column("Metric", style="dim")

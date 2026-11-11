@@ -11,6 +11,18 @@ import pandas as pd
 from shunkan.analytics import stats
 
 
+def inr(x: float) -> str:
+    """Rupees with Indian grouping: ₹12,34,567.89."""
+    if x != x or x in (float("inf"), float("-inf")):
+        return f"₹{x}"
+    whole, frac = f"{abs(x):.2f}".split(".")
+    head, groups = whole[:-3], [whole[-3:]]
+    while head:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    return f"{'-' if x < 0 else ''}₹{','.join(groups)}.{frac}"
+
+
 @dataclass
 class Trade:
     entry_time: datetime
@@ -66,8 +78,8 @@ class BacktestResult:
         return [
             ("Strategy", f"{self.strategy_name} {self.params}"),
             ("Bars", f"{len(self.equity):,}"),
-            ("Initial equity", f"${self.initial_cash:,.2f}"),
-            ("Final equity", f"${self.final_equity:,.2f}"),
+            ("Initial equity", inr(self.initial_cash)),
+            ("Final equity", inr(self.final_equity)),
             ("Total return", f"{m['total_return']:+.2%}"),
             ("CAGR", f"{m['cagr']:+.2%}"),
             ("Sharpe", f"{m['sharpe']:.2f}"),

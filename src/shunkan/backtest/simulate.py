@@ -37,7 +37,7 @@ from shunkan.backtest.result import BacktestResult, Trade
 
 @dataclass
 class ExecConfig:
-    initial_cash: float = 10_000.0
+    initial_cash: float = 1_000_000.0  # ₹10 lakh
     commission: float = 0.0005  # per side, fraction of notional
     slippage: float = 0.0005  # per side
     # stop-loss / take-profit

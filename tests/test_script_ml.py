@@ -124,3 +124,20 @@ def test_ml_refuses_thin_data(ohlc):
 def test_ml_refuses_unknown_model(ohlc):
     with pytest.raises(ValueError, match="ridge' or 'stumps"):
         train_model(ohlc, FEATS, model="lstm")
+
+
+def test_ml_split_purges_labels_that_reach_the_test_window(ohlc):
+    from shunkan.ml.engine import _matrix
+
+    for h in (1, 5, 20):
+        r = train_model(ohlc, ["ret5", "rsi14", "ema_gap"], model="ridge", horizon=h)
+        rows = len(_matrix(ohlc, r.features, h)[0])
+        assert r.purged == h and r.embargo >= 1
+        assert r.n_train + r.purged + r.embargo + r.n_test == rows
+        # the last train label ends before the first test row's price
+        assert r.n_train - 1 + h < rows - r.n_test
+
+
+def test_ml_refuses_zero_horizon(ohlc):
+    with pytest.raises(ValueError):
+        train_model(ohlc, ["ret5", "rsi14"], horizon=0)

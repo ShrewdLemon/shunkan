@@ -3,7 +3,7 @@
 Kept honest on purpose. If something here reads as more finished than it is,
 that's a bug in this file.
 
-Last updated: 2026-08-13.
+Last updated: 2026-11-11.
 
 ## Solid
 
@@ -27,7 +27,14 @@ Things with real test coverage that have been verified against a live broker.
   search over pure noise now fails. The trial count is read off the search
   itself (`trials_of`), so it cannot be understated by a caller; an unknown
   search object raises rather than defaulting to 1. `POST /api/backtest` with
-  `mode: "validate"` runs the gate.
+  `mode: "validate"` runs the gate, also as VALIDATE in the Strategy Lab, and
+  deflates by every configuration run on that symbol in the app (11 Nov 2026;
+  before that it deflated a hand-tuned run at n = 1).
+- **Fill timing.** The vector engine fills at the next bar's close and its
+  equity curve now matches its trade list (11 Nov 2026; before, the curve
+  filled at the signal bar's own close while trades and docs said next bar).
+  The ML studio purges train labels that reach into the test window and
+  embargoes 1% more.
 - **Self-contained broker setup.** Both first-run credentials and the daily
   re-auth happen from the broker chip in the top bar. The CLI still works but
   is no longer required for anything.

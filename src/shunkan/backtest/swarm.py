@@ -52,6 +52,7 @@ class SwarmResult:
     best_fitness: float = float("-inf")
     best_metrics: dict[str, float] = field(default_factory=dict)
     n_evals: int = 0             # unique backtests actually run
+    evaluations: list = field(repr=False, default_factory=list)  # (params, sharpe) per real backtest
     elapsed_ms: float = 0.0
 
     def verdict(self) -> str:
@@ -209,5 +210,7 @@ def swarm_optimize(
         best_params={px: best_key[0], py: best_key[1]},
         best_fitness=best_fit, best_metrics=best_metrics,
         n_evals=len(cache),
+        evaluations=[({**strategy.defaults, px: k[0], py: k[1]}, v[0])
+                     for k, v in cache.items() if v[0] != PENALTY],
         elapsed_ms=(time.perf_counter() - t0) * 1000.0,
     )

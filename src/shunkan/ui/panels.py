@@ -269,7 +269,7 @@ class BacktestPanel(Panel):
         ticks = np.linspace(0, len(x) - 1, num=min(6, len(x)), dtype=int)
         labels = [result.equity.index[i].strftime("%Y-%m") for i in ticks]
         plt.xticks(ticks.tolist(), labels)
-        plt.title(f"{result.symbol.upper()} — growth of $1: {result.strategy_name} vs buy & hold")
+        plt.title(f"{result.symbol.upper()} — growth of ₹1: {result.strategy_name} vs buy & hold")
         plot.refresh()
 
         lines = [f"[bold #ffb000]{result.symbol.upper()} · {result.strategy_name}[/]"]

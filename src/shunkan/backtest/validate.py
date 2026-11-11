@@ -145,6 +145,9 @@ class DeflatedSharpeResult:
         return self.deflated > 0.95
 
     def verdict(self) -> str:
+        if self.observed_sharpe <= self.expected_max_sharpe and self.n_trials == 1:
+            return (f"Sharpe {self.observed_sharpe:.2f} is not above zero, so there is "
+                    "nothing to deflate")
         if self.observed_sharpe <= self.expected_max_sharpe:
             return (f"Sharpe {self.observed_sharpe:.2f} is below the {self.expected_max_sharpe:.2f} "
                     f"a search over {self.n_trials} coin flips would produce — this is "
@@ -276,6 +279,8 @@ def trials_of(search) -> SearchTrials:
     """
     if search is None:
         return SearchTrials.single()
+    if isinstance(search, SearchTrials):
+        return search
     if isinstance(search, int):
         return SearchTrials(n_trials=max(search, 1), source="caller-supplied")
 
@@ -354,7 +359,8 @@ class Validation:
             fails.append(f"timing is not distinguishable from random placement "
                          f"(p={self.permutation.p_value:.3f})")
         if not self.deflation.survives:
-            fails.append(f"Sharpe does not survive {self.deflation.n_trials} trials "
+            n = self.deflation.n_trials
+            fails.append(f"Sharpe does not survive {n} trial{'' if n == 1 else 's'} "
                          f"(DSR={self.deflation.deflated:.3f})")
         return "rejected: " + "; and ".join(fails) + self.basis
 

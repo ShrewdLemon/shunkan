@@ -29,7 +29,7 @@ from pydantic import BaseModel
 
 from shunkan import __version__
 from shunkan.alerts import AlertBook, desktop_notify, parse_alert
-from shunkan.config import load_watchlist, save_watchlist
+from shunkan.config import APP_DIR, load_watchlist, save_watchlist
 from shunkan.data.contract_specs import (ORDER_IN_LOTS_VENUES,
                                           economic_lot_size)
 from shunkan.data.provider import DataError, get_provider, is_offline
@@ -298,7 +298,7 @@ class BuilderRequest(BaseModel):
     interval: str = "1d"
     period: str = "1y"
     spec: dict  # RuleSpec.from_dict shape
-    initial_cash: float = 10_000.0
+    initial_cash: float = 1_000_000.0
     commission: float = 0.0005
     slippage: float = 0.0005
     sl_mode: str = "none"
@@ -398,6 +398,9 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
     provider = get_provider()
     portfolio = Portfolio.load()
     alert_book = AlertBook()
+    from shunkan.backtest.trials import TrialLedger
+
+    trials = TrialLedger(None if is_offline() else APP_DIR / "trials.json")
     hub = TickHub()
     from shunkan import plugins as _plugins
 
@@ -1635,11 +1638,29 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
         except (DataError, KeyError) as exc:
             raise HTTPException(400, str(exc)) from exc
         params = {k: (int(v) if float(v) == int(v) else float(v)) for k, v in req.params.items()}
+        unknown = sorted(set(params) - set(strat.defaults))
+        if unknown:
+            raise HTTPException(400, f"{strat.name} takes {', '.join(strat.defaults) or 'no parameters'}, "
+                                     f"not {', '.join(unknown)}")
+        tag = _data_tag(len(hist))
 
         if req.mode == "walkforward":
-            wf = walk_forward(hist, strat, symbol=req.symbol)
+            import itertools
+
+            from shunkan.backtest.optimize import _degenerate
+
+            try:
+                wf = walk_forward(hist, strat, symbol=req.symbol)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            grid = strat.param_grid or {}
+            for combo in itertools.product(*grid.values()):
+                p = {**strat.defaults, **dict(zip(grid, combo))}
+                if not _degenerate(p):
+                    trials.record(req.symbol, {"kind": "preset", "strategy": strat.name,
+                                               "params": p, "period": req.period})
             return _clean({
-                "mode": "walkforward",
+                "mode": "walkforward", **tag, "trials": _trials_out(trials, req.symbol),
                 "windows": [
                     {"test_start": str(w.test_start)[:10], "is_sharpe": w.is_sharpe,
                      "oos_sharpe": w.oos_sharpe, "oos_return": w.oos_return,
@@ -1656,16 +1677,18 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
         bt = run_backtest(hist, strat.signal(hist, **params), BacktestConfig(),
                           symbol=req.symbol, strategy_name=strat.name,
                           params={**strat.defaults, **params})
+        trials.record(req.symbol, {"kind": "preset", "strategy": strat.name,
+                                   "params": {**strat.defaults, **params}, "period": req.period},
+                      bt.metrics().get("sharpe"))
         if req.mode == "validate":
-            # The gate. `search` is None here because this endpoint runs one
-            # named strategy with given parameters and did not search: that is
-            # the honest reading, and it is also the most generous one, so a
-            # rejection here is not an artefact of an inflated trial count.
+            # The gate deflates by every configuration run on this symbol in
+            # this app (presets, builder rules, scripts, walk-forward grids),
+            # not just the one being validated.
             from shunkan.backtest.validate import validate
 
-            v = validate(bt, search=None)
+            v = validate(bt, search=trials.trials(req.symbol))
             return _clean({
-                "mode": "validate",
+                "mode": "validate", **tag,
                 "passes": v.passes,
                 "verdict": v.verdict(),
                 "trials": {"n": v.trials.n_trials, "source": v.trials.source},
@@ -1703,7 +1726,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
             n = mc.n_bars
             idx = bt.equity.index
             return _clean({
-                "mode": "montecarlo", "n_paths": mc.n_paths,
+                "mode": "montecarlo", **tag, "trials": _trials_out(trials, req.symbol),
+                "n_paths": mc.n_paths,
                 "terminal": {"p5": mc.terminal_p5, "p50": mc.terminal_p50,
                              "p95": mc.terminal_p95},
                 "prob_loss": mc.prob_loss, "max_dd_median": mc.max_dd_median,
@@ -1719,7 +1743,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
         bench = run_backtest(hist, get_strategy("buy_hold").signal(hist),
                              BacktestConfig(), symbol=req.symbol)
         return _clean({
-            "mode": "backtest",
+            "mode": "backtest", **tag, "trials": _trials_out(trials, req.symbol),
             "metrics": bt.metrics(),
             "summary": bt.summary_rows(),
             "bench_return": bench.total_return,
@@ -1775,6 +1799,9 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
         )
         sig = compile_spec(hist, spec)
         bt = simulate(hist, sig, cfg, symbol=req.symbol.upper())
+        trials.record(req.symbol, {"kind": "builder",
+                                   **req.model_dump(exclude={"symbol", "initial_cash"})},
+                      bt.metrics().get("sharpe"))
 
         close = hist[[c for c in hist.columns if c.lower() == "close"][0]].astype(float)
         bench_curve = close / float(close.iloc[0])
@@ -1785,6 +1812,8 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
             "interval": req.interval,
             "bars": len(hist),
             "offline": is_offline(),
+            **_data_tag(len(hist), req.interval),
+            "trials": _trials_out(trials, req.symbol),
             "rule": spec.describe(),
             "metrics": bt.metrics(),
             "summary": bt.summary_rows(),
@@ -1799,11 +1828,6 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
                 for t in bt.trades
             ],
             "exit_breakdown": _exit_breakdown(bt.trades),
-            "data_note": (
-                "Synthetic offline data — set SHUNKAN_OFFLINE=0 for real history."
-                if is_offline() else
-                f"{len(hist)} {req.interval} bars of real history."
-            ),
             "prov": {
                 "execution": prov(
                     "next-bar-open fills; intrabar stop/target from bar high/low; "
@@ -3270,7 +3294,7 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
             return _clean({"ok": False, "error": str(exc), "line": exc.line})
 
         out = {
-            "ok": True, "symbol": req.symbol.upper(),
+            "ok": True, "symbol": req.symbol.upper(), **_data_tag(len(hist), req.interval),
             "plots": [{"title": p["title"], "color": p["color"], "panel": p["panel"],
                        "points": _series(p["values"].dropna())} for p in r.plots],
             "hlines": r.hlines, "variables": r.variables,
@@ -3279,8 +3303,15 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
         if r.signal is not None:
             bt = run_backtest(hist, r.signal, BacktestConfig(),
                               symbol=req.symbol, strategy_name="shun-script")
+            trials.record(req.symbol, {"kind": "script", "interval": req.interval,
+                                       "period": req.period,
+                                       "code": hashlib.sha256(req.code.encode()).hexdigest()},
+                          bt.metrics().get("sharpe"))
+            out["trials"] = _trials_out(trials, req.symbol)
             pos = r.signal
-            flips = pos[pos.diff().fillna(0) != 0]
+            # Markers sit where the engine fills: the close after the signal bar.
+            fills = pos.shift(1).fillna(0.0)
+            flips = fills[fills.diff().fillna(0) != 0]
             out["markers"] = [
                 {"time": str(t)[:10], "dir": int(v)} for t, v in flips.items()
             ][-120:]
@@ -3315,8 +3346,10 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
             raise HTTPException(400, str(exc)) from exc
         edge = r.acc_test - r.baseline_test
         return _clean({
+            **_data_tag(len(hist)),
             "model": r.model, "symbol": req.symbol.upper(), "features": r.features,
             "horizon": r.horizon, "n_train": r.n_train, "n_test": r.n_test,
+            "purged": r.purged, "embargo": r.embargo,
             "acc_train": r.acc_train, "acc_test": r.acc_test,
             "baseline_test": r.baseline_test, "edge": edge,
             "up_ret_test": r.up_ret_test, "down_ret_test": r.down_ret_test,
@@ -3327,8 +3360,10 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
             "elapsed_ms": r.elapsed_ms,
             "prov": {
                 "accuracy": prov(
-                    "direction accuracy on a strictly chronological test split",
+                    "direction accuracy on a strictly chronological test split, "
+                    "train labels that reach into the test window purged",
                     {"train rows": r.n_train, "test rows": r.n_test,
+                     "purged + embargo": f"{r.purged} + {r.embargo} rows",
                      "majority baseline": f"{r.baseline_test:.1%}",
                      "horizon": f"{r.horizon} sessions"},
                     f"{req.period} daily history via the active provider",
@@ -3361,7 +3396,11 @@ def create_app(access_token: str = "", allowed_hosts: tuple[str, ...] = (), plug
         from shunkan.backtest.validate import trials_of
 
         t = trials_of(res)
+        for p, sharpe in res.evaluations:
+            trials.record(req.symbol, {"kind": "preset", "strategy": strat.name,
+                                       "params": p, "period": req.period}, sharpe)
         return _clean({
+            **_data_tag(len(hist)),
             "symbol": res.symbol, "strategy": res.strategy,
             "trials": {"n": t.n_trials, "sharpe_std": t.sharpe_std,
                        "source": t.source},
@@ -4137,6 +4176,20 @@ def _load_chart_configs() -> dict:
         except (json.JSONDecodeError, OSError):
             pass
     return {}
+
+
+def _data_tag(bars: int, interval: str = "1d") -> dict:
+    if is_offline():
+        return {"synthetic": True,
+                "data_note": "Synthetic prices: offline mode generates random-walk data, "
+                             "so these results say nothing about any market. "
+                             "Set SHUNKAN_OFFLINE=0 for real history."}
+    return {"synthetic": False, "data_note": f"{bars:,} {interval} bars of real history."}
+
+
+def _trials_out(ledger, symbol: str) -> dict:
+    t = ledger.trials(symbol)
+    return {"n": t.n_trials, "source": t.source}
 
 
 def _pip_size(symbol: str) -> float:

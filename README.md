@@ -94,6 +94,12 @@ a dashboard.
 Global markets are read only context right now. There's a Pulse board with US,
 European and Asian indices for cues, but no execution path outside India.
 
+**What it isn't.** A sub-second trading platform. Research runs on end-of-day
+and minute bars, orders are paper only, a broker round trip from a desk takes
+50 to 120 milliseconds, and SEBI's retail algo rules cap an unregistered
+client at 10 orders a second. Strategies that live on microseconds need
+exchange co-location, not this.
+
 ## Setup
 
 The short way, from PyPI:
@@ -148,6 +154,8 @@ some networks. When it's blocked you get the refusal card, which is the point.
 
 `SHUNKAN_OFFLINE=1` gives you a fully synthetic demo. Everything is labelled
 `MODELLED` in amber, ΔOI is withheld, and the store refuses to persist any of it.
+Every backtest, script, swarm and model result opens with a red "Synthetic
+prices" banner, because a random walk says nothing about any market.
 
 ### Bring your own data
 
@@ -255,6 +263,16 @@ than it sounds: the same returns score DSR 0.497 against an honest 19 trials and
 0.845 if quoted as a single hypothesis, which is the difference between rejected
 and arguable. An unrecognised search object raises rather than defaulting to 1,
 because a silent default turns an integration mistake into a passing grade.
+
+Variants tried by hand count too. Every configuration run on a symbol in the
+app (a preset with its parameters, a builder rule, a script, each combo of a
+walk-forward grid) goes into a per-symbol ledger, and VALIDATE deflates by all
+of them. Re-running one doesn't add a trial, and the ledger survives restarts.
+
+Fills are honest about time. The vector engine decides on a bar's close and
+fills at the next bar's close; the builder fills at the next bar's open. The
+model studio purges training rows whose forward labels reach into the test
+window, then embargoes 1% more.
 
 They are required together because each is blind where the other sees. Measured
 on synthetic cases:

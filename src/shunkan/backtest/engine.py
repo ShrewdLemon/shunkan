@@ -7,7 +7,10 @@ sweeps over thousands of combinations stay interactive.
 
 Execution model:
 - Signals are computed on bar close; fills happen on the NEXT bar's close
-  (one-bar delay) to avoid look-ahead bias.
+  (`fill_lag=1`) to avoid look-ahead bias. The position then earns from the
+  fill close onward, so the equity curve and the trade list agree.
+- `fill_lag=0` fills at the signal bar's own close. Only for callers that
+  already delayed the signal themselves (the desk lab's rule does).
 - Commission is charged per side as a fraction of traded notional.
 - Slippage is modeled as an additional fractional cost per side.
 """
@@ -25,10 +28,11 @@ from shunkan.backtest.result import BacktestResult, Trade
 
 @dataclass
 class BacktestConfig:
-    initial_cash: float = 10_000.0
+    initial_cash: float = 1_000_000.0  # ₹10 lakh
     commission: float = 0.0005  # 5 bps per side
     slippage: float = 0.0005  # 5 bps per side
     allow_short: bool = True
+    fill_lag: int = 1  # bars from the signal close to the fill close
 
 
 def run_backtest(
@@ -52,8 +56,12 @@ def run_backtest(
     if not cfg.allow_short:
         sig = sig.clip(lower=0)
 
-    # Fill on next bar: position held during bar t is the signal from t-1.
-    pos = sig.shift(1).fillna(0.0)
+    lag = int(cfg.fill_lag)
+    if lag < 0:
+        raise ValueError(f"fill_lag must be >= 0, got {cfg.fill_lag}")
+    # filled[t]: position after the fill at bar t's close. pos[t]: held through bar t.
+    filled = sig.shift(lag).fillna(0.0) if lag else sig
+    pos = filled.shift(1).fillna(0.0)
 
     bar_ret = close.pct_change().fillna(0.0).to_numpy()
     pos_arr = pos.to_numpy()
@@ -67,7 +75,7 @@ def run_backtest(
     equity = pd.Series(equity_arr, index=close.index, name="equity")
     returns = pd.Series(strat_ret, index=close.index, name="returns")
 
-    trades = _extract_trades(close, pos, cost_rate)
+    trades = _extract_trades(close, filled, cost_rate)
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     return BacktestResult(
@@ -90,9 +98,9 @@ def _close_series(prices: pd.DataFrame) -> pd.Series:
     return prices[cols["close"]].astype(float)
 
 
-def _extract_trades(close: pd.Series, pos: pd.Series, cost_rate: float) -> list[Trade]:
-    """Identify round-trip trades from the position series."""
-    pos_arr = pos.to_numpy()
+def _extract_trades(close: pd.Series, filled: pd.Series, cost_rate: float) -> list[Trade]:
+    """Round trips from the post-fill position series: a change at bar i fills at close[i]."""
+    pos_arr = filled.to_numpy()
     change_idx = np.flatnonzero(np.diff(pos_arr, prepend=0.0) != 0)
 
     trades: list[Trade] = []
@@ -107,7 +115,8 @@ def _extract_trades(close: pd.Series, pos: pd.Series, cost_rate: float) -> list[
         if new != 0 and open_idx is None:
             open_idx = i
             open_dir = int(np.sign(new))
-    if open_idx is not None and len(close) > 1:
+    # An entry filled at the very last close held no bar: not a trade.
+    if open_idx is not None and open_idx < len(close) - 1:
         trades.append(_make_trade(close, open_idx, len(close) - 1, open_dir, cost_rate))
     return trades
 
