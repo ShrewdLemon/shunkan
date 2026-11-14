@@ -18,7 +18,7 @@ import pandas as pd
 
 from shunkan.analytics.daily import _max_pain
 from shunkan.data import events_calendar as cal
-from shunkan.data import flows, fo_bhav, fo_store, index_bars, participant
+from shunkan.data import flows, fo_bhav, fo_iv, fo_store, index_bars, participant
 from shunkan.data.provider import DataError, Unpublished, is_offline
 from shunkan.markets import INDEX_ALIASES, IST
 
@@ -674,5 +674,6 @@ def refresh(now: datetime | None = None, root=None, client=None, www=None) -> di
         today, (now + timedelta(hours=48)).date(), root, www, now, fetch=True))
     sources["universe"] = _attempt(lambda: cal.index_universe(root, True, now))
     _attempt(lambda: fo_store.build(root, workers=1, create=False))
+    _attempt(lambda: fo_iv.build(root, workers=1, create=False))
     return {"session": session.isoformat(), "sources": sources,
             "complete": all(v == "ok" for v in sources.values())}

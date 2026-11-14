@@ -173,9 +173,9 @@ def test_packaged_macro_calendar_is_whole_and_within_coverage():
         assert e["date"] <= cov[series] and e["source"].startswith("https://")
 
 
-def test_macro_calendar_ships_as_package_data():
+def test_macro_calendar_and_repo_table_ship_as_package_data():
     py = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
-    assert py["tool"]["setuptools"]["package-data"]["shunkan.data"] == ["*.json"]
+    assert py["tool"]["setuptools"]["package-data"]["shunkan.data"] == ["*.json", "*.csv"]
 
 
 UDIFF_COLS = ["TradDt", "BizDt", "Sgmt", "Src", "FinInstrmTp", "FinInstrmId", "ISIN",

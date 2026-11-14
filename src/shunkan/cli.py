@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="Calendar days of the NSE participant archive to fetch "
                              "(the default 90 is about 60 sessions)")
 
-    p_fo = sub.add_parser("fo-store", help="Build the typed F&O bhavcopy store so option history loads in a second")
+    p_fo = sub.add_parser("fo-store", help="Build the typed F&O bhavcopy store and the IV panel so option history loads in a second")
     p_fo.add_argument("--workers", type=int, default=None, help="Processes for a full build (default: cores - 2, max 6)")
 
     args = parser.parse_args(argv)
@@ -189,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def cmd_fo_store(args) -> int:
-    from shunkan.data import fo_store
+    from shunkan.data import fo_iv, fo_store
 
     res = fo_store.build(workers=args.workers)
     if res.get("busy"):
@@ -200,6 +200,14 @@ def cmd_fo_store(args) -> int:
                   f"rebuilt {res['built']} months in {res['seconds']:.1f} s")
     for day, why in sorted(res["failed"].items()):
         console.print(f"  [red]not stored[/red] {day}: {why}")
+    iv = fo_iv.build(workers=args.workers)
+    if iv.get("busy"):
+        console.print("[yellow]another IV build holds the lock; try again when it finishes[/yellow]")
+        return 1
+    codes = ", ".join(f"{n:,} {c}" for c, n in sorted(iv["codes"].items(), key=lambda x: -x[1]))
+    console.print(f"IV panel: {iv['days']:,} sessions in {iv['months']} months, {iv['rows']:,} traded "
+                  f"options ({codes}), {iv['bytes'] / 1e6:,.0f} MB; "
+                  f"rebuilt {iv['built']} months in {iv['seconds']:.1f} s")
     return 0
 
 

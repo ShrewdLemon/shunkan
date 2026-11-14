@@ -1,0 +1,21 @@
+# RBI policy repo rate changes; checked 14-Nov-2026 against rbi.org.in (live rate 5.50%)
+effective_date,repo_pct,source
+2018-08-01,6.50,https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=11352&Mode=0
+2019-02-07,6.25,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=46235
+2019-04-04,6.00,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=46722
+2019-06-06,5.75,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=47225
+2019-08-07,5.40,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=47818
+2019-10-04,5.15,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=48319
+2020-03-27,4.40,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=49581
+2020-05-22,4.00,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=49843
+2022-05-04,4.40,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=53652
+2022-06-08,4.90,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=53832
+2022-08-05,5.40,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=54148
+2022-09-30,5.90,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=54465
+2022-12-07,6.25,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=54818
+2023-02-08,6.50,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=55178
+2025-02-07,6.25,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=59692
+2025-04-09,6.00,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=60176
+2025-06-06,5.50,https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=60604
+2025-12-05,5.25,https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=13206&Mode=0
+2026-10-07,5.50,https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=13727&Mode=0

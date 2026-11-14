@@ -70,8 +70,10 @@ def test_both_forms_parse_to_the_same_frame(tmp_path):
     a = fo_bhav.parse(legacy_zip(tmp_path / "a"))
     b = fo_bhav.parse(udiff_zip(tmp_path / "b"))
     assert list(a.columns) == fo_bhav.COLUMNS == list(b.columns)
-    shared = [c for c in fo_bhav.COLUMNS if c not in ("underlying", "lot")]
+    shared = [c for c in fo_bhav.COLUMNS if c not in ("underlying", "lot", "expiry_actual")]
     pd.testing.assert_frame_equal(a[shared], b[shared])
+    assert a["expiry_actual"].isna().all()
+    assert (b["expiry_actual"] == b["expiry"]).all()
 
 
 def test_legacy_frame_values(tmp_path):

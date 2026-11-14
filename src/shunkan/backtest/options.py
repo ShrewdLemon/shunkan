@@ -38,7 +38,10 @@ def _day(d) -> pd.Timestamp:
 
 
 class DailyChain:
-    """One symbol's option rows for one expiry, keyed by (day, strike, right)."""
+    """One symbol's option rows for one expiry, keyed by (day, strike, right).
+
+    A frame from fo_iv.load_range carries delta too, for strike_by_delta.
+    """
 
     def __init__(self, frame: pd.DataFrame, expiry) -> None:
         self.expiry = _day(expiry)
@@ -51,6 +54,8 @@ class DailyChain:
             raise ValueError("duplicate (date, strike, right) rows: pass one symbol's chain")
         self._q = dict(zip(keys, zip(sub["close"].astype(float), sub["contracts"].astype(int))))
         self._k = {d: np.unique(g.to_numpy()) for d, g in strikes.groupby(days)}
+        self._delta = (dict(zip(keys, sub["delta"].astype(float))) if "delta" in sub.columns
+                       else None)
 
     def quote(self, day, strike: float, right: str) -> tuple[float, int] | None:
         return self._q.get((_day(day), float(strike), right))
@@ -64,6 +69,36 @@ class DailyChain:
 
     def days(self) -> list[pd.Timestamp]:
         return sorted(self._k)
+
+    def delta(self, day, strike: float, right: str) -> float:
+        if self._delta is None:
+            raise ValueError("this chain has no deltas: build it from fo_iv.load_range")
+        return self._delta.get((_day(day), float(strike), right), math.nan)
+
+
+def strike_by_delta(chain: DailyChain, day, right: str, target: float,
+                    tol: float = 0.05) -> float | None:
+    """Traded strike whose delta is nearest `target` (puts negative), if within `tol`.
+
+    A tie goes to the strike further from the money (lower |delta|).
+    """
+    if right not in RIGHTS:
+        raise ValueError(f"right must be CE or PE, got {right!r}")
+    if (right == "CE") != (target > 0) or not abs(target) < 1:
+        raise ValueError(f"target delta {target} does not fit a {right}")
+    best = None
+    for k in chain.strikes(day):
+        if not chain.traded(day, k, right):
+            continue
+        d = chain.delta(day, k, right)
+        if not math.isfinite(d):
+            continue
+        key = (abs(d - target), abs(d))
+        if best is None or key < best[0]:
+            best = (key, float(k))
+    if best is None or best[0][0] > tol:
+        return None
+    return best[1]
 
 
 def nearest_traded(chain: DailyChain, day, target: float, right: str, step: float = 50.0,

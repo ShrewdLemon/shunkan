@@ -36,7 +36,7 @@ Things with real test coverage that have been verified against a live broker.
   The ML studio purges train labels that reach into the test window and
   embargoes 1% more.
 - **F&O history store.** `shunkan fo-store` turns the 1,940 bhavcopy zips
-  (2019 to now) into 95 monthly parquet files, 685 MB, in 80 s on 6 cores.
+  (2019 to now) into 95 monthly parquet files, 687 MB, in 80 s on 6 cores.
   NIFTY options for the whole span load in 0.40-0.47 s instead of 267 s, at
   2.5 GB peak instead of 2.8 GB; one session in 6 ms instead of 171 ms.
   Verified 11 Nov 2026: every month, four filter sets, 172M rows identical to
@@ -46,6 +46,29 @@ Things with real test coverage that have been verified against a live broker.
   pandas/pyarrow upgrade retires the store until `shunkan fo-store` runs again
   (loads are slow, never wrong, meanwhile). The evening refresh adds new days,
   at most 2 months' worth; it never builds the store.
+- **IV and greeks for every traded option.** The same `shunkan fo-store` derives
+  an IV panel from the typed store: 20.8M traded options 2019 to now, all
+  symbols, 341 MB, 27 s on 6 cores. NIFTY's whole history with greeks loads in
+  0.43 s, one session in 38 ms. Verified 14 Nov 2026: every month's stored rows
+  identical to rows recomputed from the raw zips, four filter sets. Forward per expiry-day from put-call parity at
+  the three strikes where call and put are closest (median 0.5 bp from the
+  same-expiry future, 99th percentile 21 bp), the future when only one strike
+  traded both sides; Black-76 with the RBI repo rate in force (packaged table,
+  checked against rbi.org.in on 14 Nov 2026; 100 bp of rate error is 0.01 vol
+  points at 30 days). Every row that has no IV says why: below intrinsic (deep
+  ITM prints, 4%), expiry day, no forward, above the price cap. NIFTY 30-day
+  ATM IV (`analytics/vol_eod.py`, contract-weighted so a one-lot stale print
+  barely counts) tracks India VIX at 0.986 on levels and 0.81 on daily changes
+  over 1,914 days, 1.2 vol points below it on average as ATM sits under the
+  wings; the worst gaps are the March 2020 crash closes. Also 25-delta skew,
+  IV rank and percentile, the variance premium (ex-post realized, labelled as
+  research only) and `strike_by_delta` for the backtester. When a corporate
+  action ends stock contracts early, T runs to NSE's actual expiry (UDiFF
+  `FininstrmActlXpryDt`, now parsed as `expiry_actual`; 3,260 rows since Jul-2024:
+  IDFC, ITC, Siemens, ABFRL, Tata Motors, HUL, Vedanta). Legacy files before
+  8 Jul 2024 do not carry it, so those events (HDFC into HDFC Bank, Reliance/Jio
+  Financial, Mindtree, NMDC, Aarti) still show near-zero IVs on their last days.
+  A new rate row retires only the months it touches.
 - **Self-contained broker setup.** Both first-run credentials and the daily
   re-auth happen from the broker chip in the top bar. The CLI still works but
   is no longer required for anything.

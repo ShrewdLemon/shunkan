@@ -4,6 +4,8 @@ One zip per session under <store>/fo_bhav/raw/{YYYY}/: the legacy form to
 2024-07-05, UDiFF from 2024-07-08, and an empty {YYYYMMDD}.missing where NSE
 published nothing. Both forms parse to one frame (COLUMNS). contracts counts
 contracts, oi counts units; contracts == 0 means the row did not trade.
+expiry_actual is the day NSE actually expires the contract, UDiFF only (NaT in
+legacy files): earlier than expiry when a corporate action ends contracts early.
 load() and load_range() read the typed copy (fo_store) where it is current.
 """
 
@@ -23,13 +25,13 @@ from shunkan.data.provider import DataError, FetchFailed
 INDEX_SYMBOLS = ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50")
 COLUMNS = ["date", "kind", "symbol", "expiry", "strike", "right",
            "open", "high", "low", "close", "settle",
-           "contracts", "oi", "oi_change", "underlying", "lot"]
+           "contracts", "oi", "oi_change", "underlying", "lot", "expiry_actual"]
 _DTYPES = {"date": "datetime64[ns]", "kind": object, "symbol": object,
            "expiry": "datetime64[ns]", "strike": "float64", "right": object,
            "open": "float64", "high": "float64", "low": "float64",
            "close": "float64", "settle": "float64", "contracts": "int64",
            "oi": "int64", "oi_change": "int64", "underlying": "float64",
-           "lot": "float64"}
+           "lot": "float64", "expiry_actual": "datetime64[ns]"}
 
 _LEGACY = {"TIMESTAMP": "date", "INSTRUMENT": "kind", "SYMBOL": "symbol",
            "EXPIRY_DT": "expiry", "STRIKE_PR": "strike", "OPTION_TYP": "right",
@@ -42,6 +44,7 @@ _UDIFF = {"TradDt": "date", "FinInstrmTp": "kind", "TckrSymb": "symbol",
           "SttlmPric": "settle", "TtlTradgVol": "contracts", "OpnIntrst": "oi",
           "ChngInOpnIntrst": "oi_change", "UndrlygPric": "underlying",
           "NewBrdLotQty": "lot"}
+_UDIFF_OPTIONAL = {"FininstrmActlXpryDt": "expiry_actual"}
 _KINDS = {"IDO": "OPTIDX", "IDF": "FUTIDX", "STO": "OPTSTK", "STF": "FUTSTK"}
 _MON = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
         "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
@@ -156,13 +159,18 @@ def _frame(raw: pd.DataFrame) -> pd.DataFrame:
     if raw.empty:
         raise ValueError("header but no rows")
     df = raw[list(cols)].rename(columns=cols)
-    for c in ("underlying", "lot"):
+    if cols is _UDIFF:
+        for src, c in _UDIFF_OPTIONAL.items():
+            if src in raw.columns:
+                df[c] = raw[src]
+    for c in ("underlying", "lot", "expiry_actual"):
         if c not in df:
             df[c] = ""
     df["kind"] = df["kind"].str.strip().replace(_KINDS)
     df["symbol"] = df["symbol"].str.strip()
     for c in ("date", "expiry"):
         df[c] = pd.to_datetime(df[c].str.strip(), format=fmt)
+    df["expiry_actual"] = pd.to_datetime(df["expiry_actual"].str.strip().replace("", None), format=fmt)
     right = df["right"].str.strip().astype(object)
     df["right"] = right.where(right.isin(["CE", "PE"]), None)
     for c in ("strike", "open", "high", "low", "close", "settle", "underlying", "lot"):

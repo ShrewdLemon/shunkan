@@ -53,10 +53,14 @@ def _month_file(base: Path, key: str) -> Path:
     return base / key[:4] / f"{key}.parquet"
 
 
-def _canon(x) -> str:
+def _canon(x, doc=None) -> str:
+    """Stable text for a code object (pass the function's __doc__ so editing it changes nothing)."""
     if hasattr(x, "co_code"):
+        consts = x.co_consts
+        if doc is not None and consts and consts[0] == doc:
+            consts = consts[1:]
         return (f"code({x.co_code.hex()}|{x.co_names!r}|{x.co_varnames!r}|"
-                + ",".join(_canon(k) for k in x.co_consts) + ")")
+                + ",".join(_canon(k) for k in consts) + ")")
     if isinstance(x, frozenset):
         return "fs(" + ",".join(sorted(_canon(k) for k in x)) + ")"
     if isinstance(x, tuple):
@@ -66,10 +70,11 @@ def _canon(x) -> str:
 
 def _format() -> str:
     spec = json.dumps([fo_bhav.COLUMNS, fo_bhav._DTYPES, fo_bhav._LEGACY, fo_bhav._UDIFF,
+                       fo_bhav._UDIFF_OPTIONAL,
                        fo_bhav._KINDS, fo_bhav._SORT, _MONTH_KEYS, ROW_GROUP,
                        pd.__version__, pa.__version__, list(sys.version_info[:2])],
                       sort_keys=True, default=str)
-    code = [_canon(fn.__code__) for fn in (fo_bhav._frame, fo_bhav.parse, fo_bhav._day, _month)]
+    code = [_canon(fn.__code__, fn.__doc__) for fn in (fo_bhav._frame, fo_bhav.parse, fo_bhav._day, _month)]
     return hashlib.sha256("\n".join([spec, *code]).encode("utf-8")).hexdigest()[:16]
 
 
@@ -151,8 +156,8 @@ def _stat(path: Path) -> list | None:
     return [st.st_size, st.st_mtime_ns]
 
 
-def _valid(days, root) -> tuple[dict[str, list[date]], list[date]]:
-    months = _manifest(root)
+def _valid(days, root, months: dict | None = None) -> tuple[dict[str, list[date]], list[date]]:
+    months = _manifest(root) if months is None else months
     if not months:
         return {}, list(days)
     base = typed_dir(root)

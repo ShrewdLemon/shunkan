@@ -55,8 +55,8 @@ where = ["src"]
 "shunkan.server" = ["static/*", "static/vendor/*"]
 # The TUI's stylesheet. Without it a non-editable install's `shunkan` dies on start.
 "shunkan.ui" = ["*.tcss"]
-# The packaged RBI/FOMC/CPI schedule the calendar reads.
-"shunkan.data" = ["*.json"]
+# The packaged RBI/FOMC/CPI schedule the calendar reads, and the RBI repo-rate table the IV panel uses.
+"shunkan.data" = ["*.json", "*.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

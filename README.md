@@ -348,6 +348,9 @@ store/fo_bhav/typed/      the same rows as typed parquet, one file per month;
                           `shunkan fo-store` builds it, the evening refresh
                           keeps it current, any day it can't vouch for is
                           read from the zip instead
+store/fo_bhav/iv/         forward, IV and the code for every traded option,
+                          one file per month, derived from typed/ by the
+                          same `shunkan fo-store`; greeks come on read
 store/news/               the headline archive, one parquet per writer
 store/instruments/        daily contract master per venue
 cache/                    instruments dump, short lived
